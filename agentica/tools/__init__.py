@@ -23,6 +23,7 @@ from agentica.tools.buildin_tools import (
     BuiltinTodoTool,
     BuiltinTaskTool,
     BuiltinMemoryTool,
+    BuiltinConversationTool,
 )
 from agentica.tools.code_tool import CodeTool
 from agentica.tools.lsp_tool import LspTool
@@ -49,6 +50,7 @@ __all__ = [
     "BuiltinTodoTool",       # Task list management
     "BuiltinTaskTool",       # Sub-agent task delegation
     "BuiltinMemoryTool",     # Persistent memory
+    "BuiltinConversationTool",  # Conversation archive search
     # Extended tools
     "CodeTool",      # Code analysis, formatting, linting
     "LspTool",       # LSP-based code navigation

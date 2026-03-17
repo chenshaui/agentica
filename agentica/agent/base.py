@@ -37,8 +37,8 @@ from agentica.model.base import Model
 from agentica.run_response import RunResponse, AgentCancelledError
 from agentica.run_config import RunConfig
 from agentica.memory import WorkingMemory
-from agentica.agent.config import PromptConfig, ToolConfig, WorkspaceMemoryConfig, TeamConfig
-from agentica.hooks import AgentHooks, RunHooks
+from agentica.agent.config import PromptConfig, ToolConfig, WorkspaceMemoryConfig, TeamConfig, SandboxConfig
+from agentica.hooks import AgentHooks, RunHooks, ConversationArchiveHooks
 from agentica.runner import Runner
 
 # Import mixin classes — pure method containers, no state, no __init__
@@ -112,6 +112,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
     tool_config: ToolConfig = field(default_factory=ToolConfig)
     long_term_memory_config: WorkspaceMemoryConfig = field(default_factory=WorkspaceMemoryConfig)
     team_config: TeamConfig = field(default_factory=TeamConfig)
+    sandbox_config: Optional[SandboxConfig] = None
 
     # ============================
     # Runtime
@@ -126,6 +127,8 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
 
     # Run-level hooks (set per-run via run(hooks=...))
     _run_hooks: Optional[RunHooks] = field(default=None, init=False, repr=False)
+    # Default run hooks (auto-injected, e.g. ConversationArchiveHooks when auto_archive=True)
+    _default_run_hooks: Optional[RunHooks] = field(default=None, init=False, repr=False)
 
     # Context for tools and prompt functions (runtime input)
     context: Optional[Dict[str, Any]] = None
@@ -156,6 +159,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
             tool_config: Optional[ToolConfig] = None,
             long_term_memory_config: Optional[WorkspaceMemoryConfig] = None,
             team_config: Optional[TeamConfig] = None,
+            sandbox_config: Optional[SandboxConfig] = None,
             # ---- Runtime ----
             working_memory: Optional[WorkingMemory] = None,
             context: Optional[Dict[str, Any]] = None,
@@ -191,6 +195,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         self.tool_config = tool_config or ToolConfig()
         self.long_term_memory_config = long_term_memory_config or WorkspaceMemoryConfig()
         self.team_config = team_config or TeamConfig()
+        self.sandbox_config = sandbox_config
 
         # Runtime
         self.working_memory = working_memory or WorkingMemory()
@@ -202,6 +207,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         self.stream_intermediate_steps = False
         self._cancelled = False
         self._run_hooks = None
+        self._default_run_hooks = None
 
         # Create Runner instance
         self._runner = Runner(self)
@@ -230,6 +236,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
             self.tool_config.compression_manager = CompressionManager(
                 model=self.model,
                 compress_tool_results=True,
+                workspace=self.workspace,
             )
 
         # Tracing: check Langfuse config when enabled
@@ -244,6 +251,10 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
                     "  LANGFUSE_BASE_URL=https://cloud.langfuse.com  # or self-hosted\n"
                     "Install: pip install langfuse"
                 )
+
+        # Auto-archive: inject ConversationArchiveHooks when auto_archive=True
+        if self.workspace is not None and self.long_term_memory_config.auto_archive:
+            self._default_run_hooks = ConversationArchiveHooks()
 
     async def get_workspace_context_prompt(self) -> Optional[str]:
         """Dynamically load workspace context for system prompt."""

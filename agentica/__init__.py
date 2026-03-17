@@ -111,10 +111,10 @@ from agentica.utils.tokens import count_tokens, count_text_tokens, count_image_t
 
 # ── Agent (core) ──
 from agentica.agent import Agent, AgentCancelledError
-from agentica.agent.config import PromptConfig, ToolConfig, WorkspaceMemoryConfig, TeamConfig
+from agentica.agent.config import PromptConfig, ToolConfig, WorkspaceMemoryConfig, TeamConfig, SandboxConfig
 from agentica.run_config import RunConfig
 from agentica.workflow import Workflow, WorkflowSession
-from agentica.hooks import AgentHooks, RunHooks
+from agentica.hooks import AgentHooks, RunHooks, ConversationArchiveHooks
 
 # ── Workspace ──
 from agentica.workspace import Workspace, WorkspaceConfig
@@ -236,10 +236,15 @@ _LAZY_IMPORTS = {
     "BuiltinFetchUrlTool": "agentica.tools.buildin_tools",
     "BuiltinTodoTool": "agentica.tools.buildin_tools",
     "BuiltinTaskTool": "agentica.tools.buildin_tools",
+    "BuiltinConversationTool": "agentica.tools.buildin_tools",
     "get_builtin_tools": "agentica.tools.buildin_tools",
 
     # subagent system
     "SubagentType": "agentica.subagent",
+
+    # swarm system
+    "Swarm": "agentica.swarm",
+    "SwarmResult": "agentica.swarm",
     "SubagentConfig": "agentica.subagent",
     "SubagentRun": "agentica.subagent",
     "SubagentRegistry": "agentica.subagent",
@@ -390,8 +395,8 @@ __all__ = [
     "count_message_tokens", "count_tool_tokens",
     # agent
     "Agent", "AgentCancelledError",
-    "PromptConfig", "ToolConfig", "WorkspaceMemoryConfig", "TeamConfig",
-    "RunConfig", "Workflow", "WorkflowSession", "AgentHooks", "RunHooks",
+    "PromptConfig", "ToolConfig", "WorkspaceMemoryConfig", "TeamConfig", "SandboxConfig",
+    "RunConfig", "Workflow", "WorkflowSession", "AgentHooks", "RunHooks", "ConversationArchiveHooks",
     # workspace
     "Workspace", "WorkspaceConfig",
     # lazy imports

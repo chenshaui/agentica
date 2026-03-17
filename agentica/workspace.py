@@ -10,7 +10,7 @@ import functools
 from pathlib import Path
 from typing import Optional, Dict, List
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
 from agentica.config import AGENTICA_WORKSPACE_DIR
 
@@ -49,6 +49,7 @@ class WorkspaceConfig:
     memory_dir: str = "memory" # daily memory, under users/{user_id}/memory
     memory_md: str = "MEMORY.md" # user's long-term memory, under users/{user_id}/
     skills_dir: str = "skills" # each user's skills, under users/{user_id}/skills
+    conversations_dir: str = "conversations" # conversation archive, under users/{user_id}/conversations
 
 
 class Workspace:
@@ -181,6 +182,10 @@ You are a helpful AI assistant.
         self.config = config or WorkspaceConfig()
         # Default to 'default' user if not specified
         self._user_id = user_id if user_id else "default"
+        # Per-file locks for concurrent archive writes
+        self._archive_locks: Dict[str, asyncio.Lock] = {}
+        # Flag to avoid redundant _initialize_user_dir calls
+        self._user_initialized: bool = False
 
     @property
     def user_id(self) -> str:
@@ -193,7 +198,10 @@ You are a helpful AI assistant.
         Args:
             user_id: User ID, defaults to 'default' if None
         """
-        self._user_id = user_id if user_id else "default"
+        new_id = user_id if user_id else "default"
+        if new_id != self._user_id:
+            self._user_initialized = False
+        self._user_id = new_id
 
     def _get_user_path(self) -> Path:
         """Get current user's data directory path.
@@ -246,7 +254,13 @@ You are a helpful AI assistant.
         return True
 
     def _initialize_user_dir(self):
-        """Initialize current user's data directory."""
+        """Initialize current user's data directory.
+
+        Uses a cached flag to avoid redundant I/O on repeated calls.
+        """
+        if self._user_initialized:
+            return
+
         user_path = self._get_user_path()
         user_path.mkdir(parents=True, exist_ok=True)
 
@@ -260,6 +274,11 @@ You are a helpful AI assistant.
 
         # Create user's memory directory
         (user_path / self.config.memory_dir).mkdir(exist_ok=True)
+
+        # Create user's conversations directory
+        (user_path / self.config.conversations_dir).mkdir(exist_ok=True)
+
+        self._user_initialized = True
 
     def exists(self) -> bool:
         """Check if workspace exists.
@@ -535,6 +554,140 @@ You are a helpful AI assistant.
         files = sorted(memory_dir.glob("*.md"), reverse=True)
         for f in files[keep_days:]:
             f.unlink()
+
+    # =========================================================================
+    # Conversation Archive
+    # =========================================================================
+
+    def _get_user_conversations_dir(self) -> Path:
+        """Get current user's conversation archive directory."""
+        return self._get_user_path() / self.config.conversations_dir
+
+    def _get_archive_lock(self, filepath: Path) -> asyncio.Lock:
+        """Get or create a per-file asyncio.Lock for serializing archive writes."""
+        key = str(filepath)
+        if key not in self._archive_locks:
+            self._archive_locks[key] = asyncio.Lock()
+        return self._archive_locks[key]
+
+    async def archive_conversation(self, messages: List[Dict], session_id: Optional[str] = None) -> str:
+        """Archive a conversation to daily Markdown file.
+
+        Messages are appended to users/{user_id}/conversations/YYYY-MM-DD.md.
+        Uses per-file locking to prevent concurrent write-write races.
+
+        Args:
+            messages: List of message dicts with 'role' and 'content' keys
+            session_id: Optional session identifier for grouping
+
+        Returns:
+            Path to the archive file
+        """
+        self._initialize_user_dir()
+        conv_dir = self._get_user_conversations_dir()
+        conv_dir.mkdir(parents=True, exist_ok=True)
+
+        today = date.today().isoformat()
+        filepath = conv_dir / f"{today}.md"
+
+        now = datetime.now().strftime("%H:%M:%S")
+        header = f"\n\n---\n\n### {now}"
+        if session_id:
+            header += f" (session: {session_id})"
+        header += "\n\n"
+
+        lines = [header]
+        for msg in messages:
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+            if not content or not isinstance(content, str):
+                continue
+            # Truncate very long messages in archive
+            if len(content) > 2000:
+                content = content[:2000] + "\n...[truncated]"
+            lines.append(f"**{role}**: {content}\n\n")
+
+        archive_text = "".join(lines)
+
+        # Use per-file lock to serialize concurrent writes
+        lock = self._get_archive_lock(filepath)
+        async with lock:
+            existing = ""
+            if filepath.exists():
+                existing = (await _async_read_text(filepath)).strip()
+            new_content = f"{existing}{archive_text}".strip() if existing else archive_text.strip()
+            await _async_write_text(filepath, new_content)
+
+        return str(filepath)
+
+    def search_conversations(
+        self,
+        query: str,
+        limit: int = 10,
+        max_files: Optional[int] = None,
+    ) -> List[Dict]:
+        """Search conversation archive by keyword.
+
+        Args:
+            query: Search query (keyword matching)
+            limit: Maximum number of matching blocks to return
+            max_files: Only search the most recent N archive files (None = search all)
+
+        Returns:
+            List of matching conversation blocks with date, content, score
+        """
+        conv_dir = self._get_user_conversations_dir()
+        if not conv_dir.exists():
+            return []
+
+        files = sorted(conv_dir.glob("*.md"), reverse=True)
+        if max_files is not None:
+            files = files[:max_files]
+
+        query_lower = query.lower()
+        query_words = query_lower.split()
+        results = []
+
+        for filepath in files:
+            content = filepath.read_text(encoding="utf-8").strip()
+            if not content:
+                continue
+
+            # Split into conversation blocks by ---
+            blocks = content.split("---")
+            for block in blocks:
+                block = block.strip()
+                if not block:
+                    continue
+                block_lower = block.lower()
+                score = sum(1.0 for w in query_words if w in block_lower) / max(len(query_words), 1)
+                if score > 0:
+                    results.append({
+                        "date": filepath.stem,
+                        "content": block[:500] + ("..." if len(block) > 500 else ""),
+                        "file_path": str(filepath.relative_to(self.path)),
+                        "score": score,
+                    })
+
+        results.sort(key=lambda x: -x["score"])
+        return results[:limit]
+
+    def get_conversation_files(self, max_files: Optional[int] = None) -> List[Path]:
+        """Get conversation archive files for current user.
+
+        Args:
+            max_files: Only return the most recent N files (None = return all)
+
+        Returns:
+            List of conversation file paths, newest first
+        """
+        conv_dir = self._get_user_conversations_dir()
+        if not conv_dir.exists():
+            return []
+        files = sorted(conv_dir.glob("*.md"), reverse=True)
+        if max_files is not None:
+            files = files[:max_files]
+        return files
 
     def create_memory_search(self):
         """Create workspace memory search instance.

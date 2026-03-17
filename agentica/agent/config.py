@@ -10,7 +10,7 @@ Provides layered configuration:
 - TeamConfig: Team collaboration settings
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import (
     Any,
     Callable,
@@ -84,6 +84,7 @@ class WorkspaceMemoryConfig:
     load_workspace_context: bool = True
     load_workspace_memory: bool = True
     memory_days: int = 2
+    auto_archive: bool = False  # Auto-archive conversation after each run()
 
 
 @dataclass
@@ -92,3 +93,38 @@ class TeamConfig:
     respond_directly: bool = False
     add_transfer_instructions: bool = True
     team_response_separator: str = "\n"
+
+
+@dataclass
+class SandboxConfig:
+    """Sandbox execution isolation configuration (best-effort).
+
+    Controls file system and command execution boundaries for security.
+    NOTE: This is a best-effort safety net, NOT a true security sandbox.
+    Determined attackers can bypass these checks (e.g. via encoding, symlinks,
+    or indirect execution). Use OS-level sandboxing (Docker, seccomp, etc.)
+    for untrusted code.
+
+    Attributes:
+        enabled: Whether sandbox restrictions are active
+        writable_dirs: List of directory paths the agent is allowed to write to.
+            If empty, defaults to work_dir only.
+        blocked_paths: Path components that are always blocked for read/write.
+            Access to any path containing these path components is denied.
+            Uses path component matching (not substring) to avoid false positives.
+        blocked_commands: Shell command patterns that are blocked from execution.
+            Uses regex boundary matching to reduce false positives.
+        max_execution_time: Maximum seconds for a single command execution
+    """
+    enabled: bool = False
+    writable_dirs: List[str] = field(default_factory=list)
+    blocked_paths: List[str] = field(default_factory=lambda: [
+        ".ssh", ".gnupg", ".aws", ".azure", ".config/gcloud",
+        ".env", ".netrc", "id_rsa", "id_ed25519",
+    ])
+    blocked_commands: List[str] = field(default_factory=lambda: [
+        "rm -rf /", "rm -rf /*", "mkfs", "dd if=",
+        ":(){ :|:& };:", "chmod -R 777 /",
+        "> /dev/sda", "curl|sh", "curl |sh", "wget|sh", "wget |sh",
+    ])
+    max_execution_time: int = 120

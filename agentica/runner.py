@@ -154,9 +154,17 @@ class Runner:
             agent.run_id = str(uuid4())
             agent.run_response = RunResponse(run_id=agent.run_id, agent_id=agent.agent_id)
 
-            # Store run-level hooks for access by team.py
-            if hooks is not None:
-                agent._run_hooks = hooks
+            # Merge default run hooks (e.g. auto-archive) with user-provided hooks
+            effective_hooks = None
+            if hooks is not None and agent._default_run_hooks is not None:
+                from agentica.hooks import _CompositeRunHooks
+                effective_hooks = _CompositeRunHooks([agent._default_run_hooks, hooks])
+            elif hooks is not None:
+                effective_hooks = hooks
+            elif agent._default_run_hooks is not None:
+                effective_hooks = agent._default_run_hooks
+            if effective_hooks is not None:
+                agent._run_hooks = effective_hooks
 
             # 1. Setup
             agent.update_model()
@@ -343,10 +351,10 @@ class Runner:
             if agent.working_memory.create_session_summary and agent.working_memory.update_session_summary_after_run:
                 await agent.working_memory.update_summary()
 
-            # 7. Save output to file
+            # 6. Save output to file
             self.save_run_response_to_file(message=message, save_response_to_file=save_response_to_file)
 
-            # 8. Set run_input
+            # 7. Set run_input
             if message is not None:
                 if isinstance(message, str):
                     agent.run_input = message

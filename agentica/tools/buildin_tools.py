@@ -52,6 +52,7 @@ class BuiltinFileTool(Tool):
             work_dir: Optional[str] = None,
             max_read_lines: int = 500,
             max_line_length: int = 2000,
+            sandbox_config=None,
     ):
         """
         Initialize BuiltinFileTool.
@@ -60,12 +61,14 @@ class BuiltinFileTool(Tool):
             work_dir: Work directory for file operations, defaults to current working directory
             max_read_lines: Maximum number of lines to read by default
             max_line_length: Maximum length per line, longer lines will be truncated
+            sandbox_config: SandboxConfig instance for path restriction enforcement
         """
         super().__init__(name="builtin_file_tool")
         self.work_dir = Path(work_dir) if work_dir else Path.cwd()
         self.max_read_lines = max_read_lines
         self.max_line_length = max_line_length
         self._file_locks: Dict[str, asyncio.Lock] = {}
+        self._sandbox_config = sandbox_config
 
         # Register all file operation functions
         self.register(self.ls)
@@ -98,9 +101,53 @@ class BuiltinFileTool(Tool):
         return self._file_locks[path]
 
     def _validate_path(self, path: str) -> str:
-        """Validate path - currently no restrictions, work_dir is just the default."""
-        # Allow all paths: absolute, relative, with .. or ~
-        # work_dir is only used as the default starting point for relative paths
+        """Validate path against sandbox restrictions.
+
+        When sandbox is enabled, checks that:
+        - Path components do not match any blocked_paths entries
+        - Uses path component matching (not substring) to avoid false positives
+        - For write operations, caller should use _validate_write_path instead
+
+        Raises:
+            PermissionError: If path is blocked by sandbox config
+        """
+        if self._sandbox_config is None or not self._sandbox_config.enabled:
+            return path
+        resolved = self._resolve_path(path).resolve()
+        resolved_parts = set(resolved.parts)
+        for blocked in self._sandbox_config.blocked_paths:
+            if blocked in resolved_parts:
+                raise PermissionError(f"Sandbox: access to path containing '{blocked}' is blocked")
+        return path
+
+    def _validate_write_path(self, path: str) -> str:
+        """Validate that a write operation is allowed under sandbox restrictions.
+
+        Checks blocked_paths and writable_dirs whitelist.
+
+        Raises:
+            PermissionError: If write is not allowed
+        """
+        self._validate_path(path)
+        if self._sandbox_config is None or not self._sandbox_config.enabled:
+            return path
+        resolved = str(self._resolve_path(path).resolve())
+        # If writable_dirs is configured, enforce whitelist
+        if self._sandbox_config.writable_dirs:
+            allowed = False
+            for wd in self._sandbox_config.writable_dirs:
+                wd_resolved = str(Path(wd).expanduser().resolve())
+                if resolved.startswith(wd_resolved):
+                    allowed = True
+                    break
+            if not allowed:
+                # Also allow work_dir
+                work_dir_str = str(self.work_dir.resolve())
+                if not resolved.startswith(work_dir_str):
+                    raise PermissionError(
+                        f"Sandbox: write to '{path}' is not allowed. "
+                        f"Writable dirs: {self._sandbox_config.writable_dirs}"
+                    )
         return path
 
     async def ls(self, directory: str = ".") -> str:
@@ -239,7 +286,7 @@ class BuiltinFileTool(Tool):
             Operation result message containing the actual absolute path of the file
         """
         try:
-            self._validate_path(file_path)
+            self._validate_write_path(file_path)
             path = self._resolve_path(file_path)
             # Ensure directory exists
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -302,7 +349,7 @@ class BuiltinFileTool(Tool):
             edit_file("test.py", "old_name", "new_name", replace_all=True)
         """
         try:
-            self._validate_path(file_path)
+            self._validate_write_path(file_path)
             path = self._resolve_path(file_path)
             path_key = str(path)
 
@@ -374,7 +421,7 @@ class BuiltinFileTool(Tool):
             ])
         """
         try:
-            self._validate_path(file_path)
+            self._validate_write_path(file_path)
             path = self._resolve_path(file_path)
             path_key = str(path)
 
@@ -798,7 +845,7 @@ class BuiltinExecuteTool(Tool):
     Exposed as execute function for consistent naming in Agent.
     """
 
-    def __init__(self, work_dir: Optional[str] = None, timeout: int = 120, max_output_length: int = 20000):
+    def __init__(self, work_dir: Optional[str] = None, timeout: int = 120, max_output_length: int = 20000, sandbox_config=None):
         """
         Initialize BuiltinExecuteTool.
 
@@ -806,11 +853,16 @@ class BuiltinExecuteTool(Tool):
             work_dir: Work directory for command execution
             timeout: Command execution timeout in seconds
             max_output_length: Maximum length of output to return
+            sandbox_config: SandboxConfig instance for command restriction enforcement
         """
         super().__init__(name="builtin_execute_tool")
         self._work_dir: Optional[Path] = Path(work_dir) if work_dir else None
         self._timeout = timeout
         self._max_output_length = max_output_length
+        self._sandbox_config = sandbox_config
+        # Override timeout from sandbox config if set
+        if sandbox_config and sandbox_config.enabled and sandbox_config.max_execution_time:
+            self._timeout = sandbox_config.max_execution_time
         # Import ShellTool for its syntax-fix helpers
         from agentica.tools.shell_tool import ShellTool
         self._shell = ShellTool(work_dir=work_dir, timeout=timeout)
@@ -867,6 +919,17 @@ class BuiltinExecuteTool(Tool):
         """
         # Use ShellTool's syntax fixers (python -c → heredoc conversion, null/true/false fix)
         command = self._shell._convert_python_c_to_heredoc(command)
+
+        # Sandbox: check blocked commands (best-effort, not a true security sandbox)
+        if self._sandbox_config and self._sandbox_config.enabled:
+            cmd_lower = command.lower().strip()
+            for blocked in self._sandbox_config.blocked_commands:
+                # Use regex word boundary to reduce false positives (e.g. "rm" in "format")
+                # while still catching the actual dangerous patterns
+                pattern = re.escape(blocked.lower())
+                if re.search(r'(?:^|[\s;|&])' + pattern, cmd_lower):
+                    logger.warning(f"Sandbox: blocked command: {command[:100]}")
+                    return "Error: Sandbox blocked this command for security reasons."
 
         logger.debug(f"Executing command: {command}")
         cwd = str(self._work_dir) if self._work_dir else None
@@ -1325,10 +1388,15 @@ class BuiltinTaskTool(Tool):
 
         config = get_subagent_config(subagent_type)
 
+        # Inherit sandbox_config from parent agent
+        sandbox_cfg = None
+        if self._parent_agent is not None:
+            sandbox_cfg = getattr(self._parent_agent, 'sandbox_config', None)
+
         # Default tools if no config found
         if config is None:
             return self._tools or [
-                BuiltinFileTool(work_dir=self._work_dir),
+                BuiltinFileTool(work_dir=self._work_dir, sandbox_config=sandbox_cfg),
                 BuiltinWebSearchTool(),
                 BuiltinFetchUrlTool(),
             ]
@@ -1336,8 +1404,8 @@ class BuiltinTaskTool(Tool):
         # If allowed_tools is None, give all basic tools (except task)
         if config.allowed_tools is None:
             tools: List[Any] = [
-                BuiltinFileTool(work_dir=self._work_dir),
-                BuiltinExecuteTool(work_dir=self._work_dir),
+                BuiltinFileTool(work_dir=self._work_dir, sandbox_config=sandbox_cfg),
+                BuiltinExecuteTool(work_dir=self._work_dir, sandbox_config=sandbox_cfg),
                 BuiltinWebSearchTool(),
                 BuiltinFetchUrlTool(),
                 BuiltinTodoTool(),
@@ -1356,9 +1424,9 @@ class BuiltinTaskTool(Tool):
         tools = []
 
         if allowed & FILE_TOOL_FUNCTIONS:
-            tools.append(BuiltinFileTool(work_dir=self._work_dir))
+            tools.append(BuiltinFileTool(work_dir=self._work_dir, sandbox_config=sandbox_cfg))
         if allowed & EXECUTE_FUNCTIONS:
-            tools.append(BuiltinExecuteTool(work_dir=self._work_dir))
+            tools.append(BuiltinExecuteTool(work_dir=self._work_dir, sandbox_config=sandbox_cfg))
         if allowed & WEB_SEARCH_FUNCTIONS:
             tools.append(BuiltinWebSearchTool())
         if allowed & FETCH_URL_FUNCTIONS:
@@ -1698,35 +1766,43 @@ class BuiltinMemoryTool(Tool):
     - Long-term memory: Persistent information (user preferences, important facts)
     """
 
-    MEMORY_SYSTEM_PROMPT = dedent("""## save_memory Tool
+    MEMORY_SYSTEM_PROMPT = dedent("""## Memory Tools
 
-    You have access to a `save_memory` tool to persist important information for future conversations.
+    You have access to memory tools to persist and retrieve important information across conversations.
 
-    ### When to Use This Tool
+    ### Available Tools
 
-    Use this tool to save:
-    1. **User Preferences**: Language, communication style, technical level
-    2. **Personal Information**: Name, occupation, interests (when shared by user)
-    3. **Important Facts**: Key project details, decisions made, important context
-    4. **User Requests**: When user explicitly asks to "remember this" or "save this"
+    1. **save_memory(content, long_term)** — Save information to memory
+       - `long_term=False` (default): Daily memory, cleared after 7 days
+       - `long_term=True`: Permanent memory that persists indefinitely
 
-    ### Memory Types
+    2. **read_memory(days)** — Read recent memories
+       - Returns long-term memory + daily memories from the last N days (default: 7)
+       - Use to recall previously saved context before responding
 
-    - `long_term=False` (default): Daily memory - temporary notes, cleared after 7 days
-    - `long_term=True`: Permanent memory - important preferences and facts that persist
+    3. **search_memory(query, limit)** — Search all memories by keyword
+       - Searches across all memory files (long-term + daily) using keyword matching
+       - Returns matching results ranked by relevance score
+       - Note: `search_memory` searches saved memory notes; use `search_conversations` (if available) to search full conversation archives
+
+    ### When to Use
+
+    - **save_memory**: User says "remember", "save", "note this", or shares important preferences/facts
+    - **read_memory**: At the start of a conversation or when you need to recall saved context
+    - **search_memory**: When looking for specific previously saved information
 
     ### Guidelines
 
     1. **Be Selective**: Only save truly important or explicitly requested information
     2. **Be Concise**: Write clear, brief memory entries (1-2 sentences)
-    3. **User Intent**: If user says "remember", "save", "note this" → use this tool
-    4. **Privacy Aware**: Don't save sensitive information unless explicitly asked
+    3. **Privacy Aware**: Don't save sensitive information unless explicitly asked
 
     ### Examples
 
     - User says "I prefer Python over JavaScript" → save_memory("User prefers Python over JavaScript", long_term=True)
     - User says "Remember to check the API docs tomorrow" → save_memory("Check API docs", long_term=False)
-    - User shares "My name is Alice, I'm a data scientist" → save_memory("User: Alice, data scientist", long_term=True)
+    - User asks "What do you know about me?" → read_memory() to recall saved info
+    - User asks "Did I mention my project name?" → search_memory("project name")
     """)
 
     def __init__(self, workspace=None):
@@ -1738,6 +1814,8 @@ class BuiltinMemoryTool(Tool):
         super().__init__(name="builtin_memory_tool")
         self._workspace = workspace
         self.register(self.save_memory)
+        self.register(self.read_memory)
+        self.register(self.search_memory)
 
     def set_workspace(self, workspace):
         """Set or update the workspace instance.
@@ -1803,6 +1881,167 @@ class BuiltinMemoryTool(Tool):
                 "content": content,
             }, ensure_ascii=False)
 
+    async def read_memory(self, days: int = 7) -> str:
+        """Read recent memories from workspace storage.
+
+        Retrieves long-term memory and daily memories from the last N days.
+        Use this to recall previously saved context about the user.
+
+        Args:
+            days: Number of recent days of daily memory to read. Default is 7.
+
+        Returns:
+            Memory content string with long-term and recent daily memories.
+        """
+        if self._workspace is None:
+            return json.dumps({
+                "success": False,
+                "error": "No workspace configured. Cannot read memory.",
+            }, ensure_ascii=False)
+
+        try:
+            content = await self._workspace.get_memory_prompt(days=days)
+            return json.dumps({
+                "success": True,
+                "days": days,
+                "content": content if content else "No memories found.",
+            }, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"Error reading memory: {e}")
+            return json.dumps({
+                "success": False,
+                "error": f"Failed to read memory: {e}",
+            }, ensure_ascii=False)
+
+    def search_memory(self, query: str, limit: int = 5) -> str:
+        """Search all saved memories by keyword.
+
+        Searches across all memory files (long-term and daily) using keyword matching.
+        Returns results ranked by relevance score.
+
+        Note: This searches saved memory notes. Use search_conversations (if available)
+        to search full conversation archives.
+
+        Args:
+            query: Search query string (keywords to match against memory content).
+            limit: Maximum number of results to return. Default is 5.
+
+        Returns:
+            JSON string with matching memory entries and their relevance scores.
+        """
+        if self._workspace is None:
+            return json.dumps({
+                "success": False,
+                "error": "No workspace configured. Cannot search memory.",
+            }, ensure_ascii=False)
+
+        if not query or not query.strip():
+            return json.dumps({
+                "success": False,
+                "error": "Search query cannot be empty.",
+            }, ensure_ascii=False)
+
+        try:
+            results = self._workspace.search_memory(query=query, limit=limit)
+            return json.dumps({
+                "success": True,
+                "query": query,
+                "count": len(results),
+                "results": results,
+            }, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"Error searching memory: {e}")
+            return json.dumps({
+                "success": False,
+                "error": f"Failed to search memory: {e}",
+            }, ensure_ascii=False)
+
+
+class BuiltinConversationTool(Tool):
+    """
+    Built-in conversation archive search tool.
+
+    Allows the agent to search historical conversations stored in the workspace,
+    enabling long-term recall of past interactions beyond the current session.
+    """
+
+    CONVERSATION_SYSTEM_PROMPT = dedent("""## search_conversations Tool
+
+    You have access to a `search_conversations` tool to search your historical conversations with the user.
+
+    ### When to Use This Tool
+
+    Use this tool when:
+    1. User refers to past conversations: "remember when we discussed...", "last time you said..."
+    2. User asks to recall specific past work: "the code you wrote last week", "that analysis from yesterday"
+    3. You need historical context that is not in the current conversation
+    4. User explicitly asks about conversation history
+
+    ### Guidelines
+
+    1. Use specific keywords related to what you're looking for
+    2. Results show conversation snippets with dates - use dates to orient the user
+    3. The search is keyword-based, so try multiple relevant terms if first search misses
+    """)
+
+    def __init__(self, workspace=None):
+        """Initialize BuiltinConversationTool.
+
+        Args:
+            workspace: Workspace instance for searching conversation archives.
+        """
+        super().__init__(name="builtin_conversation_tool")
+        self._workspace = workspace
+        self.register(self.search_conversations)
+
+    def set_workspace(self, workspace):
+        """Set or update the workspace instance."""
+        self._workspace = workspace
+
+    def get_system_prompt(self) -> Optional[str]:
+        """Get the system prompt for conversation search tool."""
+        return self.CONVERSATION_SYSTEM_PROMPT
+
+    def search_conversations(
+        self,
+        query: str,
+        limit: int = 10,
+        max_files: Optional[int] = None,
+    ) -> str:
+        """Search historical conversation archives for past interactions.
+
+        Use this tool to recall past conversations, find previously discussed topics,
+        or retrieve information from earlier sessions.
+
+        Args:
+            query: Keywords to search for in conversation history.
+            limit: Maximum number of results to return (default: 10).
+            max_files: Only search the most recent N archive files (default: None = search all).
+
+        Returns:
+            JSON string with matching conversation snippets, dates, and relevance scores.
+        """
+        if not self._workspace:
+            return json.dumps({
+                "success": False,
+                "error": "No workspace configured. Conversation search not available.",
+            }, ensure_ascii=False)
+
+        results = self._workspace.search_conversations(query=query, limit=limit, max_files=max_files)
+        if not results:
+            return json.dumps({
+                "success": True,
+                "message": f"No conversations found matching '{query}'.",
+                "results": [],
+            }, ensure_ascii=False)
+
+        return json.dumps({
+            "success": True,
+            "query": query,
+            "count": len(results),
+            "results": results,
+        }, ensure_ascii=False, indent=2)
+
 
 def get_builtin_tools(
         work_dir: Optional[str] = None,
@@ -1814,10 +2053,12 @@ def get_builtin_tools(
         include_task: bool = True,
         include_skills: bool = True,
         include_memory: bool = True,
+        include_conversations: bool = True,
         task_model: Optional["Model"] = None,
         task_tools: Optional[List[Any]] = None,
         custom_skill_dirs: Optional[List[str]] = None,
         workspace=None,
+        sandbox_config=None,
     ) -> List[Tool]:
     """
     Get the list of built-in tools for Agent.
@@ -1832,10 +2073,12 @@ def get_builtin_tools(
         include_task: Whether to include subagent task tool
         include_skills: Whether to include skill tool for executing skills
         include_memory: Whether to include memory save tool
+        include_conversations: Whether to include conversation archive search tool
         task_model: Model for subagent tasks (optional, will use parent agent's model if not set)
         task_tools: Tools for subagent tasks (optional)
         custom_skill_dirs: Custom skill directories to load (optional)
         workspace: Workspace instance for memory tool (optional)
+        sandbox_config: SandboxConfig instance for security isolation (optional)
 
     Returns:
         List of tools
@@ -1843,10 +2086,10 @@ def get_builtin_tools(
     tools = []
 
     if include_file_tools:
-        tools.append(BuiltinFileTool(work_dir=work_dir))
+        tools.append(BuiltinFileTool(work_dir=work_dir, sandbox_config=sandbox_config))
 
     if include_execute:
-        tools.append(BuiltinExecuteTool(work_dir=work_dir))
+        tools.append(BuiltinExecuteTool(work_dir=work_dir, sandbox_config=sandbox_config))
 
     if include_web_search:
         tools.append(BuiltinWebSearchTool())
@@ -1862,6 +2105,9 @@ def get_builtin_tools(
 
     if include_memory:
         tools.append(BuiltinMemoryTool(workspace=workspace))
+
+    if include_conversations and workspace is not None:
+        tools.append(BuiltinConversationTool(workspace=workspace))
 
     if include_skills:
         from agentica.tools.skill_tool import SkillTool

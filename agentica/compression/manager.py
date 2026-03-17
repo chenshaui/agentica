@@ -13,11 +13,14 @@ Supports two compression strategies (applied in order):
 import asyncio
 from dataclasses import dataclass, field
 from textwrap import dedent
-from typing import Any, Dict, List, Optional, Type, Union
+from typing import Any, Dict, List, Optional, TYPE_CHECKING, Type, Union
 
 from pydantic import BaseModel
 
 from agentica.utils.log import logger
+
+if TYPE_CHECKING:
+    from agentica.workspace import Workspace
 
 DEFAULT_COMPRESSION_PROMPT = dedent("""\
     You are compressing tool call results to save context space while preserving critical information.
@@ -112,6 +115,7 @@ class CompressionManager:
     keep_recent_rounds: int = 3
     use_llm_compression: bool = False
     compress_tool_call_instructions: Optional[str] = None
+    workspace: Optional["Workspace"] = None  # Workspace instance for archiving dropped messages
 
     stats: Dict[str, Any] = field(default_factory=dict)
 
@@ -229,6 +233,8 @@ class CompressionManager:
         Drop old messages (assistant + tool pairs) keeping only the most recent
         `keep_recent_rounds` rounds plus system and first user message.
         
+        Before dropping, archives the messages to workspace if configured.
+        
         Modifies the list in-place.
         
         Returns:
@@ -271,6 +277,11 @@ class CompressionManager:
         if dropped_count <= 0:
             return 0
 
+        # Archive dropped messages to workspace before deletion
+        if self.workspace is not None:
+            dropped_messages = messages[drop_start_idx:keep_from_idx]
+            self._archive_dropped_messages(dropped_messages)
+
         # Build new message list
         kept_tail = messages[keep_from_idx:]
         messages.clear()
@@ -280,6 +291,52 @@ class CompressionManager:
         self.stats["messages_dropped"] = self.stats.get("messages_dropped", 0) + dropped_count
         logger.info(f"Dropped {dropped_count} old messages, kept {len(messages)} messages")
         return dropped_count
+
+    def _archive_dropped_messages(self, dropped_messages: List["Message"]) -> None:
+        """Archive messages that are about to be dropped to the workspace conversation archive.
+
+        Creates a background task with error callback to avoid silent data loss.
+        """
+        if self.workspace is None:
+            return
+        try:
+            archive_msgs = []
+            for msg in dropped_messages:
+                content = msg.content if msg.content else ""
+                if not isinstance(content, str):
+                    content = str(content)
+                if content:
+                    archive_msgs.append({
+                        "role": msg.role or "unknown",
+                        "content": content[:1000],  # Limit size for archive
+                    })
+            if archive_msgs:
+                try:
+                    loop = asyncio.get_running_loop()
+                    task = loop.create_task(
+                        self.workspace.archive_conversation(
+                            archive_msgs, session_id="compression-archive"
+                        )
+                    )
+                    task.add_done_callback(self._on_archive_done)
+                except RuntimeError:
+                    logger.warning("No event loop running, skipping archive of dropped messages")
+                self.stats["messages_archived"] = (
+                    self.stats.get("messages_archived", 0) + len(archive_msgs)
+                )
+                logger.debug(f"Archived {len(archive_msgs)} dropped messages to workspace")
+        except Exception as e:
+            logger.warning(f"Failed to archive dropped messages: {e}")
+
+    @staticmethod
+    def _on_archive_done(task: asyncio.Task) -> None:
+        """Callback for archive task completion - logs errors instead of silently dropping them."""
+        if task.cancelled():
+            logger.warning("Archive task was cancelled, dropped messages may be lost")
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error(f"Archive task failed, dropped messages may be lost: {exc}")
 
     # -------------------------------------------------------------------------
     # Stage 2: LLM-based compression (optional)
