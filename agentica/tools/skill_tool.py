@@ -15,10 +15,17 @@ Usage:
     from agentica.tools.skill_tool import SkillTool
     from agentica.tools.shell_tool import ShellTool
 
-    # Basic usage - auto-loads skills from standard directories
+    # Basic usage - skills loaded on-demand (not auto-loaded at startup)
     agent = Agent(
         name="Skill-Enabled Agent",
         tools=[SkillTool(), ShellTool()],
+    )
+
+    # Auto-load all skills from standard directories at startup
+    skill_tool = SkillTool(auto_load=True)
+    agent = Agent(
+        name="Auto-Load Skill Agent",
+        tools=[skill_tool, ShellTool()],
     )
 
     # With custom skill directories
@@ -61,7 +68,7 @@ class SkillTool(Tool):
     def __init__(
         self,
         custom_skill_dirs: Optional[List[str]] = None,
-        auto_load: bool = True,
+        auto_load: bool = False,
         name: str = "skill_tool",
     ):
         """
@@ -70,6 +77,8 @@ class SkillTool(Tool):
         Args:
             custom_skill_dirs: Optional list of custom skill directory paths to load.
             auto_load: If True, automatically load skills from standard directories.
+                       Default is False to avoid loading all skills on startup.
+                       Set to True to auto-load all skills from standard directories.
             name: Name of the tool.
         """
         super().__init__(name=name)
@@ -77,10 +86,9 @@ class SkillTool(Tool):
         self._custom_skill_dirs = custom_skill_dirs or []
         self._auto_load = auto_load
         self._initialized = False
+        self._agent = None  # Set by Agent for runtime skill filtering
 
         # Register tool functions
-        # Note: get_skill_prompt is removed as a tool function since skill prompts
-        # are now injected into the system prompt via get_system_prompt()
         self.register(self.list_skills)
         self.register(self.get_skill_info)
 
@@ -109,6 +117,13 @@ class SkillTool(Tool):
         self._ensure_initialized()
         return self._registry
 
+    def _get_enabled_skills(self) -> list:
+        """Get list of enabled skills, respecting agent-level and query-level filtering."""
+        all_skills = self.registry.list_all()
+        if self._agent is None:
+            return all_skills
+        return [s for s in all_skills if self._agent._is_skill_enabled(s.name)]
+
     def list_skills(self) -> str:
         """
         List all available skills.
@@ -116,7 +131,7 @@ class SkillTool(Tool):
         Returns:
             Formatted string containing list of available skills with their descriptions
         """
-        skills = self.registry.list_all()
+        skills = self._get_enabled_skills()
 
         if not skills:
             return (
@@ -150,10 +165,14 @@ class SkillTool(Tool):
         Returns:
             Full skill content including instructions, or error if not found
         """
+        # Check if skill is enabled
+        if self._agent is not None and not self._agent._is_skill_enabled(skill_name):
+            return f"Error: Skill '{skill_name}' is disabled."
+
         skill_obj = self.registry.get(skill_name)
 
         if skill_obj is None:
-            available = [s.name for s in self.registry.list_all()]
+            available = [s.name for s in self._get_enabled_skills()]
             return (
                 f"Error: Skill '{skill_name}' not found.\n"
                 f"Available skills: {', '.join(available[:50]) if available else 'None'}"
@@ -195,14 +214,13 @@ class SkillTool(Tool):
         Get the system prompt for the skill tool.
 
         This prompt is injected into the agent's system message to guide
-        the LLM on how to use skills effectively. Only includes skill name
-        and description - full instructions are loaded on demand.
+        the LLM on how to use skills effectively. Only includes enabled skills.
 
         Returns:
             System prompt string describing available skills
         """
         self._ensure_initialized()
-        skills = self.registry.list_all()
+        skills = self._get_enabled_skills()
 
         if not skills:
             return """# Skills Tool

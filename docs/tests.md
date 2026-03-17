@@ -113,7 +113,7 @@ tests/
 ├── test_patch_tool.py               # [保留] PatchTool
 ├── test_acp.py                      # [保留] ACP 协议
 ├── test_cli.py                      # [保留] CLI 配置
-├── test_deep_agent.py               # [保留+增强] DeepAgent
+├── test_deep_agent.py               # [待清理] DeepAgent 已删除
 └── ...                              # 其他外部工具测试保留
 ```
 
@@ -587,7 +587,7 @@ P2（增强）: 边缘场景和健壮性
 | `test_patch_tool.py` | **保留** | 工具测试独立 |
 | `test_acp.py` | **保留** | ACP 测试独立 |
 | `test_cli.py` | **保留** | CLI 配置测试独立 |
-| `test_deep_agent.py` | **保留** | DeepAgent 测试独立 |
+| `test_deep_agent.py` | **待清理** | DeepAgent 已删除 |
 | `test_react_agent.py` | **合并到 test_agent_core.py** | 功能重叠 |
 | `test_llm.py` | **合并到 test_model_base.py** | 功能重叠 |
 | `test_edit_tool.py` | **删除** | 引用已重命名模块（已在 gitignore） |

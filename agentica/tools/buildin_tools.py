@@ -2051,7 +2051,7 @@ def get_builtin_tools(
         include_fetch_url: bool = True,
         include_todos: bool = True,
         include_task: bool = True,
-        include_skills: bool = True,
+        include_skills: bool = False,
         include_memory: bool = True,
         include_conversations: bool = True,
         task_model: Optional["Model"] = None,
@@ -2071,7 +2071,7 @@ def get_builtin_tools(
         include_fetch_url: Whether to include URL fetching tool
         include_todos: Whether to include task management tools
         include_task: Whether to include subagent task tool
-        include_skills: Whether to include skill tool for executing skills
+        include_skills: Whether to include skill tool for executing skills (default: False)
         include_memory: Whether to include memory save tool
         include_conversations: Whether to include conversation archive search tool
         task_model: Model for subagent tasks (optional, will use parent agent's model if not set)

@@ -44,9 +44,9 @@ def main():
             # Ensure user directory exists
             workspace._initialize_user_dir()
 
-    # Load skills
+    # Load skills only if explicitly enabled
     skills_registry = None
-    if not args.no_skills:
+    if args.enable_skills:
         # Suppress logging during skill loading for cleaner output
         if args.debug == 0:
             suppress_console_logging()

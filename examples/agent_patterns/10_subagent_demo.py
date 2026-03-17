@@ -91,11 +91,12 @@ def demo_explore_subagent():
     print(f"  - Tool call limit: {config.tool_call_limit}")
     print(f"  - Can spawn subagents: {config.can_spawn_subagents}")
     
+    work_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     agent = Agent(
         model=OpenAIChat(),
         name="Explorer",
-        tools=get_builtin_tools(include_task=True),
-        work_dir=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        tools=get_builtin_tools(work_dir=work_dir, include_task=True),
+        work_dir=work_dir,
     )
     
     query = """Use the task tool with subagent_type='explore' to find all Python files 
@@ -114,11 +115,12 @@ def demo_parallel_subagents():
     print("Demo 3: Parallel Subagent Execution")
     print("=" * 60)
     
+    work_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     agent = Agent(
         model=OpenAIChat(),
         name="Coordinator",
-        tools=get_builtin_tools(include_task=True),
-        work_dir=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        tools=get_builtin_tools(work_dir=work_dir, include_task=True),
+        work_dir=work_dir,
     )
     
     query = """I need to understand this project better. Please launch explore subagents 

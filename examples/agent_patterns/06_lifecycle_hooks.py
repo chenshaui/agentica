@@ -1,27 +1,37 @@
 # -*- coding: utf-8 -*-
 """
 @author:XuMing(xuming624@qq.com)
-@description: Lifecycle hooks demo - Demonstrates AgentHooks and RunHooks
+@description: Lifecycle hooks demo - Demonstrates AgentHooks, RunHooks, and ConversationArchiveHooks
 
-This example shows how to use the two-level lifecycle hooks system:
+This example shows how to use the lifecycle hooks system:
 1. AgentHooks: per-agent hooks (on_start, on_end) - attached to a specific Agent
 2. RunHooks: global run-level hooks (on_agent_start, on_agent_end, on_llm_start,
    on_llm_end, on_tool_start, on_tool_end, on_agent_transfer) - passed to run()
+3. ConversationArchiveHooks: auto-archives conversations to workspace after each run
+4. auto_archive via WorkspaceMemoryConfig: auto-injects ConversationArchiveHooks
 
 The demo creates:
 - A math helper agent with a simple calculator tool
 - A coordinator agent that delegates math tasks to the helper via team transfer
 - Custom hooks that log every lifecycle event for observability
+- A workspace agent with auto-archive enabled (via WorkspaceMemoryConfig)
+- A workspace agent with ConversationArchiveHooks passed via RunConfig
 """
 import sys
 import os
+import shutil
+import tempfile
+from pathlib import Path
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import asyncio
 from typing import Any, Dict, List, Optional
 
-from agentica import Agent, AgentHooks, RunHooks, OpenAIChat
+from agentica import Agent, AgentHooks, RunHooks, ConversationArchiveHooks, OpenAIChat
+from agentica.agent.config import WorkspaceMemoryConfig
+from agentica.run_config import RunConfig
+from agentica.workspace import Workspace
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +167,66 @@ async def main():
     print("=" * 60)
     print(f"Total lifecycle events: Demo1={run_hooks.event_counter}, Demo2={run_hooks_2.event_counter}")
     print("=" * 60)
+
+    # --- Demo 3: auto_archive via WorkspaceMemoryConfig ---
+    # When auto_archive=True, Agent auto-injects ConversationArchiveHooks
+    # so every run() archives the conversation to workspace — no manual setup needed.
+    print("\n" + "=" * 60)
+    print("Demo 3: auto_archive via WorkspaceMemoryConfig")
+    print("=" * 60)
+
+    ws_path = Path(tempfile.mkdtemp()) / "hooks_demo_workspace"
+    workspace = Workspace(str(ws_path))
+    workspace.initialize()
+
+    archive_agent = Agent(
+        model=OpenAIChat(id="gpt-4o-mini"),
+        workspace=workspace,
+        long_term_memory_config=WorkspaceMemoryConfig(auto_archive=True),
+    )
+    print(f"auto_archive=True, _default_run_hooks injected: {archive_agent._default_run_hooks is not None}")
+
+    response = await archive_agent.run("What is 2 + 2?")
+    print(f"Response: {response.content}")
+
+    # Check that conversation was archived
+    conv_files = workspace.get_conversation_files(max_files=5)
+    print(f"Archived conversation files: {len(conv_files)}")
+    for f in conv_files:
+        print(f"  - {Path(f).name}: {Path(f).read_text(encoding='utf-8')[:100]}...")
+
+    # --- Demo 4: ConversationArchiveHooks via RunConfig ---
+    # For explicit control: pass ConversationArchiveHooks directly to RunConfig.
+    # This works even when auto_archive=False.
+    print("\n" + "=" * 60)
+    print("Demo 4: ConversationArchiveHooks via RunConfig (explicit)")
+    print("=" * 60)
+
+    ws_path_2 = Path(tempfile.mkdtemp()) / "hooks_explicit_workspace"
+    workspace_2 = Workspace(str(ws_path_2))
+    workspace_2.initialize()
+
+    explicit_agent = Agent(
+        model=OpenAIChat(id="gpt-4o-mini"),
+        workspace=workspace_2,
+        # auto_archive is False by default
+    )
+
+    archive_hooks = ConversationArchiveHooks()
+    response = await explicit_agent.run(
+        "Tell me a fun fact about Python.",
+        config=RunConfig(hooks=archive_hooks),
+    )
+    print(f"Response: {response.content}")
+
+    conv_files_2 = workspace_2.get_conversation_files(max_files=5)
+    print(f"Archived conversation files: {len(conv_files_2)}")
+    for f in conv_files_2:
+        print(f"  - {Path(f).name}: {Path(f).read_text(encoding='utf-8')[:100]}...")
+
+    # Clean up
+    shutil.rmtree(ws_path.parent, ignore_errors=True)
+    shutil.rmtree(ws_path_2.parent, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -997,7 +997,7 @@ from agentica.model.azure.openai_chat import AzureOpenAIChat
 
 # ── 核心 Agent ──
 from agentica.agent.base import Agent
-from agentica.deep_agent.base import DeepAgent
+# DeepAgent has been removed, use Agent + get_builtin_tools() instead
 from agentica.workflow.workflow import Workflow
 
 # ── 运行配置 & 响应 ──
@@ -1113,7 +1113,7 @@ def __getattr__(name):
 | 5.2 | Agent 去掉 RunnerMixin 继承，改为持有 `_runner: Runner` | 修改 `agent/base.py` |
 | 5.3 | Agent 的 `run()`/`run_stream()` 等委托给 Runner | 修改 `agent/base.py` |
 | 5.4 | 删除 `agent/runner.py`（原 RunnerMixin） | 删除 1 文件 |
-| 5.5 | DeepAgent 适配新 Runner | 修改 `deep_agent/base.py` |
+| 5.5 | DeepAgent 已删除，功能合入 Agent + get_builtin_tools() | 无需修改 |
 
 ### Phase 6: Guardrails 统一抽象
 

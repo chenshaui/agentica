@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import (
     Any,
     Dict,
+    List,
     Optional,
     Type,
     Union,
@@ -30,6 +31,7 @@ class RunConfig:
         >>> response = await agent.run("Analyze data", config=RunConfig(
         ...     run_timeout=30,
         ...     response_model=AnalysisReport,
+        ...     enabled_tools=["web_search", "read_file"],
         ... ))
     """
     response_model: Optional[Type[Any]] = None
@@ -40,3 +42,6 @@ class RunConfig:
     save_response_to_file: Optional[str] = None
     stream_intermediate_steps: bool = False
     hooks: Optional[RunHooks] = None
+    # Query-level whitelist: None = keep agent defaults, list = only these tools/skills
+    enabled_tools: Optional[List[str]] = None
+    enabled_skills: Optional[List[str]] = None

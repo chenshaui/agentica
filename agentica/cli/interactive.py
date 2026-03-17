@@ -69,7 +69,7 @@ def _cmd_skills(skills_registry=None, **kwargs):
             for trigger, skill_name in triggers.items():
                 console.print(f"  {trigger} -> {skill_name}")
     else:
-        console.print("No skills loaded. Use --no-skills=false to enable.", style="yellow")
+        console.print("No skills loaded. Use --enable-skills to enable.", style="yellow")
 
 
 def _cmd_memory(current_agent=None, **kwargs):

@@ -157,8 +157,8 @@ def parse_args():
                         help='Workspace directory path (default: ~/.agentica/workspace)')
     parser.add_argument('--no-workspace', action='store_true',
                         help='Disable workspace context injection')
-    parser.add_argument('--no-skills', action='store_true',
-                        help='Disable skills loading')
+    parser.add_argument('--enable-skills', action='store_true',
+                        help='Enable skills loading (disabled by default)')
     parser.add_argument('command', nargs='?', choices=['acp'],
                         help='Run in ACP mode for IDE integration (agentica acp)')
     return parser.parse_args()
@@ -235,13 +235,14 @@ def create_agent(agent_config: dict, extra_tools: Optional[List] = None,
 
     # Build tools list: built-in tools + extra tools
     from agentica.agent.config import PromptConfig
-    builtin_tools = get_builtin_tools()
+    work_dir = agent_config.get("work_dir")
+    builtin_tools = get_builtin_tools(work_dir=work_dir, workspace=workspace)
     all_tools = builtin_tools + (extra_tools or [])
 
     agent_kwargs = {
         "model": model,
-        "work_dir": agent_config.get("work_dir"),
         "tools": all_tools,
+        "work_dir": work_dir,
         "prompt_config": PromptConfig(add_datetime_to_instructions=True, enable_agentic_prompt=True),
         "add_history_to_messages": True,
         "debug": agent_config["debug"],

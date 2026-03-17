@@ -41,21 +41,6 @@ async def basic_example():
     )
 
 
-async def workdir_example():
-    """Example with work_dir for file operations."""
-    print("\n" + "=" * 60)
-    print("Example: With work_dir")
-    print("=" * 60)
-
-    agent = Agent(
-        model=OpenAIChat(id="gpt-4o"),
-        tools=get_builtin_tools(),
-        work_dir="/path/to/project",
-    )
-
-    print(f"work_dir: {agent.work_dir}")
-
-
 async def selective_tools_example():
     """Example: Select specific built-in tools."""
     print("\n" + "=" * 60)
@@ -131,12 +116,13 @@ async def full_config_example():
     os.makedirs("tmp", exist_ok=True)
     db = SqliteDb(db_file="tmp/agent_sessions.db")
 
+    work_dir = "."
     agent = Agent(
         model=OpenAIChat(id="gpt-4o"),
         name="FullAgent",
         description="Full-featured Agent with built-in tools",
-        work_dir=".",
-        tools=get_builtin_tools(),
+        work_dir=work_dir,
+        tools=get_builtin_tools(work_dir=work_dir),
         add_history_to_messages=True,
         history_window=4,
         tool_config=ToolConfig(tool_call_limit=40),
@@ -175,7 +161,6 @@ async def parallel_subagent_example():
 if __name__ == '__main__':
     # Run basic example
     asyncio.run(basic_example())
-    # asyncio.run(workdir_example())
     # asyncio.run(selective_tools_example())
     # asyncio.run(add_custom_tools_example())
     # asyncio.run(web_research_example())

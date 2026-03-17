@@ -25,12 +25,13 @@ async def code_execution_demo():
     print("Demo 1: Code Execution")
     print("=" * 60)
 
+    work_dir = './tmp/'
     agent = Agent(
         model=OpenAIChat(),
-        work_dir='./tmp/',
+        work_dir=work_dir,
         name="CodeRunner",
         description="A code execution assistant",
-        tools=get_builtin_tools(),
+        tools=get_builtin_tools(work_dir=work_dir),
         debug=True,
     )
 
@@ -83,9 +84,10 @@ async def code_generation_demo():
     print("Demo 3: Code Generation")
     print("=" * 60)
 
+    work_dir = './tmp/'
     agent = Agent(
         model=OpenAIChat(),
-        work_dir='./tmp/',
+        work_dir=work_dir,
         name="CodeGenerator",
         description="A code generation assistant",
         instructions=[
@@ -95,7 +97,7 @@ async def code_generation_demo():
             "IMPORTANT: Use Python syntax correctly - use `None` (not `null`), `True`/`False` (not `true`/`false`).",
             "Before executing code, verify the syntax is correct Python.",
         ],
-        tools=get_builtin_tools(),
+        tools=get_builtin_tools(work_dir=work_dir),
         debug=True,
     )
 

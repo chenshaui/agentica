@@ -135,6 +135,8 @@ class Runner:
         run_timeout: Optional[float] = None,
         first_token_timeout: Optional[float] = None,
         hooks: Optional[RunHooks] = None,
+        enabled_tools: Optional[List[str]] = None,
+        enabled_skills: Optional[List[str]] = None,
         **kwargs: Any,
     ) -> AsyncIterator[RunResponse]:
         """Unified execution engine.
@@ -153,6 +155,10 @@ class Runner:
             agent.stream_intermediate_steps = stream_intermediate_steps and agent.stream
             agent.run_id = str(uuid4())
             agent.run_response = RunResponse(run_id=agent.run_id, agent_id=agent.agent_id)
+
+            # Set query-level tool/skill filtering (cleared after run)
+            agent._enabled_tools = enabled_tools
+            agent._enabled_skills = enabled_skills
 
             # Merge default run hooks (e.g. auto-archive) with user-provided hooks
             effective_hooks = None
@@ -378,6 +384,10 @@ class Runner:
             if not agent.stream:
                 yield agent.run_response
 
+            # Clear query-level tool/skill filtering after run
+            agent._enabled_tools = None
+            agent._enabled_skills = None
+
         trace_input = message if isinstance(message, str) else str(message) if message else None
         trace_name = agent.name or "agent-run"
 
@@ -547,6 +557,8 @@ class Runner:
         first_token_timeout = config.first_token_timeout
         save_response_to_file = config.save_response_to_file
         hooks = config.hooks
+        enabled_tools = config.enabled_tools
+        enabled_skills = config.enabled_skills
 
         if run_timeout is not None:
             return await self._run_with_timeout(
@@ -559,6 +571,8 @@ class Runner:
                 add_messages=add_messages,
                 save_response_to_file=save_response_to_file,
                 hooks=hooks,
+                enabled_tools=enabled_tools,
+                enabled_skills=enabled_skills,
                 **kwargs,
             )
 
@@ -573,6 +587,8 @@ class Runner:
                 add_messages=add_messages,
                 save_response_to_file=save_response_to_file,
                 hooks=hooks,
+                enabled_tools=enabled_tools,
+                enabled_skills=enabled_skills,
                 **kwargs,
             )
 
@@ -587,6 +603,8 @@ class Runner:
             add_messages=add_messages,
             save_response_to_file=save_response_to_file,
             hooks=hooks,
+            enabled_tools=enabled_tools,
+            enabled_skills=enabled_skills,
             **kwargs,
         ):
             final_response = response
@@ -616,6 +634,8 @@ class Runner:
         first_token_timeout = config.first_token_timeout
         save_response_to_file = config.save_response_to_file
         hooks = config.hooks
+        enabled_tools = config.enabled_tools
+        enabled_skills = config.enabled_skills
 
         if self.agent.response_model is not None:
             raise ValueError("Structured output does not support streaming. Use run() instead.")
@@ -631,6 +651,8 @@ class Runner:
             stream_intermediate_steps=stream_intermediate_steps,
             save_response_to_file=save_response_to_file,
             hooks=hooks,
+            enabled_tools=enabled_tools,
+            enabled_skills=enabled_skills,
             **kwargs,
         )
         if run_timeout is not None or first_token_timeout is not None:

@@ -96,6 +96,28 @@ class TeamConfig:
 
 
 @dataclass
+class ToolRuntimeConfig:
+    """Runtime configuration for a single tool.
+
+    Controls whether a tool is enabled at Agent level.
+    Query-level override via run(enabled_tools=[...]).
+    """
+    name: str
+    enabled: bool = True
+
+
+@dataclass
+class SkillRuntimeConfig:
+    """Runtime configuration for a single skill.
+
+    Controls whether a skill is enabled at Agent level.
+    Query-level override via run(enabled_skills=[...]).
+    """
+    name: str
+    enabled: bool = True
+
+
+@dataclass
 class SandboxConfig:
     """Sandbox execution isolation configuration (best-effort).
 
@@ -108,7 +130,6 @@ class SandboxConfig:
     Attributes:
         enabled: Whether sandbox restrictions are active
         writable_dirs: List of directory paths the agent is allowed to write to.
-            If empty, defaults to work_dir only.
         blocked_paths: Path components that are always blocked for read/write.
             Access to any path containing these path components is denied.
             Uses path component matching (not substring) to avoid false positives.

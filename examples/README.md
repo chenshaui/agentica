@@ -166,17 +166,16 @@ Model Context Protocol 集成。
 | 03 | [custom_skill.py](skills/03_custom_skill.py) | 自定义技能 |
 | 04 | [skills_with_agent.py](skills/04_skills_with_agent.py) | 技能与 Agent 集成 |
 
-### 12. Agent with Built-in Tools (`deep_agent/`)
+### 12. 内置工具场景 (`builtin_tools/`)
 
-Agent + get_builtin_tools()，支持代码执行、文件操作、网页搜索、子任务委派。
+Agent + `get_builtin_tools()` 的场景化示例，展示内置工具的实际使用。
 
 | # | 示例 | 描述 | 关键概念 |
 |---|------|------|----------|
-| 01 | [basic.py](deep_agent/01_basic.py) | 基础用法 | `Agent + get_builtin_tools()`, 内置工具 |
-| 02 | [file_operations.py](deep_agent/02_file_operations.py) | 文件操作 | `BuiltinFileTool` |
-| 03 | [code_execute_demo.py](deep_agent/03_code_execute_demo.py) | 代码执行 | `BuiltinExecuteTool` |
-| 04 | [web_search_demo.py](deep_agent/04_web_search_demo.py) | 网页搜索 | `BuiltinWebSearchTool` |
-| 05 | [subagent_demo.py](deep_agent/05_subagent_demo.py) | 子 Agent 委派 | `BuiltinTaskTool`, subagent |
+| 01 | [basic.py](builtin_tools/01_basic.py) | 基础用法 | `Agent + get_builtin_tools()`, 内置工具 |
+| 02 | [file_operations.py](builtin_tools/02_file_operations.py) | 文件操作 | `ls`, `read_file`, `write_file`, `edit_file` |
+| 03 | [code_execute_demo.py](builtin_tools/03_code_execute_demo.py) | 代码执行 | `execute` 工具 |
+| 04 | [web_search_demo.py](builtin_tools/04_web_search_demo.py) | 网页搜索 | `web_search`, `fetch_url` |
 
 ### 13. 可观测性 (`observability/`)
 
@@ -294,7 +293,7 @@ for chunk in agent.run_stream_sync("Hello"):
 
 1. `agent_patterns/03_team_collaboration.py` — 多 Agent 团队协作
 2. `workflow/01_data_pipeline.py` — 工作流编排
-3. `deep_agent/05_subagent_demo.py` — 子 Agent 委派
+3. `agent_patterns/10_subagent_demo.py` — 子 Agent 委派
 4. `mcp/01_stdio.py` — MCP 协议集成
 5. `applications/llm_os/main.py` — 完整应用
 

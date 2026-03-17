@@ -28,6 +28,7 @@ from typing import (
     Union,
 )
 from uuid import uuid4
+from pathlib import Path
 from dataclasses import dataclass, field
 from agentica.utils.log import logger, set_log_level_to_debug, set_log_level_to_info
 from agentica.model.openai import OpenAIChat
@@ -37,7 +38,10 @@ from agentica.model.base import Model
 from agentica.run_response import RunResponse, AgentCancelledError
 from agentica.run_config import RunConfig
 from agentica.memory import WorkingMemory
-from agentica.agent.config import PromptConfig, ToolConfig, WorkspaceMemoryConfig, TeamConfig, SandboxConfig
+from agentica.agent.config import (
+    PromptConfig, ToolConfig, WorkspaceMemoryConfig, TeamConfig, SandboxConfig,
+    ToolRuntimeConfig, SkillRuntimeConfig,
+)
 from agentica.hooks import AgentHooks, RunHooks, ConversationArchiveHooks
 from agentica.runner import Runner
 
@@ -91,6 +95,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
     knowledge: Optional[Any] = None  # Knowledge type
     team: Optional[List["Agent"]] = None
     workspace: Optional[Any] = None  # Workspace type
+    work_dir: Optional[str] = None  # Working directory for file operations (used by builtin tools)
     response_model: Optional[Type[Any]] = None
 
     # ============================
@@ -130,6 +135,14 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
     # Default run hooks (auto-injected, e.g. ConversationArchiveHooks when auto_archive=True)
     _default_run_hooks: Optional[RunHooks] = field(default=None, init=False, repr=False)
 
+    # Tool/Skill runtime configs (Agent-level enable/disable)
+    _tool_runtime_configs: Dict[str, ToolRuntimeConfig] = field(default_factory=dict, init=False, repr=False)
+    _skill_runtime_configs: Dict[str, SkillRuntimeConfig] = field(default_factory=dict, init=False, repr=False)
+
+    # Query-level enabled_tools/enabled_skills (set per-run, cleared after run)
+    _enabled_tools: Optional[List[str]] = field(default=None, init=False, repr=False)
+    _enabled_skills: Optional[List[str]] = field(default=None, init=False, repr=False)
+
     # Context for tools and prompt functions (runtime input)
     context: Optional[Dict[str, Any]] = None
 
@@ -146,6 +159,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
             knowledge: Optional[Any] = None,
             team: Optional[List["Agent"]] = None,
             workspace: Optional[Union[Any, str]] = None,  # Workspace or str path
+            work_dir: Optional[str] = None,  # Working directory for file operations
             response_model: Optional[Type[Any]] = None,
             # ---- Common config ----
             add_history_to_messages: bool = False,
@@ -174,6 +188,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         self.knowledge = knowledge
         self.team = team
         self.response_model = response_model
+        self.work_dir = work_dir
 
         # Handle workspace: str → Workspace(path=str)
         if isinstance(workspace, str):
@@ -208,6 +223,10 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         self._cancelled = False
         self._run_hooks = None
         self._default_run_hooks = None
+        self._tool_runtime_configs: Dict[str, ToolRuntimeConfig] = {}
+        self._skill_runtime_configs: Dict[str, SkillRuntimeConfig] = {}
+        self._enabled_tools = None
+        self._enabled_skills = None
 
         # Create Runner instance
         self._runner = Runner(self)
@@ -229,6 +248,9 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
 
         # Merge tool system prompts into instructions
         self._merge_tool_system_prompts()
+
+        # Load runtime config from workspace YAML
+        self._load_runtime_config()
 
         # Initialize compression manager
         if self.tool_config.compress_tool_results and self.tool_config.compression_manager is None:
@@ -337,6 +359,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
                 if not prompt:
                     continue
                 if isinstance(tool, SkillTool):
+                    tool._agent = self
                     skill_prompts.append(prompt)
                 else:
                     tool_prompts.append(prompt)
@@ -422,6 +445,119 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
             return
         logger.debug(f"Added instruction to agent: {instruction[:50]}...")
 
+    # =========================================================================
+    # Tool/Skill runtime control
+    # =========================================================================
+
+    def enable_tool(self, name: str) -> None:
+        """Enable a tool by name (function name or tool class name)."""
+        self._tool_runtime_configs[name] = ToolRuntimeConfig(name=name, enabled=True)
+
+    def disable_tool(self, name: str) -> None:
+        """Disable a tool by name (function name or tool class name)."""
+        self._tool_runtime_configs[name] = ToolRuntimeConfig(name=name, enabled=False)
+
+    def enable_skill(self, name: str) -> None:
+        """Enable a skill by name."""
+        self._skill_runtime_configs[name] = SkillRuntimeConfig(name=name, enabled=True)
+
+    def disable_skill(self, name: str) -> None:
+        """Disable a skill by name."""
+        self._skill_runtime_configs[name] = SkillRuntimeConfig(name=name, enabled=False)
+
+    def _is_tool_enabled(self, func_name: str) -> bool:
+        """Check if a tool function is enabled.
+
+        Priority: query-level (enabled_tools) > agent-level (runtime_configs) > default (True).
+        """
+        # Query-level whitelist: if set, only listed tools are allowed
+        if self._enabled_tools is not None:
+            return func_name in self._enabled_tools
+        # Agent-level config
+        cfg = self._tool_runtime_configs.get(func_name)
+        if cfg is not None:
+            return cfg.enabled
+        return True
+
+    def _is_skill_enabled(self, skill_name: str) -> bool:
+        """Check if a skill is enabled.
+
+        Priority: query-level (enabled_skills) > agent-level (runtime_configs) > default (True).
+        """
+        if self._enabled_skills is not None:
+            return skill_name in self._enabled_skills
+        cfg = self._skill_runtime_configs.get(skill_name)
+        if cfg is not None:
+            return cfg.enabled
+        return True
+
+    def _load_runtime_config(self) -> None:
+        """Load tool/skill runtime configs from workspace YAML.
+
+        Searches for `.agentica/runtime_config.yaml` in:
+        1. workspace path (if workspace is set)
+        2. current working directory
+
+        YAML format:
+            tools:
+              execute:
+                enabled: false
+              write_file:
+                enabled: true
+            skills:
+              iwiki-doc:
+                enabled: false
+        """
+        import os
+        config_name = ".agentica/runtime_config.yaml"
+        config_path = None
+
+        # Try workspace path first
+        if self.workspace is not None:
+            candidate = self.workspace.path / config_name
+            if candidate.exists():
+                config_path = candidate
+
+        # Fallback: current working directory
+        if config_path is None:
+            candidate = Path(os.getcwd()) / config_name
+            if candidate.exists():
+                config_path = candidate
+
+        if config_path is None:
+            return
+
+        try:
+            import yaml
+        except ImportError:
+            logger.debug("PyYAML not installed, skipping runtime config loading")
+            return
+
+        try:
+            data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return
+
+            # Load tool configs
+            tools_data = data.get("tools")
+            if isinstance(tools_data, dict):
+                for name, cfg in tools_data.items():
+                    if isinstance(cfg, dict):
+                        enabled = cfg.get("enabled", True)
+                        self._tool_runtime_configs[name] = ToolRuntimeConfig(name=name, enabled=enabled)
+
+            # Load skill configs
+            skills_data = data.get("skills")
+            if isinstance(skills_data, dict):
+                for name, cfg in skills_data.items():
+                    if isinstance(cfg, dict):
+                        enabled = cfg.get("enabled", True)
+                        self._skill_runtime_configs[name] = SkillRuntimeConfig(name=name, enabled=enabled)
+
+            logger.debug(f"Loaded runtime config from {config_path}")
+        except Exception as e:
+            logger.warning(f"Failed to load runtime config from {config_path}: {e}")
+
     def has_team(self) -> bool:
         return self.team is not None and len(self.team) > 0
 
@@ -475,7 +611,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
             else:
                 self.model.response_format = {"type": "json_object"}
 
-        # Add tools to the Model
+        # Add tools to the Model (with runtime filtering)
         agent_tools = self.get_tools()
         if agent_tools is not None and self.tool_config.support_tool_calls:
             for tool in agent_tools:
@@ -488,6 +624,9 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
                 else:
                     self.model.add_tool(tool=tool, agent=self)
 
+            # Filter out disabled functions from model after add_tool
+            self._filter_model_functions()
+
         # Set tool_choice
         if self.model.tool_choice is None and self.tool_config.tool_choice is not None:
             self.model.tool_choice = self.tool_config.tool_choice
@@ -499,6 +638,40 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         # Add agent name to the Model for Langfuse tracing
         if self.name is not None:
             self.model.agent_name = self.name
+
+    def _filter_model_functions(self) -> None:
+        """Filter disabled functions from the model.
+
+        Removes functions that are disabled via agent-level config or query-level whitelist.
+        This is called after update_model() adds all tools, so we filter at the function level.
+        """
+        if self.model is None or self.model.functions is None:
+            return
+
+        # If no filtering configured, skip
+        if self._enabled_tools is None and not self._tool_runtime_configs:
+            return
+
+        disabled_funcs = []
+        for func_name in list(self.model.functions.keys()):
+            if not self._is_tool_enabled(func_name):
+                disabled_funcs.append(func_name)
+
+        if not disabled_funcs:
+            return
+
+        for func_name in disabled_funcs:
+            del self.model.functions[func_name]
+
+        # Rebuild model.tools list to match remaining functions
+        if self.model.tools is not None:
+            self.model.tools = [
+                t for t in self.model.tools
+                if not (isinstance(t, dict) and t.get("type") == "function"
+                        and t.get("function", {}).get("name") in disabled_funcs)
+            ]
+
+        logger.debug(f"Filtered {len(disabled_funcs)} disabled tools: {disabled_funcs}")
 
     # =========================================================================
     # Run API — delegates to self._runner (public API unchanged)
