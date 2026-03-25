@@ -644,6 +644,131 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         if self.name is not None:
             self.model.agent_name = self.name
 
+        # Inject Model-layer hooks based on ToolConfig settings.
+        # These hooks fire inside Model.run_function_calls() around each tool batch.
+        self.model._pre_tool_hook = self._build_pre_tool_hook()
+        self.model._post_tool_hook = None  # reserved for future use
+
+    def _build_pre_tool_hook(self):
+        """Build the pre-tool hook function based on ToolConfig settings.
+
+        Returns an async callable (messages, function_calls) -> bool, or None if no
+        hooks are active.  Returning True tells run_function_calls to skip the batch.
+
+        Capabilities bundled in the hook (both are opt-in via ToolConfig):
+
+        1. Context overflow handling
+           Triggered when: tool_config.context_overflow_threshold > 0 and
+           estimated token usage / context_window >= threshold.
+           Action: FIFO-evict oldest non-system messages until usage drops below
+           a hard limit (threshold + 5pp), then log a warning.
+           This is a best-effort heuristic — accurate token counting requires the
+           tokenizer; here we estimate ~4 chars/token for speed.
+
+        2. Repetition detection
+           Triggered when: tool_config.max_repeated_tool_calls > 0 and the last
+           N calls in function_call_stack all have the same (tool_name, args) pair.
+           Action: inject a role="user" message telling the model it's looping and
+           must change strategy, then return True (skip the current batch) so the
+           model can reconsider on the next LLM call.
+
+        Returning None means no hook is registered (fast path, no overhead).
+        """
+        overflow_threshold = self.tool_config.context_overflow_threshold
+        max_repeat = self.tool_config.max_repeated_tool_calls
+
+        # Fast path: neither feature is enabled
+        if overflow_threshold <= 0.0 and max_repeat <= 0:
+            return None
+
+        agent_ref = self  # captured in closure
+
+        async def _pre_tool_hook(messages: list, function_calls: list) -> bool:
+            model = agent_ref.model
+            if model is None:
+                return False
+
+            # ---- 1. Context overflow handling ----
+            if overflow_threshold > 0.0:
+                context_window = getattr(model, 'context_window', 128000) or 128000
+                # Estimate tokens: sum of all message content lengths / 4 (chars-per-token heuristic)
+                total_chars = sum(
+                    len(str(m.content)) if m.content else 0
+                    for m in messages
+                )
+                estimated_tokens = total_chars / 4.0
+                usage_ratio = estimated_tokens / context_window
+
+                if usage_ratio >= overflow_threshold:
+                    # Evict oldest non-system messages until we drop below threshold + 5pp hard limit
+                    hard_limit = min(overflow_threshold + 0.05, 0.95)
+                    evicted = 0
+                    while usage_ratio >= hard_limit and len(messages) > 2:
+                        # Find first non-system message
+                        for idx, m in enumerate(messages):
+                            if m.role != "system":
+                                messages.pop(idx)
+                                evicted += 1
+                                break
+                        else:
+                            break  # Only system messages left
+                        total_chars = sum(
+                            len(str(m.content)) if m.content else 0
+                            for m in messages
+                        )
+                        usage_ratio = (total_chars / 4.0) / context_window
+
+                    logger.warning(
+                        f"Agent '{agent_ref.identifier}': context overflow detected "
+                        f"(estimated {usage_ratio:.0%} of {context_window} tokens). "
+                        f"Evicted {evicted} old messages. "
+                        "Set tool_config=ToolConfig(context_overflow_threshold=0.0) to disable."
+                    )
+
+            # ---- 2. Repetition detection ----
+            if max_repeat > 0 and model.function_call_stack is not None:
+                stack = model.function_call_stack
+                if len(stack) >= max_repeat:
+                    # Check if last N calls are all identical (same name + same args)
+                    last_n = stack[-max_repeat:]
+                    first = last_n[0]
+                    first_key = (
+                        first.function.name,
+                        str(sorted(first.arguments.items())) if first.arguments else "",
+                    )
+                    all_same = all(
+                        (
+                            fc.function.name,
+                            str(sorted(fc.arguments.items())) if fc.arguments else "",
+                        ) == first_key
+                        for fc in last_n
+                    )
+                    if all_same:
+                        tool_name = first.function.name
+                        logger.warning(
+                            f"Agent '{agent_ref.identifier}': repetition detected — "
+                            f"tool '{tool_name}' called with identical args {max_repeat}x in a row. "
+                            "Injecting strategy-change message."
+                        )
+                        # Inject a user message to break the loop
+                        from agentica.model.message import Message as _Msg
+                        messages.append(_Msg(
+                            role="user",
+                            content=(
+                                f"[System notice] You have called '{tool_name}' {max_repeat} times "
+                                f"in a row with identical arguments and it has not resolved the problem. "
+                                "Stop repeating this call. Try a fundamentally different approach: "
+                                "use a different tool, decompose the problem differently, or "
+                                "report what you know so far and ask for clarification."
+                            ),
+                        ))
+                        # Skip the current tool batch — let the model reconsider
+                        return True
+
+            return False  # proceed with tool execution
+
+        return _pre_tool_hook
+
     def _filter_model_functions(self) -> None:
         """Filter disabled functions from the model.
 

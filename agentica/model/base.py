@@ -74,6 +74,15 @@ class Model(ABC):
     _current_messages: Optional[List[Message]] = field(init=False, repr=False, default=None)
     _agent_ref: Optional[weakref.ref] = field(init=False, repr=False, default=None)
 
+    # Model-layer lifecycle hooks (injected by Agent.update_model()).
+    # _pre_tool_hook:  called before each batch of tool calls with (messages, function_calls).
+    #                  May mutate messages (e.g. truncate context, inject reflection).
+    #                  Returns True to proceed, False to skip the tool batch.
+    # _post_tool_hook: called after tool results are appended to messages.
+    #                  May mutate messages (e.g. inject a reflection prompt).
+    _pre_tool_hook: Optional[Callable] = field(init=False, repr=False, default=None)
+    _post_tool_hook: Optional[Callable] = field(init=False, repr=False, default=None)
+
     def __post_init__(self):
         # Auto-set provider if not provided
         if self.provider is None:
@@ -295,12 +304,22 @@ class Model(ABC):
     ) -> AsyncIterator[ModelResponse]:
         """Execute tool calls with parallel execution, sequential result reporting.
 
+        Phase 0: _pre_tool_hook (context overflow check, repetition detection, injection)
         Phase 1: Emit all tool_call_started events (in order)
         Phase 2: Execute all tools in parallel via TaskGroup (with concurrency limit)
         Phase 3: Process results sequentially (preserving message order)
+        Phase 4: _post_tool_hook (optional reflection injection)
         """
         if self.function_call_stack is None:
             self.function_call_stack = []
+
+        # Phase 0: pre-tool hook (context overflow + repetition detection)
+        if self._pre_tool_hook is not None:
+            messages = self._current_messages or []
+            skip = await self._pre_tool_hook(messages, function_calls)
+            if skip:
+                # Hook requested to skip this tool batch (e.g. injected a strategy-change message)
+                return
 
         # Phase 1: Emit started events for all function calls
         _agent = self._agent_ref() if self._agent_ref is not None else None
@@ -463,6 +482,11 @@ class Model(ABC):
         # message gets a corresponding tool result message (required by OpenAI API).
         if self.tool_call_limit and len(self.function_call_stack) >= self.tool_call_limit:
             self.deactivate_function_calls()
+
+        # Phase 4: post-tool hook (optional reflection / summary injection)
+        if self._post_tool_hook is not None:
+            messages = self._current_messages or []
+            await self._post_tool_hook(messages, function_call_results)
 
     async def _maybe_compress_messages(self, messages: List[Message]) -> None:
         """Check and run compression on messages if a CompressionManager is configured on the Agent."""
