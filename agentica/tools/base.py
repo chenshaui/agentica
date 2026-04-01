@@ -105,6 +105,11 @@ class Function(BaseModel):
     # Hook that runs after the function is executed, regardless of success/failure.
     # If defined, can accept the FunctionCall instance as a parameter.
     post_hook: Optional[Callable] = None
+    # If True, this tool may execute concurrently with other concurrency_safe tools.
+    # Read-only tools (read_file, glob, grep, web_search, fetch_url …) should be True.
+    # Write/shell tools (execute, write_file, edit_file …) must remain False (default).
+    # Mirrors CC's StreamingToolExecutor.isConcurrencySafe flag.
+    concurrency_safe: bool = False
 
     # --*-- FOR INTERNAL USE ONLY --*--
     # Weak reference to the agent that the function is associated with.
@@ -189,6 +194,7 @@ class Function(BaseModel):
                 show_result=metadata.get("show_result", False),
                 sanitize_arguments=metadata.get("sanitize_arguments", True),
                 stop_after_tool_call=metadata.get("stop_after_tool_call", False),
+                concurrency_safe=metadata.get("concurrency_safe", False),
             )
 
         return cls(
@@ -532,12 +538,16 @@ class Tool:
         self.description = description
         self.functions: Dict[str, Function] = OrderedDict()
 
-    def register(self, function: Callable[..., Any], sanitize_arguments: bool = True):
+    def register(self, function: Callable[..., Any], sanitize_arguments: bool = True,
+                 concurrency_safe: bool = False):
         """Register a function with the toolkit.
 
         Args:
-            function: The callable to register
-            sanitize_arguments: If True, the arguments will be sanitized before being passed to the function.
+            function:          The callable to register.
+            sanitize_arguments: If True, the arguments will be sanitized before
+                                being passed to the function.
+            concurrency_safe:  If True the function may run concurrently with other
+                               concurrency_safe tools (e.g. read_file, glob).
 
         Returns:
             The registered function
@@ -548,6 +558,7 @@ class Tool:
                 description=function.__doc__ or self.description,
                 entrypoint=function,
                 sanitize_arguments=sanitize_arguments,
+                concurrency_safe=concurrency_safe,
             )
             self.functions[f.name] = f
             # logger.debug(f"Function: {f.name} registered with {self.name}")

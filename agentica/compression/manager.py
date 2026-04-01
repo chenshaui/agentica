@@ -119,6 +119,18 @@ class CompressionManager:
 
     stats: Dict[str, Any] = field(default_factory=dict)
 
+    # ------------------------------------------------------------------
+    # Auto-compact state (Layer 2 — mirrors CC's circuit-breaker)
+    # ------------------------------------------------------------------
+    # Number of consecutive auto_compact failures this session.
+    # Resets to 0 on success.  When it reaches _max_auto_compact_failures
+    # we stop retrying (CC's MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3).
+    _consecutive_auto_compact_failures: int = field(init=False, default=0)
+    _max_auto_compact_failures: int = field(init=False, default=3)
+    # Buffer tokens reserved for the compaction summary output.
+    # CC uses AUTOCOMPACT_BUFFER_TOKENS = 13_000.
+    _auto_compact_buffer_tokens: int = field(init=False, default=13_000)
+
     def __post_init__(self):
         if self.compress_tool_results_limit is None and self.compress_token_limit is None:
             self.compress_tool_results_limit = 3
@@ -469,6 +481,147 @@ class CompressionManager:
         except Exception as e:
             logger.warning(f"Error counting tokens in limit check: {e}")
             return False
+
+    # -------------------------------------------------------------------------
+    # Layer 2: auto_compact — LLM-summarise when context approaches the limit
+    # -------------------------------------------------------------------------
+
+    def _should_auto_compact(self, messages: List["Message"], model: Optional[Any] = None) -> bool:
+        """Return True when token count is within _auto_compact_buffer_tokens of the context window."""
+        context_window = getattr(model, 'context_window', None)
+        if context_window is None:
+            return False
+        threshold = context_window - self._auto_compact_buffer_tokens
+        try:
+            from agentica.utils.tokens import count_tokens
+            model_id = getattr(model, 'id', 'gpt-4o') if model else 'gpt-4o'
+            tokens = count_tokens(messages, None, model_id, None)
+            over = tokens >= threshold
+            if over:
+                logger.debug(
+                    f"Auto-compact threshold hit: {tokens:,} tokens "
+                    f">= {threshold:,} (window={context_window:,})"
+                )
+            return over
+        except Exception as _e:
+            logger.debug(f"Token count error in _should_auto_compact: {_e}")
+            return False
+
+    def _save_transcript(self, messages: List["Message"]) -> None:
+        """Persist current conversation to .transcripts/ before compaction."""
+        import json as _json
+        import time as _time
+        from pathlib import Path as _Path
+        _dir = _Path(".transcripts")
+        _dir.mkdir(exist_ok=True)
+        _path = _dir / f"transcript_{int(_time.time())}.jsonl"
+        try:
+            with open(_path, "w", encoding="utf-8") as _fh:
+                for _m in messages:
+                    _fh.write(_json.dumps(
+                        {"role": _m.role, "content": str(_m.content or "")},
+                        ensure_ascii=False,
+                    ) + "\n")
+            logger.debug(f"Transcript saved: {_path}")
+        except Exception as _e:
+            logger.warning(f"Failed to save transcript: {_e}")
+
+    async def _summarise_conversation(
+        self,
+        messages: List["Message"],
+        model: Optional[Any] = None,
+    ) -> Optional[str]:
+        """Use an LLM to summarise the conversation for continuity."""
+        import json as _json
+        _model = model or self.model
+        if _model is None:
+            return None
+        try:
+            from agentica.model.message import Message as _Msg
+            _text = _json.dumps(
+                [{"role": m.role, "content": str(m.content or "")[:2000]} for m in messages],
+                ensure_ascii=False,
+            )[:80_000]
+            _resp = await _model.invoke([
+                _Msg(
+                    role="user",
+                    content=(
+                        "Summarise this agent conversation for continuity.\n"
+                        "Include: main task, key findings, completed steps, "
+                        "pending work, and any important facts discovered.\n\n"
+                        + _text
+                    ),
+                )
+            ])
+            # Extract text from common response shapes
+            if hasattr(_resp, "choices"):
+                return _resp.choices[0].message.content
+            if hasattr(_resp, "content"):
+                return _resp.content
+            return str(_resp)
+        except Exception as _e:
+            logger.error(f"LLM summarisation failed: {_e}")
+            return None
+
+    async def auto_compact(
+        self,
+        messages: List["Message"],
+        model: Optional[Any] = None,
+        force: bool = False,
+    ) -> bool:
+        """Layer 2 compaction: LLM-summarise when context is near the limit.
+
+        Mirrors CC's autoCompactIfNeeded():
+        - Circuit breaker: stops after _max_auto_compact_failures consecutive
+          failures to avoid wasting API calls.
+        - Saves a transcript to .transcripts/ before replacing messages.
+        - Replaces all messages with a two-message [compressed] context.
+
+        Args:
+            messages: Current message list (mutated in-place on success).
+            model:    The active LLM instance (used for token counting + summary).
+            force:    If True, bypass threshold check (reactive compact path).
+
+        Returns:
+            True if compaction occurred, False otherwise.
+        """
+        # Circuit breaker
+        if self._consecutive_auto_compact_failures >= self._max_auto_compact_failures:
+            logger.debug(
+                f"Auto-compact circuit breaker: "
+                f"{self._consecutive_auto_compact_failures} consecutive failures, skipping"
+            )
+            return False
+
+        if not force and not self._should_auto_compact(messages, model):
+            return False
+
+        logger.info("Auto-compact triggered: summarising conversation …")
+
+        # Save transcript before mutating
+        self._save_transcript(messages)
+
+        summary = await self._summarise_conversation(messages, model)
+        if not summary:
+            self._consecutive_auto_compact_failures += 1
+            logger.warning(
+                f"Auto-compact: summarisation failed "
+                f"({self._consecutive_auto_compact_failures}/{self._max_auto_compact_failures})"
+            )
+            return False
+
+        # Replace message list in-place
+        messages.clear()
+        from agentica.model.message import Message as _Msg
+        messages.append(_Msg(role="user",
+                             content=f"[Context compressed]\n\n{summary}"))
+        messages.append(_Msg(role="assistant",
+                             content="Understood. I have the conversation context. Continuing."))
+
+        self._consecutive_auto_compact_failures = 0
+        self.stats["auto_compact_count"] = self.stats.get("auto_compact_count", 0) + 1
+        logger.info(f"Auto-compact complete — messages reduced to {len(messages)}")
+        return True
 
     # -------------------------------------------------------------------------
     # Stats

@@ -190,6 +190,11 @@ class Runner:
             agent.run_id = str(uuid4())
             agent.run_response = RunResponse(run_id=agent.run_id, agent_id=agent.agent_id)
 
+            # --- Initialise CostTracker for this run ---
+            from agentica.cost_tracker import CostTracker as _CostTracker
+            _cost_tracker = _CostTracker()
+            agent.run_response.cost_tracker = _cost_tracker
+
             # Set query-level tool/skill filtering (cleared after run)
             agent._enabled_tools = enabled_tools
             agent._enabled_skills = enabled_skills
@@ -211,6 +216,18 @@ class Runner:
             agent.run_response.model = agent.model.id if agent.model is not None else None
             if agent.context is not None:
                 agent._resolve_context()
+
+            # v3: Initialise a fresh CostTracker for this run and attach it to the model.
+            # The tracker accumulates USD cost across all LLM invoke() calls via
+            # Model.update_usage_metrics() / update_stream_metrics().
+            # At run-end, the populated tracker is written to RunResponse.cost_tracker.
+            if agent.model is not None:
+                from agentica.cost_tracker import CostTracker as _CostTracker
+                agent.model._cost_tracker = _CostTracker()
+                # Reset per-run loop state counters on the model
+                agent.model._loop_turn_count = 0
+                agent.model._max_tokens_recovery_count = 0
+                agent.model._reactive_compact_done = False
 
             # Add introduction if provided
             if agent.prompt_config.introduction is not None:
@@ -358,6 +375,26 @@ class Runner:
             agent.run_response.messages = run_messages
             agent.run_response.metrics = self._aggregate_metrics_from_run_messages(run_messages)
             agent.run_response.usage = agent.model.usage if agent.model else None
+
+            # --- Record cost from the last request's token usage ---
+            if agent.model and agent.model.usage and agent.model.usage.request_usage_entries:
+                _last = agent.model.usage.request_usage_entries[-1]
+                _cache_read = 0
+                _cache_write = 0
+                if _last.input_tokens_details:
+                    _cache_read = getattr(_last.input_tokens_details, 'cached_tokens', 0)
+                agent.run_response.cost_tracker.record(
+                    model_id=agent.model.id,
+                    input_tokens=_last.input_tokens,
+                    output_tokens=_last.output_tokens,
+                    cache_read_tokens=_cache_read,
+                    cache_write_tokens=_cache_write,
+                )
+
+            # v3: attach CostTracker to RunResponse
+            if agent.model is not None and agent.model._cost_tracker is not None:
+                agent.run_response.cost_tracker = agent.model._cost_tracker
+
             if agent.stream:
                 agent.run_response.content = model_response.content
                 if model_response.reasoning_content:

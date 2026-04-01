@@ -7,7 +7,7 @@ import inspect
 import json
 from time import time
 from enum import Enum
-from typing import Optional, Any, Dict, List, Union, Iterable, Coroutine
+from typing import Optional, Any, Dict, List, Union, Iterable, Coroutine, TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -16,7 +16,10 @@ from agentica.model.usage import Usage
 from agentica.utils.log import logger
 from agentica.utils.timer import Timer
 from agentica.model.message import Message, MessageReferences
+from agentica.cost_tracker import CostTracker
 
+if TYPE_CHECKING:
+    pass
 
 class RunEvent(str, Enum):
     """Events that can be sent by the run() functions"""
@@ -103,8 +106,42 @@ class RunResponse(BaseModel):
     reasoning_content: Optional[str] = None
     extra_data: Optional[RunResponseExtraData] = None
     created_at: int = Field(default_factory=lambda: int(time()))
+    # Cost tracking — populated by Runner after each model.response() call.
+    # Excluded from serialisation (avoid heavy / circular dumps).
+    cost_tracker: Optional["CostTracker"] = Field(default=None, exclude=True)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    # ------------------------------------------------------------------
+    # Cost convenience properties (Optimization 6)
+    # ------------------------------------------------------------------
+
+    @property
+    def cost_summary(self) -> str:
+        """Human-readable cost summary for this run.
+
+        Example::
+
+            response = agent.run("...")
+            print(response.cost_summary)
+            # Total cost:   $0.0031
+            # Total tokens: 1,234 input + 456 output
+            # API calls:    3
+            # Usage by model:
+            #   gpt-4o: 1,234 in, 456 out ($0.0031)
+        """
+        if self.cost_tracker is None:
+            return "No cost data available (cost_tracker not set)"
+        return self.cost_tracker.summary()
+
+    @property
+    def total_cost_usd(self) -> float:
+        """Total USD cost accumulated during this run."""
+        if self.cost_tracker is None:
+            return 0.0
+        return self.cost_tracker.total_cost_usd
+
+
 
     def to_json(self) -> str:
         _dict = self.model_dump(
@@ -149,6 +186,13 @@ class RunResponse(BaseModel):
     def __repr__(self) -> str:
         """Return detailed representation for debugging."""
         return f"RunResponse(run_id={self.run_id!r}, event={self.event!r}, reasoning_content={self.reasoning_content!r}, content={self.content!r})"
+
+    @property
+    def cost_summary(self) -> Optional[str]:
+        """Human-readable cost summary string, or None if no tracker available."""
+        if self.cost_tracker is None:
+            return None
+        return self.cost_tracker.summary()
 
     @property
     def tool_calls(self) -> List["ToolCallInfo"]:

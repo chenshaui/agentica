@@ -25,8 +25,6 @@ python3 run.py --agent-type react --search-server http://29.245.16.49:443 --max-
 
 """
 
-from __future__ import annotations
-
 import argparse
 import asyncio
 import base64

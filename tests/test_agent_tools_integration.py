@@ -173,10 +173,14 @@ class TestParallelToolExecution:
     async def test_parallel_tools_faster_than_serial(self):
         """Three 0.1s tools should complete in ≈0.1s, not 0.3s."""
         model = self._make_model()
+        # Mark all three as concurrency_safe so they run in parallel
+        fa = Function.from_callable(async_slow_a); fa.concurrency_safe = True
+        fb = Function.from_callable(async_slow_b); fb.concurrency_safe = True
+        fc_fn = Function.from_callable(async_slow_c); fc_fn.concurrency_safe = True
         fcs = [
-            FunctionCall(function=Function.from_callable(async_slow_a), arguments={"x": 1}, call_id="ca"),
-            FunctionCall(function=Function.from_callable(async_slow_b), arguments={"x": 2}, call_id="cb"),
-            FunctionCall(function=Function.from_callable(async_slow_c), arguments={"x": 3}, call_id="cc"),
+            FunctionCall(function=fa, arguments={"x": 1}, call_id="ca"),
+            FunctionCall(function=fb, arguments={"x": 2}, call_id="cb"),
+            FunctionCall(function=fc_fn, arguments={"x": 3}, call_id="cc"),
         ]
         results = []
         start = time.monotonic()

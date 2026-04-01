@@ -22,6 +22,7 @@ def tool(
     show_result: bool = False,
     sanitize_arguments: bool = True,
     stop_after_tool_call: bool = False,
+    concurrency_safe: bool = False,
 ):
     """Decorator: attach tool metadata to a function for Agent auto-detection.
 
@@ -34,6 +35,9 @@ def tool(
         show_result: Whether to show tool result to the user.
         sanitize_arguments: Whether to sanitize tool arguments.
         stop_after_tool_call: Whether to stop agent execution after this tool call.
+        concurrency_safe: If True the tool may run in parallel with other
+            concurrency_safe tools (e.g. read_file, glob, grep).
+            Write/shell tools should keep this False (default).
 
     Returns:
         Decorated function with _tool_metadata attribute.
@@ -45,6 +49,7 @@ def tool(
             "show_result": show_result,
             "sanitize_arguments": sanitize_arguments,
             "stop_after_tool_call": stop_after_tool_call,
+            "concurrency_safe": concurrency_safe,
         }
 
         @wraps(func)

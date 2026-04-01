@@ -71,13 +71,15 @@ class BuiltinFileTool(Tool):
         self._sandbox_config = sandbox_config
 
         # Register all file operation functions
-        self.register(self.ls)
-        self.register(self.read_file)
+        # Read-only tools are concurrency_safe (can run in parallel with each other).
+        # Write tools (write_file, edit_file, multi_edit_file) stay serialised.
+        self.register(self.ls, concurrency_safe=True)
+        self.register(self.read_file, concurrency_safe=True)
         self.register(self.write_file, sanitize_arguments=False)
         self.register(self.edit_file, sanitize_arguments=False)
         self.register(self.multi_edit_file, sanitize_arguments=False)
-        self.register(self.glob)
-        self.register(self.grep)
+        self.register(self.glob, concurrency_safe=True)
+        self.register(self.grep, concurrency_safe=True)
 
     def _resolve_path(self, path: str) -> Path:
         """Resolve path, supporting absolute, relative, and ~ paths.
@@ -1017,7 +1019,7 @@ class BuiltinWebSearchTool(Tool):
         super().__init__(name="builtin_web_search_tool")
         from agentica.tools.baidu_search_tool import BaiduSearchTool
         self._search = BaiduSearchTool()
-        self.register(self.web_search)
+        self.register(self.web_search, concurrency_safe=True)
 
     async def web_search(self, queries: Union[str, List[str]], max_results: int = 5) -> str:
         """Search the web using Baidu for multiple queries and return results
@@ -1064,7 +1066,7 @@ class BuiltinFetchUrlTool(Tool):
         # Import and initialize UrlCrawlerTool (uses default cache dir ~/.cache/agentica/web_cache/)
         from agentica.tools.url_crawler_tool import UrlCrawlerTool
         self._crawler = UrlCrawlerTool(max_content_length=max_content_length)
-        self.register(self.fetch_url)
+        self.register(self.fetch_url, concurrency_safe=True)
 
     async def fetch_url(self, url: str) -> str:
         """Fetch URL content and convert to clean text format.

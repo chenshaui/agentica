@@ -383,6 +383,10 @@ class OpenAIChat(Model):
         if assistant_message.audio is not None:
             model_response.audio = assistant_message.audio
 
+        # Expose finish_reason so handle_post_tool_call_messages can detect
+        # truncated output (finish_reason == "length") for max_tokens recovery.
+        model_response._finish_reason = response.choices[0].finish_reason  # type: ignore[attr-defined]
+
         tool_role = "tool"
         if (
                 await self.handle_tool_calls(

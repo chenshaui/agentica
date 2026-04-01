@@ -21,6 +21,7 @@ from agentica.model.response import ModelResponse, ModelResponseEvent
 from agentica.model.usage import Usage, RequestUsage, TokenDetails
 from agentica.tools.base import ModelTool, Tool, Function, FunctionCall, ToolCallException, get_function_call_for_tool_call
 from agentica.utils.timer import Timer
+from agentica.cost_tracker import CostTracker
 
 
 @dataclass
@@ -73,6 +74,10 @@ class Model(ABC):
     # --- Private fields (not in __init__ signature, used internally) ---
     _current_messages: Optional[List[Message]] = field(init=False, repr=False, default=None)
     _agent_ref: Optional[weakref.ref] = field(init=False, repr=False, default=None)
+
+    # Cost tracker (v3): accumulates USD cost across all invoke() calls in a run.
+    # Reset to a fresh CostTracker at the start of each Agent.run().
+    _cost_tracker: Optional[CostTracker] = field(init=False, repr=False, default=None)
 
     # Model-layer lifecycle hooks (injected by Agent.update_model()).
     # _pre_tool_hook:  called before each batch of tool calls with (messages, function_calls).
@@ -302,13 +307,20 @@ class Model(ABC):
     async def run_function_calls(
             self, function_calls: List[FunctionCall], function_call_results: List[Message], tool_role: str = "tool"
     ) -> AsyncIterator[ModelResponse]:
-        """Execute tool calls with parallel execution, sequential result reporting.
+        """Execute tool calls with concurrency-split execution.
 
-        Phase 0: _pre_tool_hook (context overflow check, repetition detection, injection)
-        Phase 1: Emit all tool_call_started events (in order)
-        Phase 2: Execute all tools in parallel via TaskGroup (with concurrency limit)
-        Phase 3: Process results sequentially (preserving message order)
-        Phase 4: _post_tool_hook (optional reflection injection)
+        Strategy (mirrors CC's StreamingToolExecutor):
+        - concurrency_safe=True  tools run in parallel with each other.
+        - concurrency_safe=False tools run sequentially, one at a time.
+        - A *bash/execute* error aborts any remaining unsafe tools
+          (sibling_error pattern from CC).
+
+        Phase 0: _pre_tool_hook
+        Phase 1: Emit tool_call_started events (in order)
+        Phase 2a: Execute safe tools in parallel (asyncio.gather)
+        Phase 2b: Execute unsafe tools sequentially
+        Phase 3: Process results in original order
+        Phase 4: _post_tool_hook
         """
         if self.function_call_stack is None:
             self.function_call_stack = []
@@ -345,31 +357,67 @@ class Model(ABC):
                 event=ModelResponseEvent.tool_call_started.value,
             )
 
-        # Phase 2: Execute all tools in parallel (with concurrency limit)
+        # Phase 2: Concurrency-split execution
+        # -----------------------------------------------------------------
+        # Split into safe (read-only, parallel-ok) vs unsafe (write/shell, serial).
+        # Maintains original ordering so Phase 3 can index by position.
+        # -----------------------------------------------------------------
+        _SHELL_TOOL_NAMES = {"execute", "bash", "shell", "run_command"}
         timers = [Timer() for _ in function_calls]
         exceptions: List[Optional[BaseException]] = [None] * len(function_calls)
-        semaphore = asyncio.Semaphore(self.max_concurrent_tools)
+        results: List[bool] = [False] * len(function_calls)
 
-        async def _execute_one(idx: int, fc: FunctionCall) -> bool:
-            async with semaphore:
+        safe_indices   = [i for i, fc in enumerate(function_calls) if fc.function.concurrency_safe]
+        unsafe_indices = [i for i, fc in enumerate(function_calls) if not fc.function.concurrency_safe]
+
+        # Phase 2a: run safe tools in parallel
+        async def _execute_safe(idx: int, fc: FunctionCall) -> None:
+            timers[idx].start()
+            try:
+                results[idx] = await fc.execute()
+            except ToolCallException as tce:
+                exceptions[idx] = tce
+                results[idx] = False
+            except Exception as exc:
+                exceptions[idx] = exc
+                results[idx] = False
+            finally:
+                timers[idx].stop()
+
+        if safe_indices:
+            await asyncio.gather(
+                *[_execute_safe(i, function_calls[i]) for i in safe_indices],
+                return_exceptions=False,
+            )
+
+        # Phase 2b: run unsafe tools serially; bash error → cancel rest
+        bash_errored = False
+        for idx in unsafe_indices:
+            fc = function_calls[idx]
+            if bash_errored:
+                # Sibling-error cancellation (mirrors CC's siblingAbortController)
+                exceptions[idx] = RuntimeError(
+                    f"Cancelled: sibling bash/execute tool errored"
+                )
+                results[idx] = False
                 timers[idx].start()
-                try:
-                    return await fc.execute()
-                except ToolCallException as tce:
-                    exceptions[idx] = tce
-                    return False
-                except Exception as exc:
-                    exceptions[idx] = exc
-                    return False
-                finally:
-                    timers[idx].stop()
-
-        tasks = [asyncio.ensure_future(_execute_one(i, fc)) for i, fc in enumerate(function_calls)]
-        results = list(await asyncio.gather(*tasks, return_exceptions=True))
-        # Normalize: gather with return_exceptions wraps exceptions as results.
-        # _execute_one already catches exceptions and stores them in exceptions[],
-        # so a result here that's an Exception means an unexpected error — treat as False.
-        results = [r if not isinstance(r, BaseException) else False for r in results]
+                timers[idx].stop()
+                continue
+            timers[idx].start()
+            try:
+                results[idx] = await fc.execute()
+            except ToolCallException as tce:
+                exceptions[idx] = tce
+                results[idx] = False
+                if fc.function.name in _SHELL_TOOL_NAMES:
+                    bash_errored = True
+            except Exception as exc:
+                exceptions[idx] = exc
+                results[idx] = False
+                if fc.function.name in _SHELL_TOOL_NAMES:
+                    bash_errored = True
+            finally:
+                timers[idx].stop()
 
         # Phase 3: Process results in original order
         for i, function_call in enumerate(function_calls):
@@ -489,7 +537,35 @@ class Model(ABC):
             await self._post_tool_hook(messages, function_call_results)
 
     async def _maybe_compress_messages(self, messages: List[Message]) -> None:
-        """Check and run compression on messages if a CompressionManager is configured on the Agent."""
+        """Run the three-layer compression pipeline before each LLM call.
+
+        Layer 1 — Micro-compact (always, zero cost):
+            Truncate old tool-result content to a short placeholder.
+            Mirrors CC's microcompactMessages() time-based path.
+
+        Layer 2 — Auto-compact (token-threshold, LLM summarisation):
+            If the ConpressionManager is configured AND the context is above
+            the trigger threshold, LLM-summarise the conversation.
+            Mirrors CC's autoCompactIfNeeded().
+
+        Layer 3 — Reactive compact (prompt_too_long guard):
+            Handled separately in handle_post_tool_call_messages via the
+            CompressionManager.auto_compact() circuit-breaker path.
+        """
+        # ------------------------------------------------------------------
+        # Layer 1: micro-compact (every turn, free)
+        # ------------------------------------------------------------------
+        try:
+            from agentica.compression.micro import micro_compact
+            n = micro_compact(messages)
+            if n:
+                logger.debug(f"Micro-compact: cleared {n} old tool result(s)")
+        except Exception as _mc_err:
+            logger.debug(f"Micro-compact skipped: {_mc_err}")
+
+        # ------------------------------------------------------------------
+        # Layer 2: auto-compact via CompressionManager (token-threshold)
+        # ------------------------------------------------------------------
         agent = self._agent_ref() if self._agent_ref else None
         if agent is None:
             return
@@ -499,12 +575,42 @@ class Model(ABC):
         cm = getattr(tool_config, 'compression_manager', None)
         if cm is None:
             return
+
+        # Try auto_compact first (token-based, with circuit-breaker)
+        _auto_compact = getattr(cm, 'auto_compact', None)
+        if _auto_compact is not None:
+            try:
+                compacted = await _auto_compact(messages, model=self)
+                if compacted:
+                    logger.info("Auto-compact triggered: context compressed")
+                    return  # messages replaced — skip rule-based compress
+            except Exception as _ac_err:
+                logger.warning(f"Auto-compact failed: {_ac_err}")
+
+        # Fallback: rule-based compress (truncate + drop old rounds)
         if cm.should_compress(messages, tools=self.tools, model=self):
             logger.info("Compressing tool results to reduce context size")
             await cm.compress(messages, tools=self.tools, model=self)
 
+
     async def handle_post_tool_call_messages(self, messages: List[Message], model_response: ModelResponse) -> ModelResponse:
-        """Handle messages after tool calls (async-only, single implementation)."""
+        """Handle messages after tool calls — with Agent-Loop state management.
+
+        Enhancements over the original single-call implementation:
+
+        1. **Safety valve** — stops after MAX_TOOL_LOOP_TURNS recursive tool rounds
+           to prevent runaway loops.
+        2. **max_tokens recovery** — when a provider signals the output was truncated
+           (finish_reason == "length"), automatically appends a continuation prompt
+           and re-calls, up to MAX_TOKENS_RECOVERY_LIMIT times.
+        3. **API-error retry** — transient errors (rate-limit, connection, 5xx) are
+           retried with exponential back-off, up to MAX_API_RETRY attempts.
+        4. **Reactive compact** — if compression is enabled and a ``prompt_too_long``
+           error is raised, one emergency compaction attempt is made before giving up.
+           Mirrors CC's REACTIVE_COMPACT feature gate.
+
+        All four mechanisms are additive; the core response() contract is unchanged.
+        """
         last_message = messages[-1]
         if last_message.stop_after_tool_call:
             logger.debug("Stopping execution as stop_after_tool_call=True")
@@ -516,18 +622,121 @@ class Model(ABC):
                 if model_response.content is None:
                     model_response.content = ""
                 model_response.content += last_message.content
+            return model_response
+
+        # ------------------------------------------------------------------
+        # Loop-state constants (mirrors CC's query.ts)
+        # ------------------------------------------------------------------
+        _MAX_TOOL_LOOP_TURNS   = getattr(self, '_max_tool_loop_turns',   50)
+        _MAX_TOKENS_RECOVERY   = getattr(self, '_max_tokens_recovery',    3)
+        _MAX_API_RETRY         = getattr(self, '_max_api_retry',           3)
+        _RETRYABLE_SUBSTRINGS  = ("rate_limit", "rate limit", "429", "503", "502",
+                                   "connection", "timeout", "overloaded")
+        _PROMPT_TOO_LONG_HINTS = ("prompt_too_long", "context_length_exceeded",
+                                   "maximum context", "too many tokens", "413")
+
+        # Retrieve or initialise per-run loop counters stored on the model object.
+        # Using model-level attributes is safe because `response()` creates a fresh
+        # chain for each top-level user message; these are reset in `reset_model()`.
+        if not hasattr(self, '_loop_turn_count'):
+            self._loop_turn_count: int = 0
+            self._max_tokens_recovery_count: int = 0
+            self._reactive_compact_done: bool = False
+
+        self._loop_turn_count += 1
+        if self._loop_turn_count > _MAX_TOOL_LOOP_TURNS:
+            logger.warning(
+                f"[LoopSafetyValve] Tool loop exceeded {_MAX_TOOL_LOOP_TURNS} turns — stopping."
+            )
+            if model_response.content is None:
+                model_response.content = ""
+            model_response.content += (
+                f"\n\n[Warning: stopped after {_MAX_TOOL_LOOP_TURNS} tool-use turns]"
+            )
+            return model_response
+
+        # ------------------------------------------------------------------
+        # Apply compression before the next LLM call
+        # ------------------------------------------------------------------
+        await self._maybe_compress_messages(messages)
+
+        # ------------------------------------------------------------------
+        # Call next LLM round — with retry + max_tokens recovery
+        # ------------------------------------------------------------------
+        import random as _random
+
+        for _attempt in range(_MAX_API_RETRY):
+            try:
+                response_after_tool_calls = await self.response(messages=messages)
+                break  # success
+            except Exception as _exc:
+                _err = str(_exc).lower()
+
+                # --- Reactive compact: prompt_too_long → emergency compress ---
+                _is_too_long = any(h in _err for h in _PROMPT_TOO_LONG_HINTS)
+                if _is_too_long and not self._reactive_compact_done:
+                    self._reactive_compact_done = True
+                    agent = self._agent_ref() if self._agent_ref else None
+                    cm = None
+                    if agent is not None:
+                        tc = getattr(agent, 'tool_config', None)
+                        if tc is not None:
+                            cm = getattr(tc, 'compression_manager', None)
+                    _auto_compact_fn = getattr(cm, 'auto_compact', None) if cm else None
+                    if _auto_compact_fn is not None:
+                        try:
+                            compacted = await _auto_compact_fn(messages, model=self, force=True)
+                            if compacted:
+                                logger.info("Reactive compact triggered (prompt_too_long) — retrying")
+                                continue  # retry with compacted context
+                        except Exception as _rc_err:
+                            logger.warning(f"Reactive compact failed: {_rc_err}")
+
+                # --- Retryable errors: exponential back-off ---
+                _is_retryable = any(r in _err for r in _RETRYABLE_SUBSTRINGS)
+                if _is_retryable and _attempt < _MAX_API_RETRY - 1:
+                    _wait = (2 ** _attempt) + _random.uniform(0.0, 1.0)
+                    logger.warning(
+                        f"[APIRetry] attempt {_attempt + 1}/{_MAX_API_RETRY}, "
+                        f"retrying in {_wait:.1f}s: {_exc}"
+                    )
+                    await asyncio.sleep(_wait)
+                    continue
+
+                raise  # non-retryable or exhausted retries
         else:
-            await self._maybe_compress_messages(messages)
-            response_after_tool_calls = await self.response(messages=messages)
-            if response_after_tool_calls.content is not None:
-                if model_response.content is None:
-                    model_response.content = ""
-                model_response.content += response_after_tool_calls.content
-            if response_after_tool_calls.parsed is not None:
-                model_response.parsed = response_after_tool_calls.parsed
-            if response_after_tool_calls.audio is not None:
-                model_response.audio = response_after_tool_calls.audio
+            # All retry attempts exhausted without breaking out of the loop
+            logger.error(f"[APIRetry] All {_MAX_API_RETRY} attempts failed")
+            raise RuntimeError(f"LLM API call failed after {_MAX_API_RETRY} retries")
+
+        # ------------------------------------------------------------------
+        # max_tokens recovery: output was truncated — ask model to continue
+        # ------------------------------------------------------------------
+        finish = getattr(response_after_tool_calls, '_finish_reason', None)
+        if finish == "length" and self._max_tokens_recovery_count < _MAX_TOKENS_RECOVERY:
+            self._max_tokens_recovery_count += 1
+            logger.info(
+                f"[MaxTokensRecovery] output truncated, "
+                f"continuing ({self._max_tokens_recovery_count}/{_MAX_TOKENS_RECOVERY})"
+            )
+            messages.append(Message(role="user", content="Continue from where you left off."))
+            # Recurse for the continuation turn (counts as a new tool-loop turn)
+            return await self.handle_post_tool_call_messages(messages, response_after_tool_calls)
+
+        # ------------------------------------------------------------------
+        # Merge sub-response into the accumulated model_response
+        # ------------------------------------------------------------------
+        if response_after_tool_calls.content is not None:
+            if model_response.content is None:
+                model_response.content = ""
+            model_response.content += response_after_tool_calls.content
+        if response_after_tool_calls.parsed is not None:
+            model_response.parsed = response_after_tool_calls.parsed
+        if response_after_tool_calls.audio is not None:
+            model_response.audio = response_after_tool_calls.audio
+
         return model_response
+
 
     async def handle_post_tool_call_messages_stream(self, messages: List[Message]) -> AsyncIterator[ModelResponse]:
         """Handle streaming messages after tool calls (async-only, single implementation)."""
@@ -711,6 +920,19 @@ class Model(ABC):
 
             self.usage.add(entry)
 
+            # Cost tracking (v3): record USD cost for this invoke()
+            if self._cost_tracker is not None:
+                cache_read = 0
+                prompt_details_dict = metrics.prompt_tokens_details or {}
+                if isinstance(prompt_details_dict, dict):
+                    cache_read = prompt_details_dict.get("cached_tokens", 0)
+                self._cost_tracker.record(
+                    model_id=self.id,
+                    input_tokens=metrics.input_tokens,
+                    output_tokens=metrics.output_tokens,
+                    cache_read_tokens=cache_read,
+                )
+
     def update_stream_metrics(self, assistant_message: Message, metrics: Metrics) -> None:
         """Update usage metrics from a streaming response.
 
@@ -764,6 +986,18 @@ class Model(ABC):
             for k, v in metrics.completion_tokens_details.items():
                 self.metrics["completion_tokens_details"][k] = self.metrics["completion_tokens_details"].get(k, 0) + v
         self.usage.add(entry)
+
+        # Cost tracking (v3): record USD cost for this streaming invoke()
+        if self._cost_tracker is not None:
+            cache_read = 0
+            if metrics.prompt_tokens_details is not None:
+                cache_read = metrics.prompt_tokens_details.get("cached_tokens", 0)
+            self._cost_tracker.record(
+                model_id=self.id,
+                input_tokens=metrics.input_tokens,
+                output_tokens=metrics.output_tokens,
+                cache_read_tokens=cache_read,
+            )
 
     def _process_string_image(self, image: str) -> Dict[str, Any]:
         """Process string-based image (base64, URL, or file path)."""
@@ -911,3 +1145,7 @@ class Model(ABC):
         self.functions = None
         self.function_call_stack = None
         self.session_id = None
+        # Reset per-run loop-state counters (set by handle_post_tool_call_messages)
+        self._loop_turn_count = 0
+        self._max_tokens_recovery_count = 0
+        self._reactive_compact_done = False

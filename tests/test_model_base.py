@@ -159,7 +159,7 @@ class TestRunFunctionCalls:
 
     @pytest.mark.asyncio
     async def test_parallel_execution_faster_than_serial(self):
-        """N tools each sleeping 0.1s should complete in ≈0.1s (parallel), not N*0.1s."""
+        """N concurrency_safe tools each sleeping 0.1s should complete in ≈0.1s (parallel), not N*0.1s."""
         model = self._make_model_instance()
         n = 5
 
@@ -169,6 +169,9 @@ class TestRunFunctionCalls:
             return str(x)
 
         fcs = [self._make_fc(slow_tool, {"x": i}, f"c{i}") for i in range(n)]
+        # Mark as concurrency_safe so the new split-execution path runs them in parallel.
+        for fc in fcs:
+            fc.function.concurrency_safe = True
         results = []
         start = time.monotonic()
         async for _ in model.run_function_calls(fcs, results):

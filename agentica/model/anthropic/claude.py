@@ -639,13 +639,16 @@ class Claude(Model):
         metrics.log()
 
         # -*- Handle tool calls
+        # Expose stop_reason so handle_post_tool_call_messages can detect
+        # max_tokens truncation (stop_reason == "max_tokens") for recovery.
+        model_response._finish_reason = (  # type: ignore[attr-defined]
+            "length" if response.stop_reason == "max_tokens" else response.stop_reason
+        )
+
         if await self.handle_tool_calls(assistant_message, messages, model_response, response_content, tool_ids):
-            response_after_tool_calls = await self.response(messages=messages)
-            if response_after_tool_calls.content is not None:
-                if model_response.content is None:
-                    model_response.content = ""
-                model_response.content += response_after_tool_calls.content
-            return model_response
+            # Use handle_post_tool_call_messages instead of direct self.response()
+            # to get: safety valve, max_tokens recovery, retry, reactive compact.
+            return await self.handle_post_tool_call_messages(messages=messages, model_response=model_response)
 
         # -*- Update model response
         if assistant_message.content is not None:
