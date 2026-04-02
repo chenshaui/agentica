@@ -864,19 +864,22 @@ class BuiltinExecuteTool(Tool):
     Exposed as execute function for consistent naming in Agent.
     """
 
-    def __init__(self, work_dir: Optional[str] = None, timeout: int = 120, max_output_length: int = 20000, sandbox_config=None):
+    def __init__(self, work_dir: Optional[str] = None, timeout: int = 120, max_timeout: int = 600,
+                 max_output_length: int = 20000, sandbox_config=None):
         """
         Initialize BuiltinExecuteTool.
 
         Args:
             work_dir: Work directory for command execution
-            timeout: Command execution timeout in seconds
+            timeout: Default command execution timeout in seconds
+            max_timeout: Maximum allowed timeout in seconds
             max_output_length: Maximum length of output to return
             sandbox_config: SandboxConfig instance for command restriction enforcement
         """
         super().__init__(name="builtin_execute_tool")
         self._work_dir: Optional[Path] = Path(work_dir) if work_dir else None
         self._timeout = timeout
+        self._max_timeout = max_timeout
         self._max_output_length = max_output_length
         self._sandbox_config = sandbox_config
         # Override timeout from sandbox config if set
@@ -891,55 +894,56 @@ class BuiltinExecuteTool(Tool):
         # reading its own persisted output file in a loop).
         self.functions["execute"].max_result_size_chars = 50_000
 
-    async def execute(self, command: str) -> str:
-        """Executes a given command, capturing both stdout and stderr.
+    async def execute(self, command: str, timeout: Optional[int] = None) -> str:
+        """Executes a shell command, capturing both stdout and stderr.
 
-        Before executing the command, please follow these steps:
+        IMPORTANT — Use dedicated tools instead of bash equivalents:
+        - File search:    Use glob tool    (NOT find, ls -R, or locate)
+        - Content search: Use grep tool    (NOT grep, rg, or ag)
+        - Read files:     Use read_file    (NOT cat, head, tail, less, or more)
+        - Edit files:     Use edit_file    (NOT sed, awk, or perl -i)
+        - Write files:    Use write_file   (NOT echo >, tee, or cat <<EOF)
+        - List files:     Use ls tool      (NOT ls command in bash)
 
-        1. Directory Verification:
-        - If the command will create new directories or files, first use the ls tool to verify the parent directory exists and is the correct location
-        - For example, before running "mkdir foo/bar", first use ls to check that "foo" exists and is the intended parent directory
+        The execute tool is for commands that have NO dedicated tool equivalent:
+        git, python, pytest, pip, npm, make, docker, curl (POST), etc.
 
-        2. Command Execution:
-        - Always quote file paths that contain spaces with double quotes (e.g., cd "path with spaces/file.txt")
-        - Examples of proper quoting:
-            - cd "/Users/name/My Documents" (correct)
-            - cd /Users/name/My Documents (incorrect - will fail)
-            - python3 "/path/with spaces/script.py" (correct)
-            - python3 /path/with spaces/script.py (incorrect - will fail)
-        - After ensuring proper quoting, execute the command
-        - Capture the output of the command
+        Before executing:
+        1. Verify target directory exists (use ls tool first if unsure)
+        2. Always quote file paths with spaces: cd "/path with spaces/"
+        3. Use absolute paths; avoid cd when possible
 
         Usage notes:
-        - The command parameter is required
-        - Returns combined stdout/stderr output with exit code
-        - If the output is very large, it may be truncated
-        - VERY IMPORTANT: You MUST avoid using search commands like find and grep. Instead use the grep, glob tools to search. You MUST avoid read tools like cat, head, tail, and use read_file to read files.
-        - When issuing multiple commands, use the ';' or '&&' operator to separate them. DO NOT use newlines (newlines are ok in quoted strings)
-            - Use '&&' when commands depend on each other (e.g., "mkdir dir && cd dir")
-            - Use ';' only when you need to run commands sequentially but don't care if earlier commands fail
-        - Try to maintain your current working directory throughout the session by using absolute paths and avoiding usage of cd
-        - For multi-line Python code, the tool automatically converts `python3 -c "..."` to heredoc format for better handling. Use Python syntax correctly, use `None`, `True`/`False`, verify the syntax is correct Python.
+        - Commands timeout after 120 seconds by default
+        - You may specify a custom timeout up to 600 seconds (10 min) for long-running commands
+        - Use '&&' to chain dependent commands; use ';' for independent commands
+        - DO NOT use newlines in commands (newlines ok inside quoted strings)
+        - For Python code, the tool auto-converts `python3 -c "..."` to heredoc format
 
-        Examples:
         Good examples:
             - execute(command="python3 /path/to/script.py")
-            - execute(command="pytest /path/to/tests/test.py")
-            - execute(command="python3 -c 'print(33333**2 + 332.2 / 12)'")
-            - execute(command="npm install && npm test")
+            - execute(command="pytest /path/to/tests/ -v --tb=short")
+            - execute(command="git status")
+            - execute(command="npm install && npm test", timeout=300)
 
-        Bad examples (avoid these):
-            - execute(command="cd /foo/bar && pytest tests")  # Use absolute path instead
-            - execute(command="cat file.txt")  # Use read_file tool instead
-            - execute(command="find . -name '*.py'")  # Use glob tool instead
-            - execute(command="grep -r 'pattern' .")  # Use grep tool instead
+        Bad examples (use dedicated tools instead):
+            - execute(command="find . -name '*.py'")   → use glob(pattern="**/*.py")
+            - execute(command="grep -r 'TODO' .")      → use grep(pattern="TODO")
+            - execute(command="cat file.txt")           → use read_file(file_path="file.txt")
+            - execute(command="sed -i 's/old/new/' f")  → use edit_file(...)
 
         Args:
-            command: command to execute
+            command: shell command to execute
+            timeout: optional timeout in seconds (default 120, max 600)
 
         Returns:
             str: The output of the command (stdout + stderr) with exit code
         """
+        # Apply timeout: use provided value, clamped to max
+        effective_timeout = self._timeout
+        if timeout is not None:
+            effective_timeout = min(max(1, timeout), self._max_timeout)
+
         # Use ShellTool's syntax fixers (python -c → heredoc conversion, null/true/false fix)
         command = self._shell._convert_python_c_to_heredoc(command)
 
@@ -987,7 +991,7 @@ class BuiltinExecuteTool(Tool):
                 cwd=cwd,
             )
             stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=self._timeout,
+                proc.communicate(), timeout=effective_timeout,
             )
         except asyncio.TimeoutError:
             # Graceful termination: SIGTERM first, then SIGKILL
@@ -1000,8 +1004,8 @@ class BuiltinExecuteTool(Tool):
                         proc.kill()
                 except ProcessLookupError:
                     pass
-            logger.warning(f"Command timed out after {self._timeout}s: {command}")
-            return f"Error: Command timed out after {self._timeout} seconds"
+            logger.warning(f"Command timed out after {effective_timeout}s: {command}")
+            return f"Error: Command timed out after {effective_timeout} seconds (timeout {effective_timeout}s)"
         except Exception as e:
             logger.warning(f"Failed to run shell command: {e}")
             return f"Error: {e}"

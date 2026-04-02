@@ -370,11 +370,20 @@ class Model(ABC):
         safe_indices   = [i for i, fc in enumerate(function_calls) if fc.function.concurrency_safe]
         unsafe_indices = [i for i, fc in enumerate(function_calls) if not fc.function.concurrency_safe]
 
+        # Default timeout for tool execution (seconds)
+        _DEFAULT_TOOL_TIMEOUT = 120
+
         # Phase 2a: run safe tools in parallel
         async def _execute_safe(idx: int, fc: FunctionCall) -> None:
+            _timeout = fc.function.timeout or _DEFAULT_TOOL_TIMEOUT
             timers[idx].start()
             try:
-                results[idx] = await fc.execute()
+                results[idx] = await asyncio.wait_for(fc.execute(), timeout=_timeout)
+            except asyncio.TimeoutError:
+                exceptions[idx] = TimeoutError(
+                    f"Tool '{fc.function.name}' timed out after {_timeout}s"
+                )
+                results[idx] = False
             except ToolCallException as tce:
                 exceptions[idx] = tce
                 results[idx] = False
@@ -405,7 +414,15 @@ class Model(ABC):
                 continue
             timers[idx].start()
             try:
-                results[idx] = await fc.execute()
+                _timeout = fc.function.timeout or _DEFAULT_TOOL_TIMEOUT
+                results[idx] = await asyncio.wait_for(fc.execute(), timeout=_timeout)
+            except asyncio.TimeoutError:
+                exceptions[idx] = TimeoutError(
+                    f"Tool '{fc.function.name}' timed out after {fc.function.timeout or _DEFAULT_TOOL_TIMEOUT}s"
+                )
+                results[idx] = False
+                if fc.function.name in _SHELL_TOOL_NAMES:
+                    bash_errored = True
             except ToolCallException as tce:
                 exceptions[idx] = tce
                 results[idx] = False

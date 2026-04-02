@@ -54,7 +54,7 @@ def create_full_agent(session_id: str = None, work_dir: str = None) -> DeepAgent
     )
 
 
-def interactive_mode(agent: Agent):
+def interactive_mode(agent: DeepAgent):
     """Run in interactive mode with streaming."""
     from rich.console import Console
     console = Console()
@@ -100,7 +100,7 @@ def interactive_mode(agent: Agent):
     console.print("[dim]Session saved. Use --resume to continue later.[/dim]")
 
 
-def single_query_mode(agent: Agent, query: str, max_cost: float = None):
+def single_query_mode(agent: DeepAgent, query: str, max_cost: float = None):
     """Run a single query with optional cost budget."""
     config = RunConfig(max_cost_usd=max_cost) if max_cost else None
 

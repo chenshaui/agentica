@@ -115,6 +115,10 @@ class Function(BaseModel):
     # Set a positive int to enable (e.g. 50_000 for execute/bash tools).
     # Mirrors CC's toolResultStorage maxResultSizeChars.
     max_result_size_chars: Optional[int] = None
+    # Execution timeout in seconds. None = use default (120s).
+    # Each tool invocation is wrapped with asyncio.wait_for(timeout=).
+    # Mirrors CC's per-tool timeout (e.g. "timeout 2m" for bash).
+    timeout: Optional[int] = None
 
     # --*-- FOR INTERNAL USE ONLY --*--
     # Weak reference to the agent that the function is associated with.
