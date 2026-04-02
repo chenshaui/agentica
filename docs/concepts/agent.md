@@ -389,8 +389,47 @@ result = await agent.run("分析当前目录的代码结构")
 
 内置工具包括：`ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `execute`, `web_search`, `fetch_url`, `task`（子任务委派）。
 
+## System Prompt 三区结构
+
+Agentica 将 System Prompt 分为三个区域，最大化 LLM prefix-cache 命中率：
+
+| 区域 | 内容 | 变化频率 |
+|------|------|----------|
+| **Static Zone** | description, instructions, guidelines, expected_output | 不变 |
+| **Semi-static Zone** | workspace context, git status, model system message | 少变 |
+| **Dynamic Zone** | workspace memory, session summary, datetime | 每轮可变 |
+
+详见 [架构总览](../introduction/architecture.md)。
+
+## 安全机制
+
+Agent 内置多项运行时安全机制：
+
+### Death Spiral 检测
+
+连续多轮全部工具调用失败时自动停止，防止无限 error-retry 循环。
+
+### Cost Budget
+
+通过 `RunConfig(max_cost_usd=N)` 设置运行成本上限：
+
+```python
+from agentica.run_config import RunConfig
+
+result = await agent.run("复杂任务", config=RunConfig(
+    max_cost_usd=0.5,  # 最多花费 0.5 美元
+))
+```
+
+### Git 上下文注入
+
+当 Agent 有 Workspace 且位于 git 仓库时，System Prompt 自动注入 git 状态（分支、未提交变更、最近 commit）。
+
 ## 下一步
 
-- [Team & Workflow](team.md) — 多智能体协作与工作流
-- [工具系统](../guides/tools.md) — 深入了解工具
-- [API 参考](../api/agent.md) — 完整 API
+- [Team](../multi-agent/team.md) -- 多智能体团队协作
+- [Workflow](../multi-agent/workflow.md) -- 确定性工作流编排
+- [工具系统](tools.md) -- 深入了解工具
+- [Hooks](../advanced/hooks.md) -- 生命周期钩子
+- [RunConfig](../advanced/run-config.md) -- 运行时配置
+- [API 参考](../api/agent.md) -- 完整 API

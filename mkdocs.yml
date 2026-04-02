@@ -26,27 +26,45 @@ theme:
     - navigation.expand
     - navigation.path
     - navigation.top
+    - navigation.indexes
     - search.highlight
     - content.code.copy
     - content.code.select
+    - toc.integrate
 
 nav:
   - Home: index.md
-  - Quickstart: quickstart.md
-  - Concepts:
+  - Introduction:
+      - What is Agentica: introduction/what-is-agentica.md
+      - Architecture Overview: introduction/architecture.md
+  - Getting Started:
+      - Installation: getting-started/installation.md
+      - Quickstart: getting-started/quickstart.md
+      - CLI Terminal: getting-started/terminal.md
+  - Core Concepts:
       - Agent: concepts/agent.md
-      - Team & Workflow: concepts/team.md
-  - Guides:
-      - CLI Terminal: guides/terminal.md
-      - Tools: guides/tools.md
-      - RAG: guides/rag.md
-      - MCP: guides/mcp.md
-      - Model Providers: guides/models.md
-      - Guardrails: guides/guardrails.md
-      - Best Practices: guides/best_practices.md
-      - Benchmark: guides/benchmark.md
+      - Model: concepts/model.md
+      - Tools: concepts/tools.md
+      - Memory & Workspace: concepts/memory.md
+      - Knowledge (RAG): concepts/rag.md
+  - Multi-Agent:
+      - Team: multi-agent/team.md
+      - Workflow: multi-agent/workflow.md
+      - Swarm: multi-agent/swarm.md
+      - Subagent: multi-agent/subagent.md
+  - Advanced:
+      - Hooks: advanced/hooks.md
+      - RunConfig: advanced/run-config.md
+      - Guardrails: advanced/guardrails.md
+      - Context Compression: advanced/compression.md
+      - Skills System: advanced/skills.md
+      - MCP Integration: advanced/mcp.md
+      - ACP Integration: advanced/acp.md
+  - Model Providers: guides/models.md
+  - Best Practices: guides/best_practices.md
   - API Reference:
       - Agent: api/agent.md
+  - Benchmark: guides/benchmark.md
 
 markdown_extensions:
   - pymdownx.highlight:

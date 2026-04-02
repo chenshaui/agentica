@@ -27,10 +27,10 @@ agentica --model_provider deepseek --model_name deepseek-chat
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
-| `--query`, `-q` | 单次查询内容 | — |
+| `--query`, `-q` | 单次查询内容 | -- |
 | `--model_provider` | 模型提供商 | `openai` |
 | `--model_name` | 模型名称 | `gpt-4o-mini` |
-| `--tools` | 启用的工具列表 | — |
+| `--tools` | 启用的工具列表 | -- |
 | `--debug` | 调试模式 | `False` |
 
 ## 启用工具
@@ -50,7 +50,7 @@ agentica --tools baidu_search shell wikipedia weather
 使用 `@filename` 在对话中引用文件内容：
 
 ```
-> @main.py 这段代码有什么问题？
+> @main.py 这段代码有什么问题?
 > @README.md 帮我优化这个文档
 ```
 
@@ -66,7 +66,7 @@ agentica --tools baidu_search shell wikipedia weather
 
 | 快捷键 | 功能 |
 |--------|------|
-| `Ctrl+C` | 中止当前响应（会调用 `agent.cancel()`） |
+| `Ctrl+C` | 中止当前响应 |
 | `Ctrl+D` | 退出 |
 
 ## ACP 模式
@@ -77,53 +77,20 @@ agentica --tools baidu_search shell wikipedia weather
 agentica acp
 ```
 
-### IDE 配置
-
-**Zed** — 编辑 `~/.config/zed/settings.json`：
-
-```json
-{
-  "agent_servers": {
-    "Agentica": {
-      "type": "custom",
-      "command": "agentica",
-      "args": ["acp"],
-      "env": {
-        "OPENAI_API_KEY": "your-api-key"
-      }
-    }
-  }
-}
-```
-
-**JetBrains** — 编辑 `~/.jetbrains/acp.json`：
-
-```json
-{
-  "agent_servers": {
-    "Agentica": {
-      "command": "agentica",
-      "args": ["acp"],
-      "env": {
-        "OPENAI_API_KEY": "your-api-key"
-      }
-    }
-  }
-}
-```
+详见 [ACP 集成](../advanced/acp.md)。
 
 ## 流式输出
 
 CLI 默认使用流式输出，支持：
 
-- **内容流式输出** — 打字机效果实时显示
-- **思考过程** — 推理模型的思考步骤
-- **工具调用展示** — 显示工具调用名称和参数
-- **工具结果预览** — Claude Code 风格的结果摘要显示
-- **子任务进度** — 子 Agent 执行时的进度汇报
+- **内容流式输出** -- 打字机效果实时显示
+- **思考过程** -- 推理模型的思考步骤
+- **工具调用展示** -- 显示工具调用名称和参数
+- **工具结果预览** -- 结果摘要显示
+- **子任务进度** -- 子 Agent 执行时的进度汇报
 
 ## 下一步
 
-- [快速入门](../quickstart.md) — 安装和基础用法
-- [工具系统](tools.md) — 了解可用工具
-- [Agent 概念](../concepts/agent.md) — Agent 核心概念
+- [快速入门](quickstart.md) -- 安装和基础用法
+- [工具系统](../concepts/tools.md) -- 了解可用工具
+- [Agent 概念](../concepts/agent.md) -- Agent 核心概念

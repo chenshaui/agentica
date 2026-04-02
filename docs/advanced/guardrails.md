@@ -1,14 +1,14 @@
-# 安全守卫 (Guardrails)
+# Guardrails
 
 Guardrails 提供 Agent 运行时的输入输出验证机制，防止不当内容通过。支持 Agent 级和 Tool 级两层守卫。
 
-## 两层守卫
+## 四层守卫
 
 ```
-用户输入 → [InputGuardrail] → Agent 处理 → [OutputGuardrail] → 返回用户
-                                  ↓
-                          工具调用参数 → [ToolInputGuardrail]
-                          工具返回值 → [ToolOutputGuardrail]
+用户输入 -> [InputGuardrail] -> Agent 处理 -> [OutputGuardrail] -> 返回用户
+                                  |
+                          工具调用参数 -> [ToolInputGuardrail]
+                          工具返回值 -> [ToolOutputGuardrail]
 ```
 
 ## Agent 级守卫
@@ -28,7 +28,7 @@ async def block_sensitive_info(text: str) -> GuardrailFunctionOutput:
         if kw in text:
             return GuardrailFunctionOutput(
                 tripwire_triggered=True,
-                output_text=f"检测到敏感信息（{kw}），请勿输入个人隐私数据。",
+                output_text=f"检测到敏感信息({kw}), 请勿输入个人隐私数据。",
             )
     return GuardrailFunctionOutput(tripwire_triggered=False)
 
@@ -52,7 +52,7 @@ async def check_output_quality(text: str) -> GuardrailFunctionOutput:
     if len(text) < 10:
         return GuardrailFunctionOutput(
             tripwire_triggered=True,
-            output_text="输出内容过短，请提供更详细的回答。",
+            output_text="输出内容过短, 请提供更详细的回答。",
         )
     return GuardrailFunctionOutput(tripwire_triggered=False)
 
@@ -84,15 +84,9 @@ async def validate_shell_command(
             if d in cmd:
                 return ToolGuardrailFunctionOutput(
                     tripwire_triggered=True,
-                    output_text=f"阻止执行危险命令：{d}",
+                    output_text=f"阻止执行危险命令: {d}",
                 )
     return ToolGuardrailFunctionOutput(tripwire_triggered=False)
-
-agent = Agent(
-    tool_input_guardrails=[
-        ToolInputGuardrail(guardrail_function=validate_shell_command),
-    ],
-)
 ```
 
 ### 工具输出守卫
@@ -106,7 +100,6 @@ async def filter_sensitive_output(
 ) -> ToolGuardrailFunctionOutput:
     """过滤工具输出中的敏感信息"""
     import re
-    # 脱敏：隐藏 API Key 格式的字符串
     cleaned = re.sub(r'sk-[a-zA-Z0-9]{32,}', 'sk-***REDACTED***', result)
     return ToolGuardrailFunctionOutput(
         tripwire_triggered=False,
@@ -124,16 +117,6 @@ async def filter_sensitive_output(
 | **拒绝并替换** | `True` + `output_text` | 用替换文本作为响应 |
 | **抛出异常** | raise `GuardrailTripwireTriggered` | 中止执行 |
 
-```python
-from agentica import InputGuardrailTripwireTriggered
-
-@input_guardrail
-async def strict_guardrail(text: str) -> GuardrailFunctionOutput:
-    if "forbidden" in text:
-        raise InputGuardrailTripwireTriggered("严格禁止的内容")
-    return GuardrailFunctionOutput(tripwire_triggered=False)
-```
-
 ## 组合使用
 
 ```python
@@ -142,7 +125,6 @@ agent = Agent(
     tools=[ShellTool()],
     input_guardrails=[
         InputGuardrail(guardrail_function=block_sensitive_info),
-        InputGuardrail(guardrail_function=check_input_length),
     ],
     output_guardrails=[
         OutputGuardrail(guardrail_function=check_output_quality),
@@ -158,6 +140,6 @@ agent = Agent(
 
 ## 下一步
 
-- [工具系统](tools.md) — 工具级守卫的更多细节
-- [Agent 概念](../concepts/agent.md) — Agent 整体架构
-- [API 参考](../api/agent.md) — Guardrail API
+- [Tools](../concepts/tools.md) -- 工具级守卫的更多细节
+- [Agent 概念](../concepts/agent.md) -- Agent 整体架构
+- [Hooks](hooks.md) -- 生命周期钩子

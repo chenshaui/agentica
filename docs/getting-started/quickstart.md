@@ -1,43 +1,9 @@
-# 快速入门
+# Quickstart
 
-本指南帮助你在几分钟内安装 Agentica 并运行第一个 AI 智能体。
+本指南帮助你在 5 分钟内创建并运行第一个 AI 智能体。
 
-## 环境要求
-
-- **Python >= 3.12**
-- 至少一个 LLM 提供商的 API Key
-
-## 安装
-
-```bash
-pip install -U agentica
-```
-
-从源码安装（开发模式）：
-
-```bash
-git clone https://github.com/shibing624/agentica.git
-cd agentica
-pip install -e .
-```
-
-## 配置 API Key
-
-在 `~/.agentica/.env` 中配置，或直接设置环境变量：
-
-```bash
-# 推荐：智谱AI（glm-4.7-flash 免费，支持工具调用，128k 上下文）
-export ZHIPUAI_API_KEY="your-api-key"
-
-# OpenAI
-export OPENAI_API_KEY="sk-xxx"
-
-# DeepSeek
-export DEEPSEEK_API_KEY="your-api-key"
-
-# Anthropic (Claude)
-export ANTHROPIC_API_KEY="your-api-key"
-```
+!!! tip "前置条件"
+    确保已完成 [安装](installation.md) 并配置了 API Key。
 
 ## 第一个 Agent
 
@@ -67,7 +33,7 @@ asyncio.run(main())
 from agentica import Agent, OpenAIChat
 
 agent = Agent(model=OpenAIChat(id="gpt-4o-mini"))
-result = agent.run_sync("什么是量子计算？")
+result = agent.run_sync("什么是量子计算?")
 print(result.content)
 ```
 
@@ -115,7 +81,7 @@ async def main():
         tools=[BaiduSearchTool()],
         instructions=["使用搜索工具获取最新信息，用中文回答"],
     )
-    result = await agent.run("今天的科技新闻有哪些？")
+    result = await agent.run("今天的科技新闻有哪些?")
     print(result.content)
 
 asyncio.run(main())
@@ -151,29 +117,9 @@ async def main():
 asyncio.run(main())
 ```
 
-## CLI 交互模式
-
-安装后可直接在终端使用：
-
-```bash
-# 交互模式
-agentica
-
-# 单次查询
-agentica --query "解释什么是 RAG"
-
-# 指定模型
-agentica --model_provider zhipuai --model_name glm-4.7-flash
-
-# 启用工具
-agentica --tools baidu_search shell
-```
-
-<img src="assets/cli_snap.png" width="700" alt="CLI Screenshot" />
-
 ## 选择模型
 
-Agentica 支持 20+ 模型提供商，详见 [模型提供商指南](guides/models.md)：
+Agentica 支持 20+ 模型提供商，详见 [模型提供商指南](../guides/models.md)：
 
 ```python
 from agentica import (
@@ -185,10 +131,8 @@ from agentica import (
     Moonshot,         # moonshot-v1-128k
     Doubao,           # doubao-pro-32k
     Ollama,           # 本地模型
-    # ...更多
 )
 
-# 使用不同模型
 agent = Agent(model=DeepSeek(id="deepseek-chat"))
 agent = Agent(model=ZhipuAI(id="glm-4.7-flash"))
 agent = Agent(model=Ollama(id="llama3.1"))
@@ -196,11 +140,8 @@ agent = Agent(model=Ollama(id="llama3.1"))
 
 ## 下一步
 
-- [Agent 核心概念](concepts/agent.md) — 深入理解 Agent 的组成
-- [Team & Workflow](concepts/team.md) — 多智能体协作
-- [工具系统](guides/tools.md) — 内置工具与自定义工具
-- [MCP 集成](guides/mcp.md) — Model Context Protocol
-- [模型提供商](guides/models.md) — 全部模型配置
-- [CLI 终端指南](guides/terminal.md) — CLI 完整功能
-- [最佳实践](guides/best_practices.md) — 设计原则与生产部署
-- [API 参考](api/agent.md) — 完整 API 文档
+- [Agent 核心概念](../concepts/agent.md) -- 深入理解 Agent 的组成
+- [Team & Workflow](../multi-agent/team.md) -- 多智能体协作
+- [工具系统](../concepts/tools.md) -- 内置工具与自定义工具
+- [MCP 集成](../advanced/mcp.md) -- Model Context Protocol
+- [CLI 终端指南](terminal.md) -- CLI 完整功能

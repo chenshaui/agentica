@@ -195,3 +195,7 @@ evaluation/browsecomp_plus/runs/*
 evaluation/browsecomp_plus/data/*
 CODEBUDDY.md
 docs/learn_cc/
+docs/paper*.md
+docs/config_tech_v2.md
+docs/refactor_v3.md
+docs/tests.md
