@@ -138,6 +138,45 @@ def _cmd_newchat(agent_config=None, extra_tools=None, workspace=None, skills_reg
     return {"current_agent": current_agent}
 
 
+def _cmd_resume(cmd_args=None, agent_config=None, extra_tools=None, workspace=None,
+                skills_registry=None, **kwargs):
+    """Resume a previous session from JSONL log."""
+    from agentica.memory.session_log import SessionLog
+    from datetime import datetime
+
+    sessions = SessionLog.list_sessions()
+    if not sessions:
+        console.print("[yellow]No sessions found to resume.[/yellow]")
+        return
+
+    if cmd_args and cmd_args.strip():
+        # Direct resume by session_id
+        target = cmd_args.strip()
+        matching = [s for s in sessions if target in s["session_id"]]
+        if not matching:
+            console.print(f"[red]No session matching '{target}'[/red]")
+            return
+        chosen = matching[0]
+    else:
+        # Show session list for user to pick
+        console.print("\n[bold]Available sessions:[/bold]\n")
+        for i, s in enumerate(sessions[:10], 1):
+            ts_str = s.get("last_timestamp", "") or ""
+            if ts_str:
+                ts_str = ts_str[:19].replace("T", " ")  # "2026-04-02T07:32:26" → "2026-04-02 07:32:26"
+            size_kb = s["size_bytes"] / 1024
+            console.print(f"  {i}. [cyan]{s['session_id']}[/cyan]  {ts_str}  ({size_kb:.0f}KB)")
+        console.print(f"\n[dim]Usage: /resume <session_id> or /resume <number>[/dim]")
+        return
+
+    # Create agent with the chosen session_id — will auto-resume from JSONL
+    agent_config = dict(agent_config)  # don't mutate original
+    agent_config["session_id"] = chosen["session_id"]
+    current_agent = create_agent(agent_config, extra_tools, workspace, skills_registry)
+    console.print(f"[green]Resumed session: {chosen['session_id']}[/green]")
+    return {"current_agent": current_agent}
+
+
 def _cmd_clear(agent_config=None, extra_tools=None, extra_tool_names=None,
                workspace=None, skills_registry=None, shell_mode=False, **kwargs):
     os.system('clear' if os.name != 'nt' else 'cls')
@@ -261,6 +300,7 @@ COMMAND_HANDLERS = {
     "/memory": _cmd_memory,
     "/workspace": _cmd_workspace,
     "/newchat": _cmd_newchat,
+    "/resume": _cmd_resume,
     "/clear": _cmd_clear,
     "/reset": _cmd_clear,
     "/model": _cmd_model,

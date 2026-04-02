@@ -497,19 +497,44 @@ class Runner:
             agent._enabled_skills = None
 
             # --- Session persist (CC-style JSONL append) ---
+            # Log the complete turn: user input + tool results + assistant output
             if agent._session_log is not None:
-                # Log user input
+                # 1. Log user input
                 _user_text = None
                 if isinstance(message, str):
                     _user_text = message
                 elif isinstance(message, Message):
                     _user_text = message.content if isinstance(message.content, str) else str(message.content)
                 if _user_text:
-                    agent._session_log.append_message("user", _user_text)
-                # Log assistant output
+                    agent._session_log.append("user", _user_text)
+
+                # 2. Log tool results from this run (if any)
+                if agent.run_response.tools:
+                    for tc in agent.run_response.tools:
+                        _tool_content = tc.get("content", "") or ""
+                        # Truncate large tool results in JSONL (full result in tool_result_storage)
+                        if len(_tool_content) > 2000:
+                            _tool_content = _tool_content[:2000] + "\n... [truncated]"
+                        agent._session_log.append(
+                            "tool", _tool_content,
+                            tool_name=tc.get("tool_name", ""),
+                            tool_call_id=tc.get("tool_call_id", ""),
+                            is_error=tc.get("tool_call_error", False),
+                        )
+
+                # 3. Log assistant output (with model info + usage, mirrors CC)
                 _assistant_text = agent.run_response.content
                 if _assistant_text and isinstance(_assistant_text, str):
-                    agent._session_log.append_message("assistant", _assistant_text)
+                    _model_meta = {}
+                    if agent.model:
+                        _model_meta["model"] = agent.model.id
+                        if agent.model.usage and agent.model.usage.request_usage_entries:
+                            _last_usage = agent.model.usage.request_usage_entries[-1]
+                            _model_meta["usage"] = {
+                                "input_tokens": _last_usage.input_tokens,
+                                "output_tokens": _last_usage.output_tokens,
+                            }
+                    agent._session_log.append("assistant", _assistant_text, **_model_meta)
 
             agent._running = False
 

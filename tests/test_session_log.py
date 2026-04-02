@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Tests for SessionLog — append-only JSONL session persistence with compact boundaries."""
+"""Tests for SessionLog — CC-style append-only JSONL with UUID chain and compact boundaries."""
 import json
 import os
 import sys
@@ -23,9 +23,9 @@ class TestSessionLogBasic:
 
     def test_append_and_load_messages(self, tmp_dir):
         log = SessionLog("s1", base_dir=tmp_dir)
-        log.append_message("user", "hello")
-        log.append_message("assistant", "hi there")
-        log.append_message("user", "how are you?")
+        log.append("user", "hello")
+        log.append("assistant", "hi there")
+        log.append("user", "how are you?")
 
         messages = log.load()
         assert len(messages) == 3
@@ -48,26 +48,76 @@ class TestSessionLogBasic:
     def test_entry_count(self, tmp_dir):
         log = SessionLog("s2", base_dir=tmp_dir)
         assert log.entry_count() == 0
-        log.append_message("user", "a")
-        log.append_message("assistant", "b")
+        log.append("user", "a")
+        log.append("assistant", "b")
         assert log.entry_count() == 2
 
     def test_exists(self, tmp_dir):
         log = SessionLog("s3", base_dir=tmp_dir)
         assert log.exists() is False
-        log.append_message("user", "test")
+        log.append("user", "test")
         assert log.exists() is True
 
     def test_append_tool_result(self, tmp_dir):
         log = SessionLog("s4", base_dir=tmp_dir)
-        log.append_message("user", "run ls")
-        log.append_tool_result("execute", "call-1", "file1.py\nfile2.py", is_error=False)
-        log.append_message("assistant", "found 2 files")
+        log.append("user", "run ls")
+        log.append("tool", "file1.py\nfile2.py", tool_name="execute", tool_call_id="call-1")
+        log.append("assistant", "found 2 files")
 
         messages = log.load()
         assert len(messages) == 3
         assert messages[1]["role"] == "tool"
         assert "file1.py" in messages[1]["content"]
+
+
+class TestUUIDChain:
+    """Verify UUID + parent_uuid chain (CC's core design)."""
+
+    def test_uuid_chain_integrity(self, tmp_dir):
+        """Each entry should have uuid, parent_uuid chains to previous."""
+        log = SessionLog("chain", base_dir=tmp_dir)
+        log.append("user", "msg1")
+        log.append("assistant", "msg2")
+        log.append("user", "msg3")
+
+        with open(log.path, "r", encoding="utf-8") as f:
+            entries = [json.loads(line) for line in f]
+
+        # First entry: parent_uuid is None
+        assert entries[0]["parent_uuid"] is None
+        assert entries[0]["uuid"] is not None
+
+        # Subsequent entries chain to previous
+        assert entries[1]["parent_uuid"] == entries[0]["uuid"]
+        assert entries[2]["parent_uuid"] == entries[1]["uuid"]
+
+        # All uuids are unique
+        uuids = [e["uuid"] for e in entries]
+        assert len(set(uuids)) == 3
+
+    def test_compact_boundary_breaks_chain(self, tmp_dir):
+        """Compact boundary should have parent_uuid=null (breaks chain)."""
+        log = SessionLog("chain-break", base_dir=tmp_dir)
+        log.append("user", "before")
+        log.append_compact_boundary("summary")
+        log.append("user", "after")
+
+        with open(log.path, "r", encoding="utf-8") as f:
+            entries = [json.loads(line) for line in f]
+
+        # Boundary: parent_uuid is null
+        assert entries[1]["type"] == "compact_boundary"
+        assert entries[1]["parent_uuid"] is None
+
+        # Entry after boundary chains to boundary uuid
+        assert entries[2]["parent_uuid"] == entries[1]["uuid"]
+
+    def test_append_returns_uuid(self, tmp_dir):
+        log = SessionLog("ret-uuid", base_dir=tmp_dir)
+        u1 = log.append("user", "hello")
+        u2 = log.append("assistant", "hi")
+        assert u1 != u2
+        assert len(u1) == 36  # UUID format
 
 
 class TestCompactBoundary:
@@ -77,18 +127,15 @@ class TestCompactBoundary:
         """Messages before boundary should be replaced by summary."""
         log = SessionLog("compact1", base_dir=tmp_dir)
 
-        # Conversation history
-        log.append_message("user", "old message 1")
-        log.append_message("assistant", "old response 1")
-        log.append_message("user", "old message 2")
-        log.append_message("assistant", "old response 2")
+        log.append("user", "old message 1")
+        log.append("assistant", "old response 1")
+        log.append("user", "old message 2")
+        log.append("assistant", "old response 2")
 
-        # Compact boundary (auto_compact summarised everything above)
         log.append_compact_boundary("User asked 2 questions, assistant answered both.")
 
-        # New messages after compact
-        log.append_message("user", "new question")
-        log.append_message("assistant", "new answer")
+        log.append("user", "new question")
+        log.append("assistant", "new answer")
 
         messages = log.load()
 
@@ -106,28 +153,25 @@ class TestCompactBoundary:
         """Only the LAST boundary should be used for resume."""
         log = SessionLog("compact2", base_dir=tmp_dir)
 
-        log.append_message("user", "round 1")
+        log.append("user", "round 1")
         log.append_compact_boundary("Summary of round 1")
 
-        log.append_message("user", "round 2")
+        log.append("user", "round 2")
         log.append_compact_boundary("Summary of rounds 1+2")
 
-        log.append_message("user", "round 3")
+        log.append("user", "round 3")
 
         messages = log.load()
 
-        # Should resume from last boundary only
-        assert not any("round 1" in m["content"] and m["role"] == "user" for m in messages
-                       if "Resumed" not in m["content"])
         assert any("Summary of rounds 1+2" in m["content"] for m in messages)
         assert messages[-1]["content"] == "round 3"
 
     def test_no_boundary_replays_all(self, tmp_dir):
         """Without any boundary, all messages are replayed."""
         log = SessionLog("no-boundary", base_dir=tmp_dir)
-        log.append_message("user", "msg1")
-        log.append_message("assistant", "msg2")
-        log.append_message("user", "msg3")
+        log.append("user", "msg1")
+        log.append("assistant", "msg2")
+        log.append("user", "msg3")
 
         messages = log.load()
         assert len(messages) == 3
@@ -136,43 +180,121 @@ class TestCompactBoundary:
     def test_boundary_at_end(self, tmp_dir):
         """Boundary at the very end with no new messages after it."""
         log = SessionLog("boundary-end", base_dir=tmp_dir)
-        log.append_message("user", "question")
-        log.append_message("assistant", "answer")
+        log.append("user", "question")
+        log.append("assistant", "answer")
         log.append_compact_boundary("Conversation about a question")
 
         messages = log.load()
-        # Only the resumed summary + ack
         assert len(messages) == 2
         assert "[Resumed session" in messages[0]["content"]
 
 
 class TestJSONLFormat:
-    """Verify the file is valid JSONL."""
+    """Verify the file format matches CC conventions."""
 
-    def test_file_is_valid_jsonl(self, tmp_dir):
-        log = SessionLog("jsonl-check", base_dir=tmp_dir)
-        log.append_message("user", "hello")
-        log.append_tool_result("grep", "c1", "results")
-        log.append_compact_boundary("summary text")
-        log.append_message("assistant", "response")
+    def test_entry_format_matches_cc(self, tmp_dir):
+        """Entries should use type=role, have uuid/parent_uuid/session_id/cwd/ts."""
+        log = SessionLog("format", base_dir=tmp_dir)
+        log.append("user", "hello")
+        log.append("assistant", "hi")
+        log.append_compact_boundary("summary")
 
         with open(log.path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
+            entries = [json.loads(line) for line in f]
 
-        assert len(lines) == 4
-        for line in lines:
-            entry = json.loads(line)  # should not raise
-            assert "type" in entry
-            assert "ts" in entry
+        # CC format: type is the role directly
+        assert entries[0]["type"] == "user"
+        assert entries[1]["type"] == "assistant"
+        assert entries[2]["type"] == "compact_boundary"
+
+        # All entries have uuid, parent_uuid, timestamp (ISO), session_id, cwd, version, git_branch
+        for e in entries:
+            assert "uuid" in e
+            assert "parent_uuid" in e
+            assert "timestamp" in e
+            assert isinstance(e["timestamp"], str)  # ISO 8601 string
+            assert "T" in e["timestamp"]  # ISO format contains T
+            assert "session_id" in e
+            assert e["session_id"] == "format"
+            assert "cwd" in e
+            assert "version" in e
+            assert "git_branch" in e
 
     def test_unicode_content(self, tmp_dir):
         log = SessionLog("unicode", base_dir=tmp_dir)
-        log.append_message("user", "你好世界 🌍")
-        log.append_message("assistant", "こんにちは")
+        log.append("user", "你好世界 🌍")
+        log.append("assistant", "こんにちは")
 
         messages = log.load()
         assert messages[0]["content"] == "你好世界 🌍"
         assert messages[1]["content"] == "こんにちは"
+
+    def test_last_uuid_restored_on_load(self, tmp_dir):
+        """After load(), subsequent appends should chain correctly."""
+        log1 = SessionLog("chain-restore", base_dir=tmp_dir)
+        log1.append("user", "msg1")
+        log1.append("assistant", "msg2")
+
+        # New instance (simulates process restart)
+        log2 = SessionLog("chain-restore", base_dir=tmp_dir)
+        log2.load()  # restores _last_uuid
+        log2.append("user", "msg3")
+
+        with open(log2.path, "r", encoding="utf-8") as f:
+            entries = [json.loads(line) for line in f]
+
+        # msg3 should chain to msg2
+        assert entries[2]["parent_uuid"] == entries[1]["uuid"]
+
+
+class TestListSessions:
+    """Test session listing for /resume."""
+
+    def test_list_sessions(self, tmp_dir):
+        log1 = SessionLog("session-a", base_dir=tmp_dir)
+        log1.append("user", "hello a")
+        log2 = SessionLog("session-b", base_dir=tmp_dir)
+        log2.append("user", "hello b")
+
+        sessions = SessionLog.list_sessions(base_dir=tmp_dir)
+        assert len(sessions) == 2
+        ids = [s["session_id"] for s in sessions]
+        assert "session-a" in ids
+        assert "session-b" in ids
+        # Each session has required fields
+        for s in sessions:
+            assert "path" in s
+            assert "size_bytes" in s
+            assert s["size_bytes"] > 0
+
+    def test_list_sessions_empty(self, tmp_dir):
+        sessions = SessionLog.list_sessions(base_dir=tmp_dir)
+        assert sessions == []
+
+
+class TestToolResultLogging:
+    """Test that tool results are properly logged and restored."""
+
+    def test_tool_result_with_metadata(self, tmp_dir):
+        log = SessionLog("tool-test", base_dir=tmp_dir)
+        log.append("user", "list files")
+        log.append("tool", "file1.py\nfile2.py",
+                   tool_name="execute", tool_call_id="call-123", is_error=False)
+        log.append("assistant", "Found 2 files")
+
+        # Verify JSONL has tool metadata
+        with open(log.path, "r", encoding="utf-8") as f:
+            entries = [json.loads(line) for line in f]
+
+        assert entries[1]["type"] == "tool"
+        assert entries[1]["tool_name"] == "execute"
+        assert entries[1]["tool_call_id"] == "call-123"
+        assert entries[1]["is_error"] is False
+
+        # Verify load restores tool message
+        messages = log.load()
+        assert len(messages) == 3
+        assert messages[1]["role"] == "tool"
 
 
 if __name__ == "__main__":

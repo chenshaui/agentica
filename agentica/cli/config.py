@@ -19,6 +19,12 @@ from agentica.workspace import Workspace
 console = Console()
 history_file = os.path.join(AGENTICA_HOME, "cli_history.txt")
 
+
+def _generate_session_id() -> str:
+    """Generate a timestamp-based session ID for CLI sessions."""
+    from datetime import datetime
+    return f"cli-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+
 # Tool icons for CLI display
 TOOL_ICONS = {
     # File tools
@@ -247,6 +253,8 @@ def create_agent(agent_config: dict, extra_tools: Optional[List] = None,
         "add_history_to_messages": True,
         "debug": agent_config["debug"],
         "workspace": workspace,
+        # CC-style: each CLI session auto-creates a JSONL session log
+        "session_id": agent_config.get("session_id") or _generate_session_id(),
     }
 
     # Add instructions if we have any
