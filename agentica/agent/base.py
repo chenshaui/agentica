@@ -107,6 +107,11 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
     debug: bool = False
     tracing: bool = False
 
+    # Session persistence (CC-style append-only JSONL):
+    # Set session_id to enable. Stored at .sessions/{session_id}.jsonl
+    # Supports compact boundaries for resume from last compaction point.
+    session_id: Optional[str] = None
+
     # Lifecycle hooks (per-agent)
     hooks: Optional[AgentHooks] = None
 
@@ -169,6 +174,8 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
             debug: bool = False,
             tracing: bool = False,
             hooks: Optional[AgentHooks] = None,
+            # ---- Session persistence ----
+            session_id: Optional[str] = None,
             # ---- Packed config ----
             prompt_config: Optional[PromptConfig] = None,
             tool_config: Optional[ToolConfig] = None,
@@ -205,6 +212,14 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         self.debug = debug
         self.tracing = tracing
         self.hooks = hooks
+
+        # Session persistence
+        self.session_id = session_id
+        # JSONL session log: auto-created when session_id is set
+        self._session_log = None
+        if session_id is not None:
+            from agentica.memory.session_log import SessionLog
+            self._session_log = SessionLog(session_id=session_id)
 
         # Packed config (use defaults if not provided)
         self.prompt_config = prompt_config or PromptConfig()

@@ -190,6 +190,25 @@ class Runner:
             agent.run_id = str(uuid4())
             agent.run_response = RunResponse(run_id=agent.run_id, agent_id=agent.agent_id)
 
+            # --- Session resume (CC-style JSONL) ---
+            # On first run, if a session log exists, replay messages from
+            # the last compact boundary into working_memory.
+            if (
+                agent._session_log is not None
+                and agent._session_log.exists()
+                and len(agent.working_memory.runs) == 0
+            ):
+                from agentica.model.message import Message as _ResumeMsg
+                resumed_messages = agent._session_log.load()
+                if resumed_messages:
+                    for rm in resumed_messages:
+                        agent.working_memory.add_message(
+                            _ResumeMsg(role=rm["role"], content=rm.get("content", ""))
+                        )
+                    logger.debug(
+                        f"Session resumed from JSONL: {len(resumed_messages)} messages"
+                    )
+
             # --- Initialise CostTracker for this run ---
             from agentica.cost_tracker import CostTracker as _CostTracker
             _cost_tracker = _CostTracker()
@@ -476,6 +495,22 @@ class Runner:
             # Clear query-level tool/skill filtering after run
             agent._enabled_tools = None
             agent._enabled_skills = None
+
+            # --- Session persist (CC-style JSONL append) ---
+            if agent._session_log is not None:
+                # Log user input
+                _user_text = None
+                if isinstance(message, str):
+                    _user_text = message
+                elif isinstance(message, Message):
+                    _user_text = message.content if isinstance(message.content, str) else str(message.content)
+                if _user_text:
+                    agent._session_log.append_message("user", _user_text)
+                # Log assistant output
+                _assistant_text = agent.run_response.content
+                if _assistant_text and isinstance(_assistant_text, str):
+                    agent._session_log.append_message("assistant", _assistant_text)
+
             agent._running = False
 
         trace_input = message if isinstance(message, str) else str(message) if message else None

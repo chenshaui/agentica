@@ -621,6 +621,20 @@ class CompressionManager:
         self._consecutive_auto_compact_failures = 0
         self.stats["auto_compact_count"] = self.stats.get("auto_compact_count", 0) + 1
         logger.info(f"Auto-compact complete — messages reduced to {len(messages)}")
+
+        # Write compact boundary to JSONL session log (if configured)
+        try:
+            if model is not None:
+                _agent_ref = getattr(model, '_agent_ref', None)
+                _agent = _agent_ref() if _agent_ref else None
+                if _agent is not None:
+                    _slog = getattr(_agent, '_session_log', None)
+                    if _slog is not None:
+                        _slog.append_compact_boundary(summary)
+                        logger.debug("Compact boundary written to session log")
+        except Exception as _cb_err:
+            logger.debug(f"Failed to write compact boundary: {_cb_err}")
+
         return True
 
     # -------------------------------------------------------------------------

@@ -11,6 +11,7 @@ from agentica.memory.summarizer import MemorySummarizer
 from agentica.memory.working import WorkingMemory
 from agentica.memory.workflow import WorkflowRun, WorkflowMemory
 from agentica.memory.search import MemoryChunk, WorkspaceMemorySearch
+from agentica.memory.session_log import SessionLog
 
 __all__ = [
     "AgentRun",
@@ -21,4 +22,5 @@ __all__ = [
     "WorkflowMemory",
     "MemoryChunk",
     "WorkspaceMemorySearch",
+    "SessionLog",
 ]
