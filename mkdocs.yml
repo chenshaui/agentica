@@ -20,7 +20,7 @@ theme:
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
-  favicon: assets/favicon.svg
+  favicon: assets/favicon.png
   icon:
     logo: material/robot-happy
   features:
