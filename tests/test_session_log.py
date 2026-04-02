@@ -297,5 +297,119 @@ class TestToolResultLogging:
         assert messages[1]["role"] == "tool"
 
 
+class TestResumeAt:
+    """Test query-granularity resume (CC's --resume-session-at)."""
+
+    def test_resume_at_truncates(self, tmp_dir):
+        """load(resume_at=uuid) should truncate at that message."""
+        log = SessionLog("resume-at", base_dir=tmp_dir)
+        u1 = log.append("user", "question 1")
+        log.append("assistant", "answer 1")
+        u2 = log.append("user", "question 2")
+        log.append("assistant", "answer 2")
+        log.append("user", "question 3")
+        log.append("assistant", "answer 3")
+
+        # Resume at the second user message (discard everything after)
+        messages = log.load(resume_at=u2)
+        assert len(messages) == 3  # q1 + a1 + q2
+        assert messages[0]["content"] == "question 1"
+        assert messages[2]["content"] == "question 2"
+        assert log._last_uuid == u2
+
+    def test_resume_at_with_boundary(self, tmp_dir):
+        """resume_at should respect compact boundaries."""
+        log = SessionLog("resume-at-boundary", base_dir=tmp_dir)
+        log.append("user", "old")
+        log.append("assistant", "old response")
+        log.append_compact_boundary("Summary of old conversation")
+        u1 = log.append("user", "new q1")
+        log.append("assistant", "new a1")
+        u2 = log.append("user", "new q2")
+        log.append("assistant", "new a2")
+
+        messages = log.load(resume_at=u2)
+        assert any("[Resumed session" in m["content"] for m in messages)
+        assert messages[-1]["content"] == "new q2"
+        assert not any("old" == m["content"] for m in messages)
+
+    def test_resume_at_nonexistent_uuid(self, tmp_dir):
+        """resume_at with unknown uuid should return all messages."""
+        log = SessionLog("resume-at-bad", base_dir=tmp_dir)
+        log.append("user", "q1")
+        log.append("assistant", "a1")
+
+        messages = log.load(resume_at="nonexistent-uuid")
+        assert len(messages) == 2
+
+
+class TestFork:
+    """Test session forking (CC's --fork-session)."""
+
+    def test_fork_creates_new_session(self, tmp_dir):
+        log = SessionLog("original", base_dir=tmp_dir)
+        log.append("user", "msg1")
+        log.append("assistant", "msg2")
+        log.append("user", "msg3")
+
+        forked = log.fork("forked-session")
+        assert forked.session_id == "forked-session"
+        assert forked.path.exists()
+
+        with open(forked.path, "r") as f:
+            entries = [json.loads(line) for line in f]
+        assert len(entries) == 3
+        assert all(e["session_id"] == "forked-session" for e in entries)
+
+    def test_fork_at_uuid(self, tmp_dir):
+        log = SessionLog("orig2", base_dir=tmp_dir)
+        u1 = log.append("user", "msg1")
+        log.append("assistant", "msg2")
+        log.append("user", "msg3")
+
+        forked = log.fork("forked-at", at_uuid=u1)
+        with open(forked.path, "r") as f:
+            entries = [json.loads(line) for line in f]
+        assert len(entries) == 1
+        assert entries[0]["content"] == "msg1"
+
+    def test_fork_preserves_original(self, tmp_dir):
+        log = SessionLog("orig3", base_dir=tmp_dir)
+        log.append("user", "msg1")
+        log.append("assistant", "msg2")
+
+        log.fork("forked3")
+        assert log.entry_count() == 2
+
+
+class TestListUserMessages:
+    """Test user message listing for query-granularity resume picker."""
+
+    def test_list_user_messages(self, tmp_dir):
+        log = SessionLog("user-msgs", base_dir=tmp_dir)
+        log.append("user", "question 1")
+        log.append("assistant", "answer 1")
+        log.append("user", "question 2")
+        log.append("assistant", "answer 2")
+        log.append("user", "question 3")
+
+        msgs = log.list_user_messages()
+        assert len(msgs) == 3
+        assert "question 3" in msgs[0]["content"]
+        assert "question 1" in msgs[2]["content"]
+        for m in msgs:
+            assert "uuid" in m
+            assert "timestamp" in m
+
+    def test_list_user_messages_limit(self, tmp_dir):
+        log = SessionLog("limit-msgs", base_dir=tmp_dir)
+        for i in range(10):
+            log.append("user", f"q{i}")
+            log.append("assistant", f"a{i}")
+
+        msgs = log.list_user_messages(limit=3)
+        assert len(msgs) == 3
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

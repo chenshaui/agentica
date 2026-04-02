@@ -140,41 +140,92 @@ def _cmd_newchat(agent_config=None, extra_tools=None, workspace=None, skills_reg
 
 def _cmd_resume(cmd_args=None, agent_config=None, extra_tools=None, workspace=None,
                 skills_registry=None, **kwargs):
-    """Resume a previous session from JSONL log."""
+    """Resume a previous session from JSONL log.
+
+    Usage:
+        /resume              — list sessions
+        /resume <session_id> — resume entire session
+        /resume <number>     — resume session by list number
+        /resume <session_id> at <uuid> — resume truncated at specific message
+    """
     from agentica.memory.session_log import SessionLog
-    from datetime import datetime
 
     sessions = SessionLog.list_sessions()
     if not sessions:
         console.print("[yellow]No sessions found to resume.[/yellow]")
         return
 
-    if cmd_args and cmd_args.strip():
-        # Direct resume by session_id
-        target = cmd_args.strip()
-        matching = [s for s in sessions if target in s["session_id"]]
-        if not matching:
-            console.print(f"[red]No session matching '{target}'[/red]")
-            return
-        chosen = matching[0]
+    args_str = (cmd_args or "").strip()
+
+    # Parse "session_id at uuid" syntax
+    resume_at_uuid = None
+    if " at " in args_str:
+        parts = args_str.split(" at ", 1)
+        args_str = parts[0].strip()
+        resume_at_uuid = parts[1].strip()
+
+    if args_str:
+        # Try number first
+        try:
+            idx = int(args_str) - 1
+            if 0 <= idx < len(sessions):
+                chosen = sessions[idx]
+            else:
+                console.print("[red]Invalid number.[/red]")
+                return
+        except ValueError:
+            # Match by session_id substring
+            matching = [s for s in sessions if args_str in s["session_id"]]
+            if not matching:
+                console.print(f"[red]No session matching '{args_str}'[/red]")
+                return
+            chosen = matching[0]
+
+        # If no at_uuid specified, show user messages for query-granularity resume
+        if resume_at_uuid is None:
+            log = SessionLog(chosen["session_id"])
+            user_msgs = log.list_user_messages(limit=10)
+            if user_msgs:
+                console.print(f"\n[bold]Session: {chosen['session_id']}[/bold]")
+                console.print("[dim]Recent queries (resume from any point):[/dim]\n")
+                for i, m in enumerate(user_msgs, 1):
+                    ts = m.get("timestamp", "")[:19].replace("T", " ") if m.get("timestamp") else ""
+                    console.print(f"  {i}. [dim]{ts}[/dim] {m['content']}")
+                console.print(f"\n[dim]Usage: /resume {chosen['session_id']} at <uuid>[/dim]")
+                console.print(f"[dim]Or just press Enter to resume from the end.[/dim]")
+
+        # Create agent with chosen session — auto-resumes from JSONL
+        agent_config = dict(agent_config)
+        agent_config["session_id"] = chosen["session_id"]
+        agent_config["_resume_at_uuid"] = resume_at_uuid  # passed to runner
+        current_agent = create_agent(agent_config, extra_tools, workspace, skills_registry)
+
+        # If resume_at specified, reload with truncation
+        if resume_at_uuid and current_agent._session_log:
+            from agentica.model.message import Message as _Msg
+            current_agent.working_memory.clear()
+            for rm in current_agent._session_log.load(resume_at=resume_at_uuid):
+                current_agent.working_memory.add_message(
+                    _Msg(role=rm["role"], content=rm.get("content", ""))
+                )
+
+        console.print(f"[green]Resumed session: {chosen['session_id']}"
+                     f"{f' at {resume_at_uuid[:8]}...' if resume_at_uuid else ''}[/green]")
+        return {"current_agent": current_agent}
     else:
-        # Show session list for user to pick
+        # Show session list
         console.print("\n[bold]Available sessions:[/bold]\n")
         for i, s in enumerate(sessions[:10], 1):
             ts_str = s.get("last_timestamp", "") or ""
             if ts_str:
-                ts_str = ts_str[:19].replace("T", " ")  # "2026-04-02T07:32:26" → "2026-04-02 07:32:26"
+                ts_str = ts_str[:19].replace("T", " ")
             size_kb = s["size_bytes"] / 1024
-            console.print(f"  {i}. [cyan]{s['session_id']}[/cyan]  {ts_str}  ({size_kb:.0f}KB)")
-        console.print(f"\n[dim]Usage: /resume <session_id> or /resume <number>[/dim]")
+            sid = s["session_id"]
+            # Truncate long UUIDs for display
+            display_id = f"{sid[:8]}...{sid[-4:]}" if len(sid) > 20 else sid
+            console.print(f"  {i}. [cyan]{display_id}[/cyan]  {ts_str}  ({size_kb:.0f}KB)")
+        console.print(f"\n[dim]Usage: /resume <number> or /resume <session_id>[/dim]")
         return
-
-    # Create agent with the chosen session_id — will auto-resume from JSONL
-    agent_config = dict(agent_config)  # don't mutate original
-    agent_config["session_id"] = chosen["session_id"]
-    current_agent = create_agent(agent_config, extra_tools, workspace, skills_registry)
-    console.print(f"[green]Resumed session: {chosen['session_id']}[/green]")
-    return {"current_agent": current_agent}
 
 
 def _cmd_clear(agent_config=None, extra_tools=None, extra_tool_names=None,

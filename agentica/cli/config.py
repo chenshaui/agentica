@@ -21,9 +21,9 @@ history_file = os.path.join(AGENTICA_HOME, "cli_history.txt")
 
 
 def _generate_session_id() -> str:
-    """Generate a timestamp-based session ID for CLI sessions."""
-    from datetime import datetime
-    return f"cli-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    """Generate a UUID session ID (CC convention)."""
+    from uuid import uuid4
+    return str(uuid4())
 
 # Tool icons for CLI display
 TOOL_ICONS = {
@@ -239,27 +239,18 @@ def create_agent(agent_config: dict, extra_tools: Optional[List] = None,
         if skills_summary:
             instructions.append(f"\n# Available Skills\n{skills_summary}")
 
-    # Build tools list: built-in tools + extra tools
-    from agentica.agent.config import PromptConfig
+    # Build extra tools list
     work_dir = agent_config.get("work_dir")
-    builtin_tools = get_builtin_tools(work_dir=work_dir, workspace=workspace)
-    all_tools = builtin_tools + (extra_tools or [])
 
-    agent_kwargs = {
-        "model": model,
-        "tools": all_tools,
-        "work_dir": work_dir,
-        "prompt_config": PromptConfig(add_datetime_to_instructions=True, enable_agentic_prompt=True),
-        "add_history_to_messages": True,
-        "debug": agent_config["debug"],
-        "workspace": workspace,
-        # CC-style: each CLI session auto-creates a JSONL session log
-        "session_id": agent_config.get("session_id") or _generate_session_id(),
-    }
-
-    # Add instructions if we have any
-    if instructions:
-        agent_kwargs["instructions"] = instructions
-
-    new_agent = Agent(**agent_kwargs)
+    # Use DeepAgent for full-featured CLI experience
+    from agentica.agent.deep import DeepAgent
+    new_agent = DeepAgent(
+        model=model,
+        tools=extra_tools,  # DeepAgent auto-includes builtin tools, extra_tools are merged
+        work_dir=work_dir,
+        workspace=workspace,
+        session_id=agent_config.get("session_id") or _generate_session_id(),
+        instructions="\n\n".join(instructions) if instructions else None,
+        debug=agent_config["debug"],
+    )
     return new_agent

@@ -134,9 +134,8 @@ agent.run_stream(message)
 | 机制 | 说明 |
 |------|------|
 | **Guardrails** | 4 层守卫: InputGuardrail, OutputGuardrail, ToolInputGuardrail, ToolOutputGuardrail |
-| **Death Spiral Detection** | 连续 N 轮全部工具调用失败时自动停止 |
+| **Death Spiral Detection** | 连续 5 轮全部工具调用失败时自动停止 |
 | **Cost Budget** | `RunConfig(max_cost_usd=N)` 设置运行成本上限 |
-| **Tool Loop Limit** | 最大 200 轮工具调用循环 (防止无限循环) |
 | **Stream Idle Timeout** | 检测流式响应中的 "静默挂起" |
 
 ## 下一步

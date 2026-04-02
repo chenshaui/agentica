@@ -147,15 +147,13 @@ class SessionLog:
     # Load / Resume
     # ------------------------------------------------------------------
 
-    def load(self) -> List[Dict[str, str]]:
+    def load(self, resume_at: Optional[str] = None) -> List[Dict[str, str]]:
         """Replay JSONL log for session resume.
 
-        Strategy (mirrors CC's loadTranscriptFile + buildConversationChain):
-        1. Large file optimization: if file > 5MB, only read after last boundary
-        2. Find the last compact_boundary
-        3. If boundary exists: inject summary, replay entries after it
-        4. If no boundary: replay all entries
-        5. Restore _last_uuid for correct chaining on subsequent appends
+        Args:
+            resume_at: Optional UUID — truncate the conversation at this message
+                       (inclusive). Mirrors CC's --resume-session-at <uuid>.
+                       Messages after this UUID are discarded (forms a fork point).
 
         Returns:
             List of message dicts with 'role' and 'content' keys.
@@ -164,13 +162,13 @@ class SessionLog:
             return []
 
         file_size = self.path.stat().st_size
-        if file_size > _LARGE_FILE_THRESHOLD:
+        if file_size > _LARGE_FILE_THRESHOLD and resume_at is None:
             return self._load_large_file()
 
-        return self._load_full()
+        return self._load_full(resume_at=resume_at)
 
-    def _load_full(self) -> List[Dict[str, str]]:
-        """Load entire file (small files < 5MB)."""
+    def _load_full(self, resume_at: Optional[str] = None) -> List[Dict[str, str]]:
+        """Load entire file (small files < 5MB), optionally truncated at resume_at."""
         lines = self.path.read_text(encoding="utf-8").splitlines()
         entries: List[Dict] = []
         last_boundary_idx = -1
@@ -187,6 +185,23 @@ class SessionLog:
                     last_boundary_summary = entry.get("summary", "")
             except json.JSONDecodeError:
                 continue
+
+        # CC's --resume-session-at: slice(0, target_index + 1)
+        if resume_at is not None:
+            cut_idx = -1
+            for i, e in enumerate(entries):
+                if e.get("uuid") == resume_at:
+                    cut_idx = i
+                    break
+            if cut_idx >= 0:
+                entries = entries[:cut_idx + 1]
+                # Recalculate boundary after truncation
+                last_boundary_idx = -1
+                last_boundary_summary = None
+                for i, e in enumerate(entries):
+                    if e.get("type") == "compact_boundary":
+                        last_boundary_idx = i
+                        last_boundary_summary = e.get("summary", "")
 
         if entries:
             self._last_uuid = entries[-1].get("uuid")
@@ -305,6 +320,85 @@ class SessionLog:
             })
 
         return sessions
+
+    # ------------------------------------------------------------------
+    # Fork: create a new session branching from a specific message
+    # ------------------------------------------------------------------
+
+    def fork(self, new_session_id: str, at_uuid: Optional[str] = None) -> "SessionLog":
+        """Fork this session into a new one, optionally truncated at at_uuid.
+
+        Mirrors CC's --fork-session: copies entries (up to at_uuid) into a new
+        JSONL file with re-stamped session_id. The original file is untouched
+        (append-only principle — old branches stay on disk).
+
+        Args:
+            new_session_id: The session_id for the forked session.
+            at_uuid: Optional UUID to truncate at (inclusive). None = copy all.
+
+        Returns:
+            A new SessionLog instance for the forked session.
+        """
+        if not self.path.exists():
+            raise FileNotFoundError(f"Session log not found: {self.path}")
+
+        new_log = SessionLog(new_session_id, base_dir=str(self.base_dir))
+
+        lines = self.path.read_text(encoding="utf-8").splitlines()
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            # Re-stamp session_id (CC convention on fork)
+            entry["session_id"] = new_session_id
+            new_log._append(entry)
+            new_log._last_uuid = entry.get("uuid")
+
+            # Stop at the fork point
+            if at_uuid and entry.get("uuid") == at_uuid:
+                break
+
+        logger.debug(f"Forked session {self.session_id} → {new_session_id}"
+                    f"{f' at {at_uuid}' if at_uuid else ''}")
+        return new_log
+
+    # ------------------------------------------------------------------
+    # List user messages (for query-granularity resume picker)
+    # ------------------------------------------------------------------
+
+    def list_user_messages(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """List user messages from the session log (most recent first).
+
+        Used by /resume to show resumable query points.
+
+        Returns:
+            List of dicts with uuid, content (truncated), timestamp.
+        """
+        if not self.path.exists():
+            return []
+
+        user_msgs = []
+        for line in self.path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+                if entry.get("type") == "user":
+                    content = entry.get("content", "")
+                    user_msgs.append({
+                        "uuid": entry.get("uuid", ""),
+                        "content": content[:100] + ("..." if len(content) > 100 else ""),
+                        "timestamp": entry.get("timestamp", ""),
+                    })
+            except json.JSONDecodeError:
+                continue
+
+        # Most recent first, limited
+        return list(reversed(user_msgs[-limit:]))
 
     # ------------------------------------------------------------------
     # Utilities

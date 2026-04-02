@@ -111,6 +111,7 @@ from agentica.utils.tokens import count_tokens, count_text_tokens, count_image_t
 
 # ── Agent (core) ──
 from agentica.agent import Agent, AgentCancelledError
+from agentica.agent.deep import DeepAgent
 from agentica.agent.config import PromptConfig, ToolConfig, WorkspaceMemoryConfig, TeamConfig, SandboxConfig, ToolRuntimeConfig, SkillRuntimeConfig
 from agentica.run_config import RunConfig
 from agentica.workflow import Workflow, WorkflowSession
@@ -169,11 +170,6 @@ _LAZY_IMPORTS = {
     "Rerank": "agentica.rerank.base",
     "JinaRerank": "agentica.rerank.jina",
     "ZhipuAIRerank": "agentica.rerank.zhipuai",
-
-    # file
-    "File": "agentica.file.base",
-    "CsvFile": "agentica.file.csv",
-    "TextFile": "agentica.file.txt",
 
     # skills
     "Skill": "agentica.skills",
@@ -334,9 +330,6 @@ if TYPE_CHECKING:
     from agentica.rerank.base import Rerank  # noqa: F401
     from agentica.rerank.jina import JinaRerank  # noqa: F401
     from agentica.rerank.zhipuai import ZhipuAIRerank  # noqa: F401
-    from agentica.file.base import File  # noqa: F401
-    from agentica.file.csv import CsvFile  # noqa: F401
-    from agentica.file.txt import TextFile  # noqa: F401
     from agentica.guardrails import (  # noqa: F401
         GuardrailFunctionOutput, InputGuardrail, OutputGuardrail,
         InputGuardrailResult, OutputGuardrailResult,

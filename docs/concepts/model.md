@@ -108,12 +108,11 @@ Model 层集成了多项运行时安全机制：
 
 | 机制 | 说明 |
 |------|------|
-| **Tool Loop 上限** | 默认 200 轮工具调用循环，防止无限循环 |
 | **Death Spiral 检测** | 连续 5 轮全部工具调用失败时自动停止 |
 | **Cost Budget** | 通过 `CostTracker` 追踪成本，超预算自动停止 |
 | **Max Tokens Recovery** | 输出被截断时自动重试（最多 3 次） |
-| **API 重试** | 可重试错误（429, 503, timeout 等）自动重试 |
-| **Context 压缩** | token 超限时自动触发 compression |
+| **API 重试** | 可重试错误（429, 503, timeout 等）指数退避重试（最多 3 次） |
+| **Context 压缩** | token 超限时自动触发 3 层压缩（micro → auto → reactive） |
 
 ## 下一步
 
