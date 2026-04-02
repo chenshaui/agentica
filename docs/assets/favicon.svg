@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Background circle -->
+  <circle cx="16" cy="16" r="15" fill="#3B7DD8"/>
+  <!-- Cat body -->
+  <ellipse cx="16" cy="19" rx="9" ry="10" fill="#E3F0FC"/>
+  <!-- Cat head -->
+  <circle cx="16" cy="12" r="7.5" fill="#E3F0FC"/>
+  <!-- Left ear -->
+  <polygon points="9.5,7 7,1.5 12,5" fill="#3B7DD8"/>
+  <polygon points="10,6.5 8.2,3 11.5,5.2" fill="#E3F0FC"/>
+  <!-- Right ear -->
+  <polygon points="22.5,7 25,1.5 20,5" fill="#3B7DD8"/>
+  <polygon points="22,6.5 23.8,3 20.5,5.2" fill="#E3F0FC"/>
+  <!-- Eyes -->
+  <circle cx="13" cy="11.5" r="1.2" fill="#2C3E50"/>
+  <circle cx="19" cy="11.5" r="1.2" fill="#2C3E50"/>
+  <!-- Nose -->
+  <ellipse cx="16" cy="14" rx="1" ry="0.7" fill="#F4A4B8"/>
+  <!-- Mouth -->
+  <path d="M14.5,15 Q16,16.5 17.5,15" fill="none" stroke="#2C3E50" stroke-width="0.5"/>
+  <!-- Blue patches -->
+  <ellipse cx="11" cy="17" rx="3.5" ry="4" fill="#3B7DD8" opacity="0.6"/>
+  <ellipse cx="21" cy="17" rx="3.5" ry="4" fill="#3B7DD8" opacity="0.6"/>
+  <!-- Letter A -->
+  <text x="16" y="27.5" text-anchor="middle" font-family="Arial,sans-serif" font-weight="bold" font-size="6" fill="white">A</text>
+</svg>
