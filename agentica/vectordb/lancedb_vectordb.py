@@ -129,6 +129,15 @@ class LanceDb(VectorDb):
             self.connection = self._init_table()  # Connection update is needed
 
     def _init_table(self) -> lancedb.db.LanceTable:
+        # Check if table already exists — open instead of overwriting (prevents data loss)
+        try:
+            existing = self.connection.table_names()
+            if self.table_name in existing:
+                logger.info(f"Opening existing table: {self.table_name}")
+                return self.connection.open_table(self.table_name)
+        except Exception:
+            pass
+
         schema = pa.schema(
             [
                 pa.field(
@@ -144,7 +153,7 @@ class LanceDb(VectorDb):
         )
 
         logger.info(f"Creating table: {self.table_name}")
-        tbl = self.connection.create_table(self.table_name, schema=schema, mode="overwrite")
+        tbl = self.connection.create_table(self.table_name, schema=schema)
         return tbl  # type: ignore
 
     def doc_exists(self, document: Document) -> bool:
@@ -314,9 +323,18 @@ class LanceDb(VectorDb):
             self.connection.drop_table(self.table_name)
 
     def exists(self) -> bool:
-        if self.connection:
-            if self.table_name in self.connection.table_names():
-                return True
+        if self.connection is not None:
+            try:
+                # Compat: older lancedb uses list_tables(), newer uses table_names()
+                if hasattr(self.connection, "table_names"):
+                    tables = self.connection.table_names()
+                elif hasattr(self.connection, "list_tables"):
+                    tables = self.connection.list_tables()
+                else:
+                    return False
+                return self.table_name in tables
+            except Exception:
+                return False
         return False
 
     def get_count(self) -> int:

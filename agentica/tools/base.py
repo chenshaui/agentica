@@ -110,6 +110,11 @@ class Function(BaseModel):
     # Write/shell tools (execute, write_file, edit_file …) must remain False (default).
     # Mirrors CC's StreamingToolExecutor.isConcurrencySafe flag.
     concurrency_safe: bool = False
+    # Maximum result size (chars) before persisting to disk.
+    # None = never persist (e.g. read_file — avoids reading its own persisted file).
+    # Set a positive int to enable (e.g. 50_000 for execute/bash tools).
+    # Mirrors CC's toolResultStorage maxResultSizeChars.
+    max_result_size_chars: Optional[int] = None
 
     # --*-- FOR INTERNAL USE ONLY --*--
     # Weak reference to the agent that the function is associated with.

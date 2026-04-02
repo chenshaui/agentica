@@ -197,6 +197,10 @@ class BuiltinFileTool(Tool):
             logger.error(f"Error listing directory {directory}: {e}")
             return f"Error listing directory: {e}"
 
+    # Maximum file size (bytes) for read_file.  Larger files must use offset+limit.
+    # Mirrors CC's FileReadTool maxSizeBytes (256KB).
+    MAX_FILE_SIZE_BYTES = 256_000
+
     async def read_file(
             self,
             file_path: str,
@@ -236,6 +240,19 @@ class BuiltinFileTool(Tool):
                 return f"Error: File not found: {file_path}"
             if not path.is_file():
                 return f"Error: Not a file: {file_path}"
+
+            # --- Large-file guard (mirrors CC's maxSizeBytes) ---
+            try:
+                file_size = path.stat().st_size
+                if file_size > self.MAX_FILE_SIZE_BYTES:
+                    total_lines = sum(1 for _ in open(path, errors='ignore'))
+                    return (
+                        f"Error: File too large ({file_size:,} bytes, {total_lines:,} lines). "
+                        f"Use offset and limit to read specific sections.\n"
+                        f"Example: read_file('{file_path}', offset=0, limit=100)"
+                    )
+            except OSError:
+                pass  # stat failed — proceed with read, let it fail naturally
 
             limit = limit if limit is not None else self.max_read_lines
             max_line_len = self.max_line_length
@@ -869,6 +886,10 @@ class BuiltinExecuteTool(Tool):
         from agentica.tools.shell_tool import ShellTool
         self._shell = ShellTool(work_dir=work_dir, timeout=timeout)
         self.register(self.execute)
+        # Large bash outputs are persisted to disk (context gets preview only).
+        # read_file keeps max_result_size_chars=None (never persist — avoids
+        # reading its own persisted output file in a loop).
+        self.functions["execute"].max_result_size_chars = 50_000
 
     async def execute(self, command: str) -> str:
         """Executes a given command, capturing both stdout and stderr.

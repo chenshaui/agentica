@@ -91,6 +91,16 @@ class ToolsMixin:
         retrieval_timer.start()
         docs_from_knowledge = self.get_relevant_docs_from_knowledge(query=query)
         if docs_from_knowledge is not None:
+            # Truncate each document's content to prevent context overflow
+            _max_doc_chars = 2000
+            for doc in docs_from_knowledge:
+                if isinstance(doc, dict) and isinstance(doc.get("content"), str):
+                    if len(doc["content"]) > _max_doc_chars:
+                        doc["content"] = doc["content"][:_max_doc_chars] + "..."
+                elif hasattr(doc, "content") and isinstance(doc.content, str):
+                    if len(doc.content) > _max_doc_chars:
+                        doc.content = doc.content[:_max_doc_chars] + "..."
+
             references = MessageReferences(
                 query=query, references=docs_from_knowledge, time=round(retrieval_timer.elapsed, 4)
             )

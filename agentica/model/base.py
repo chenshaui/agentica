@@ -475,6 +475,27 @@ class Model(ABC):
                 if function_call.function.show_result:
                     yield ModelResponse(content=function_call_output)
 
+            # --- Large result persistence (mirrors CC's toolResultStorage) ---
+            # If the result is too large, save to disk and replace with preview.
+            if (
+                function_call_success
+                and isinstance(function_call_output, str)
+                and function_call.function.max_result_size_chars is not None
+            ):
+                try:
+                    from agentica.compression.tool_result_storage import maybe_persist_result
+                    _agent = self._agent_ref() if self._agent_ref else None
+                    _sid = getattr(_agent, 'run_id', 'default') if _agent else 'default'
+                    function_call_output = maybe_persist_result(
+                        tool_name=function_call.function.name,
+                        tool_use_id=function_call.call_id or f"call_{i}",
+                        content=function_call_output,
+                        session_id=_sid,
+                        max_result_size_chars=function_call.function.max_result_size_chars,
+                    )
+                except Exception as _persist_err:
+                    logger.debug(f"Tool result persistence skipped: {_persist_err}")
+
             function_call_result = Message(
                 role=tool_role,
                 content=function_call_output if function_call_success else function_call.error,
@@ -576,21 +597,34 @@ class Model(ABC):
         if cm is None:
             return
 
+        # Helper: fire compact hooks on the agent
+        async def _fire_compact_hooks(event: str) -> None:
+            _hooks = getattr(agent, '_run_hooks', None)
+            if _hooks is not None:
+                fn = getattr(_hooks, event, None)
+                if fn is not None:
+                    await fn(agent=agent, messages=messages)
+
         # Try auto_compact first (token-based, with circuit-breaker)
         _auto_compact = getattr(cm, 'auto_compact', None)
         if _auto_compact is not None:
             try:
+                if cm._should_auto_compact(messages, model=self):
+                    await _fire_compact_hooks('on_pre_compact')
                 compacted = await _auto_compact(messages, model=self)
                 if compacted:
                     logger.info("Auto-compact triggered: context compressed")
+                    await _fire_compact_hooks('on_post_compact')
                     return  # messages replaced — skip rule-based compress
             except Exception as _ac_err:
                 logger.warning(f"Auto-compact failed: {_ac_err}")
 
         # Fallback: rule-based compress (truncate + drop old rounds)
         if cm.should_compress(messages, tools=self.tools, model=self):
+            await _fire_compact_hooks('on_pre_compact')
             logger.info("Compressing tool results to reduce context size")
             await cm.compress(messages, tools=self.tools, model=self)
+            await _fire_compact_hooks('on_post_compact')
 
 
     async def handle_post_tool_call_messages(self, messages: List[Message], model_response: ModelResponse) -> ModelResponse:
@@ -625,11 +659,15 @@ class Model(ABC):
             return model_response
 
         # ------------------------------------------------------------------
-        # Loop-state constants (mirrors CC's query.ts)
+        # Loop-state constants
+        # Note: CC's main loop has NO maxTurns limit (undefined); 200 is our
+        # defensive safety-valve to prevent runaway tool loops.
+        # Configurable via ToolConfig(max_tool_turns=N).
         # ------------------------------------------------------------------
-        _MAX_TOOL_LOOP_TURNS   = getattr(self, '_max_tool_loop_turns',   50)
-        _MAX_TOKENS_RECOVERY   = getattr(self, '_max_tokens_recovery',    3)
-        _MAX_API_RETRY         = getattr(self, '_max_api_retry',           3)
+        _MAX_TOOL_LOOP_TURNS       = getattr(self, '_max_tool_loop_turns',       200)
+        _MAX_TOKENS_RECOVERY       = getattr(self, '_max_tokens_recovery',        3)
+        _MAX_API_RETRY             = getattr(self, '_max_api_retry',              3)
+        _DEATH_SPIRAL_THRESHOLD    = getattr(self, '_death_spiral_threshold',     5)
         _RETRYABLE_SUBSTRINGS  = ("rate_limit", "rate limit", "429", "503", "502",
                                    "connection", "timeout", "overloaded")
         _PROMPT_TOO_LONG_HINTS = ("prompt_too_long", "context_length_exceeded",
@@ -642,18 +680,56 @@ class Model(ABC):
             self._loop_turn_count: int = 0
             self._max_tokens_recovery_count: int = 0
             self._reactive_compact_done: bool = False
+            self._consecutive_all_error_turns: int = 0
 
         self._loop_turn_count += 1
-        if self._loop_turn_count > _MAX_TOOL_LOOP_TURNS:
+
+        # ------------------------------------------------------------------
+        # Death spiral detection (mirrors CC's death-spiral guard)
+        # If the last batch of tool results are ALL errors, increment counter.
+        # N consecutive all-error turns → error→hook→retry→error loop, stop early.
+        # ------------------------------------------------------------------
+        recent_tool_results = []
+        for m in reversed(messages):
+            if m.role in ("tool",) and hasattr(m, 'tool_call_error'):
+                recent_tool_results.append(m)
+            elif m.role == "assistant":
+                break  # stop at the assistant message that triggered these tool calls
+        if recent_tool_results and all(getattr(m, 'tool_call_error', False) for m in recent_tool_results):
+            self._consecutive_all_error_turns += 1
+        else:
+            self._consecutive_all_error_turns = 0
+
+        if self._consecutive_all_error_turns >= _DEATH_SPIRAL_THRESHOLD:
             logger.warning(
-                f"[LoopSafetyValve] Tool loop exceeded {_MAX_TOOL_LOOP_TURNS} turns — stopping."
+                f"[DeathSpiral] {self._consecutive_all_error_turns} consecutive turns "
+                f"with ALL tool calls failing — stopping to prevent infinite error loop."
             )
             if model_response.content is None:
                 model_response.content = ""
             model_response.content += (
-                f"\n\n[Warning: stopped after {_MAX_TOOL_LOOP_TURNS} tool-use turns]"
+                f"\n\n[Error: stopped after {self._consecutive_all_error_turns} consecutive "
+                f"turns of all tool calls failing. This appears to be an unrecoverable error loop.]"
             )
             return model_response
+
+        # ------------------------------------------------------------------
+        # Cost budget check: stop if accumulated cost exceeds max_cost_usd
+        # ------------------------------------------------------------------
+        _max_cost = getattr(self, '_max_cost_usd', None)
+        if _max_cost is not None and self._cost_tracker is not None:
+            if self._cost_tracker.total_cost_usd >= _max_cost:
+                logger.warning(
+                    f"[BudgetExceeded] ${self._cost_tracker.total_cost_usd:.4f} >= "
+                    f"${_max_cost:.4f} — stopping run."
+                )
+                if model_response.content is None:
+                    model_response.content = ""
+                model_response.content += (
+                    f"\n\n[Warning: cost budget exceeded "
+                    f"(${self._cost_tracker.total_cost_usd:.4f} >= ${_max_cost:.4f})]"
+                )
+                return model_response
 
         # ------------------------------------------------------------------
         # Apply compression before the next LLM call
@@ -750,6 +826,50 @@ class Model(ABC):
             ):
                 yield ModelResponse(content=last_message.content)
         else:
+            # Death spiral detection (mirrors non-stream path)
+            _DEATH_SPIRAL_THRESHOLD = getattr(self, '_death_spiral_threshold', 5)
+            if not hasattr(self, '_loop_turn_count'):
+                self._loop_turn_count = 0
+                self._consecutive_all_error_turns = 0
+            self._loop_turn_count += 1
+
+            # Death spiral: all tool results in the last batch are errors
+            recent_tool_results = []
+            for m in reversed(messages):
+                if m.role in ("tool",) and hasattr(m, 'tool_call_error'):
+                    recent_tool_results.append(m)
+                elif m.role == "assistant":
+                    break
+            if recent_tool_results and all(getattr(m, 'tool_call_error', False) for m in recent_tool_results):
+                self._consecutive_all_error_turns = getattr(self, '_consecutive_all_error_turns', 0) + 1
+            else:
+                self._consecutive_all_error_turns = 0
+
+            if self._consecutive_all_error_turns >= _DEATH_SPIRAL_THRESHOLD:
+                logger.warning(
+                    f"[DeathSpiral] Stream: {self._consecutive_all_error_turns} consecutive "
+                    f"all-error turns — stopping."
+                )
+                yield ModelResponse(
+                    content=f"\n\n[Error: stopped after {self._consecutive_all_error_turns} consecutive "
+                    f"turns of all tool calls failing. Unrecoverable error loop detected.]"
+                )
+                return
+
+            # Cost budget check
+            _max_cost = getattr(self, '_max_cost_usd', None)
+            if _max_cost is not None and self._cost_tracker is not None:
+                if self._cost_tracker.total_cost_usd >= _max_cost:
+                    logger.warning(
+                        f"[BudgetExceeded] Stream: ${self._cost_tracker.total_cost_usd:.4f} >= "
+                        f"${_max_cost:.4f} — stopping."
+                    )
+                    yield ModelResponse(
+                        content=f"\n\n[Warning: cost budget exceeded "
+                        f"(${self._cost_tracker.total_cost_usd:.4f} >= ${_max_cost:.4f})]"
+                    )
+                    return
+
             await self._maybe_compress_messages(messages)
             async for model_response in self.response_stream(messages=messages):
                 yield model_response
@@ -1149,3 +1269,4 @@ class Model(ABC):
         self._loop_turn_count = 0
         self._max_tokens_recovery_count = 0
         self._reactive_compact_done = False
+        self._consecutive_all_error_turns = 0

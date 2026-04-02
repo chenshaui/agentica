@@ -602,6 +602,11 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
             self.model.functions.clear()
         if self.model.tools:
             self.model.tools.clear()
+        # Reset tool-call state so each agent run starts clean.
+        # Prevents function_call_stack / tool_choice leaking between runs
+        # (or between agents that share the same Model instance).
+        self.model.function_call_stack = None
+        self.model.tool_choice = None
 
         # Set agent reference on model (for lifecycle hooks in tool execution)
         import weakref

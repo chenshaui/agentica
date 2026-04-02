@@ -377,6 +377,59 @@ You are a helpful AI assistant.
 
         return "\n\n---\n\n".join(contents) if contents else ""
 
+    def get_git_context(self, max_status_lines: int = 30) -> Optional[str]:
+        """Get git status context for system prompt injection.
+
+        Returns branch, uncommitted changes, and recent commits.
+        Returns None if not in a git repo or git is unavailable.
+        """
+        import subprocess
+
+        cwd = str(self.path)
+        try:
+            subprocess.run(
+                ["git", "rev-parse", "--git-dir"],
+                cwd=cwd, capture_output=True, check=True, timeout=5,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+            return None
+
+        parts = []
+        try:
+            branch = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=cwd, capture_output=True, text=True, timeout=5,
+            ).stdout.strip()
+            if branch:
+                parts.append(f"Git branch: {branch}")
+        except Exception:
+            pass
+
+        try:
+            status = subprocess.run(
+                ["git", "status", "--short"],
+                cwd=cwd, capture_output=True, text=True, timeout=5,
+            ).stdout.strip()
+            if status:
+                lines = status.splitlines()
+                if len(lines) > max_status_lines:
+                    lines = lines[:max_status_lines] + [f"... ({len(lines) - max_status_lines} more)"]
+                parts.append(f"Uncommitted changes:\n{chr(10).join(lines)}")
+        except Exception:
+            pass
+
+        try:
+            log = subprocess.run(
+                ["git", "log", "--oneline", "-3"],
+                cwd=cwd, capture_output=True, text=True, timeout=5,
+            ).stdout.strip()
+            if log:
+                parts.append(f"Recent commits:\n{log}")
+        except Exception:
+            pass
+
+        return "\n".join(parts) if parts else None
+
     async def get_memory_prompt(self, days: int = 2) -> str:
         """Get recent memory (for injecting into context).
 

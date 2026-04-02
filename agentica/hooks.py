@@ -140,6 +140,46 @@ class RunHooks:
         """Called when a task is transferred from one agent to another."""
         pass
 
+    async def on_user_prompt(
+        self,
+        agent: Any,
+        message: str,
+        **kwargs,
+    ) -> Optional[str]:
+        """Called before a user prompt is processed.
+
+        Return a modified message string to replace the original, or None to
+        keep it unchanged.  Mirrors CC's UserPromptSubmit hook.
+        """
+        return None
+
+    async def on_pre_compact(
+        self,
+        agent: Any,
+        messages: Optional[List] = None,
+        **kwargs,
+    ) -> None:
+        """Called just before context compression is triggered.
+
+        Use for: saving state, logging, custom archival before messages are
+        compressed/dropped.  Mirrors CC's PreCompact hook.
+        """
+        pass
+
+    async def on_post_compact(
+        self,
+        agent: Any,
+        messages: Optional[List] = None,
+        **kwargs,
+    ) -> None:
+        """Called right after context compression completes.
+
+        ``messages`` is the compressed result (may be much shorter than before).
+        Use for: post-compression analytics, re-injecting critical context.
+        Mirrors CC's PostCompact hook.
+        """
+        pass
+
 
 class ConversationArchiveHooks(RunHooks):
     """RunHooks that auto-archives conversations to workspace after each agent run.
@@ -236,3 +276,20 @@ class _CompositeRunHooks(RunHooks):
     async def on_agent_transfer(self, from_agent: Any, to_agent: Any, **kwargs) -> None:
         for h in self._hooks_list:
             await h.on_agent_transfer(from_agent=from_agent, to_agent=to_agent, **kwargs)
+
+    async def on_user_prompt(self, agent: Any, message: str, **kwargs) -> Optional[str]:
+        result = None
+        for h in self._hooks_list:
+            r = await h.on_user_prompt(agent=agent, message=message, **kwargs)
+            if r is not None:
+                result = r
+                message = r  # chain: next hook sees the modified message
+        return result
+
+    async def on_pre_compact(self, agent: Any, messages=None, **kwargs) -> None:
+        for h in self._hooks_list:
+            await h.on_pre_compact(agent=agent, messages=messages, **kwargs)
+
+    async def on_post_compact(self, agent: Any, messages=None, **kwargs) -> None:
+        for h in self._hooks_list:
+            await h.on_post_compact(agent=agent, messages=messages, **kwargs)

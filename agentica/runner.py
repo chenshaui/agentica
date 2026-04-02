@@ -228,6 +228,9 @@ class Runner:
                 agent.model._loop_turn_count = 0
                 agent.model._max_tokens_recovery_count = 0
                 agent.model._reactive_compact_done = False
+                agent.model._consecutive_all_error_turns = 0
+                # Pass cost budget to model for per-turn checking
+                agent.model._max_cost_usd = getattr(agent, '_run_max_cost_usd', None)
 
             # Add introduction if provided
             if agent.prompt_config.introduction is not None:
@@ -509,16 +512,29 @@ class Runner:
         stream_iter: AsyncIterator[RunResponse],
         run_timeout: Optional[float] = None,
         first_token_timeout: Optional[float] = None,
+        idle_timeout: Optional[float] = None,
     ) -> AsyncIterator[RunResponse]:
-        """Wrap an async streaming iterator with timeout control."""
+        """Wrap an async streaming iterator with timeout control.
+
+        Three independent timeouts (any one can fire):
+        - first_token_timeout: max seconds to wait for the first token.
+        - idle_timeout:        max seconds between consecutive tokens.
+                               Detects "silent hang" where the connection stays
+                               open but no data flows (mirrors CC's stream idle
+                               watchdog in claude.ts).
+        - run_timeout:         max total wall-clock seconds for the entire stream.
+        """
         import time
 
         start_time = time.time()
         first_token_received = False
+        last_token_time = start_time
 
         async for item in stream_iter:
+            now = time.time()
+
             if not first_token_received:
-                elapsed = time.time() - start_time
+                elapsed = now - start_time
                 if first_token_timeout is not None and elapsed > first_token_timeout:
                     logger.warning(f"First token timed out after {first_token_timeout} seconds")
                     yield RunResponse(
@@ -530,7 +546,7 @@ class Runner:
                 first_token_received = True
 
             if run_timeout is not None:
-                elapsed = time.time() - start_time
+                elapsed = now - start_time
                 if elapsed > run_timeout:
                     logger.warning(f"Stream run timed out after {run_timeout} seconds")
                     yield RunResponse(
@@ -540,6 +556,19 @@ class Runner:
                     )
                     return
 
+            # Idle watchdog: detect "silent hang" between tokens
+            if idle_timeout is not None and first_token_received:
+                idle_elapsed = now - last_token_time
+                if idle_elapsed > idle_timeout:
+                    logger.warning(f"Stream idle timeout: no token for {idle_elapsed:.1f}s (limit {idle_timeout}s)")
+                    yield RunResponse(
+                        run_id=str(uuid4()),
+                        content=f"Stream idle timeout: no new token for {idle_timeout} seconds",
+                        event="StreamIdleTimeout",
+                    )
+                    return
+
+            last_token_time = now
             yield item
 
     async def _run_with_timeout(
@@ -650,6 +679,10 @@ class Runner:
         hooks = config.hooks
         enabled_tools = config.enabled_tools
         enabled_skills = config.enabled_skills
+        max_cost_usd = config.max_cost_usd
+
+        # Stash cost budget on agent for _run_impl to pick up
+        self.agent._run_max_cost_usd = max_cost_usd
 
         if run_timeout is not None:
             return await self._run_with_timeout(
@@ -723,10 +756,14 @@ class Runner:
         stream_intermediate_steps = config.stream_intermediate_steps
         run_timeout = config.run_timeout
         first_token_timeout = config.first_token_timeout
+        idle_timeout = config.idle_timeout
         save_response_to_file = config.save_response_to_file
         hooks = config.hooks
         enabled_tools = config.enabled_tools
         enabled_skills = config.enabled_skills
+
+        # Stash cost budget on agent for _run_impl to pick up
+        self.agent._run_max_cost_usd = config.max_cost_usd
 
         if self.agent.response_model is not None:
             raise ValueError("Structured output does not support streaming. Use run() instead.")
@@ -746,9 +783,10 @@ class Runner:
             enabled_skills=enabled_skills,
             **kwargs,
         )
-        if run_timeout is not None or first_token_timeout is not None:
+        if run_timeout is not None or first_token_timeout is not None or idle_timeout is not None:
             resp = self._wrap_stream_with_timeout(
-                resp, run_timeout=run_timeout, first_token_timeout=first_token_timeout
+                resp, run_timeout=run_timeout, first_token_timeout=first_token_timeout,
+                idle_timeout=idle_timeout,
             )
 
         async for item in resp:

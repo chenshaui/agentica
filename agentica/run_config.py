@@ -39,9 +39,16 @@ class RunConfig:
     tool_choice: Optional[Union[str, Dict[str, Any]]] = None
     run_timeout: Optional[float] = None
     first_token_timeout: Optional[float] = None
+    # Max seconds between consecutive streaming tokens before cancelling.
+    # Detects "silent hang" (connection alive but no data flowing).
+    # Mirrors CC's stream idle watchdog in claude.ts.
+    idle_timeout: Optional[float] = None
     save_response_to_file: Optional[str] = None
     stream_intermediate_steps: bool = False
     hooks: Optional[RunHooks] = None
     # Query-level whitelist: None = keep agent defaults, list = only these tools/skills
     enabled_tools: Optional[List[str]] = None
     enabled_skills: Optional[List[str]] = None
+    # Cost budget: stop the run when total cost exceeds this amount (USD).
+    # None = no limit. Works with CostTracker (always active).
+    max_cost_usd: Optional[float] = None

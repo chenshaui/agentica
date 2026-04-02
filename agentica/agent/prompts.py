@@ -101,7 +101,13 @@ class PromptsMixin:
         return []
 
     def _get_config_directives(self) -> List[str]:
-        """Return prompt directives from prompt_config flags."""
+        """Return prompt directives from prompt_config flags.
+
+        NOTE: datetime is excluded here to avoid polluting the static Instructions
+        block.  It is appended at the *very end* of the system prompt (dynamic zone)
+        by get_system_message() — this preserves prefix-cache for all LLM providers
+        (OpenAI, Anthropic, vLLM, etc.) that cache from the start of the prompt.
+        """
         pc = self.prompt_config
         directives: List[str] = []
         if pc.prevent_prompt_leakage:
@@ -118,8 +124,7 @@ class PromptsMixin:
             directives.append("Only use the tools you are provided.")
         if pc.markdown and self.response_model is None:
             directives.append("Use markdown to format your answers.")
-        if pc.add_datetime_to_instructions:
-            directives.append(f"The current time is {datetime.now()}")
+        # datetime is now handled in the dynamic zone (end of system prompt)
         if self.name is not None and pc.add_name_to_instructions:
             directives.append(f"Your name is: {self.name}.")
         if pc.output_language is not None:
@@ -170,6 +175,24 @@ class PromptsMixin:
             return await self._build_enhanced_system_message()
 
         # 5. Default system message
+        #
+        # Structure optimised for prefix cache (OpenAI / Anthropic / vLLM):
+        #
+        #   ┌─ STATIC ZONE ──────────────────────────────────┐
+        #   │ description, task, role, team, instructions,    │  ← never changes
+        #   │ guidelines, expected_output, additional_context │     between runs
+        #   ├─ SEMI-STATIC ZONE ─────────────────────────────┤
+        #   │ workspace context (AGENT.md etc.)               │  ← rarely changes
+        #   │ model system message                            │
+        #   │ team transfer prompt                            │
+        #   ├─ DYNAMIC ZONE ─────────────────────────────────┤
+        #   │ workspace memory, session summary, datetime     │  ← may change every
+        #   │ json output prompt                              │     turn / run
+        #   └────────────────────────────────────────────────┘
+        #
+        # By keeping all dynamic content at the END, the static prefix is
+        # identical across runs and will be served from prompt cache.
+
         instructions = self._get_instructions_list()
 
         model_instructions = self.model.get_instructions_for_model()
@@ -177,6 +200,7 @@ class PromptsMixin:
             instructions.extend(model_instructions)
         instructions.extend(self._get_config_directives())
 
+        # ── STATIC ZONE ──────────────────────────────────────────────
         system_message_lines: List[str] = []
         if self.description is not None:
             system_message_lines.append(f"{self.description}\n")
@@ -203,10 +227,6 @@ class PromptsMixin:
                 system_message_lines.append(instructions[0])
             system_message_lines.append("")
 
-        workspace_context = await self.get_workspace_context_prompt()
-        if workspace_context:
-            system_message_lines.append(f"## Workspace Context\n\n{workspace_context}\n")
-
         if pc.guidelines is not None and len(pc.guidelines) > 0:
             system_message_lines.append("## Guidelines")
             if len(pc.guidelines) > 1:
@@ -215,18 +235,30 @@ class PromptsMixin:
                 system_message_lines.append(pc.guidelines[0])
             system_message_lines.append("")
 
-        system_message_from_model = self.model.get_system_message_for_model()
-        if system_message_from_model is not None:
-            system_message_lines.append(system_message_from_model)
-
         if pc.expected_output is not None:
             system_message_lines.append(f"## Expected output\n{pc.expected_output}\n")
         if pc.additional_context is not None:
             system_message_lines.append(f"{pc.additional_context}\n")
 
+        # ── SEMI-STATIC ZONE ─────────────────────────────────────────
+        workspace_context = await self.get_workspace_context_prompt()
+        if workspace_context:
+            system_message_lines.append(f"## Workspace Context\n\n{workspace_context}\n")
+
+        # Git status injection (branch, uncommitted changes, recent commits)
+        if self.workspace and self.workspace.exists():
+            git_context = self.workspace.get_git_context()
+            if git_context:
+                system_message_lines.append(f"## Git Status\n\n{git_context}\n")
+
+        system_message_from_model = self.model.get_system_message_for_model()
+        if system_message_from_model is not None:
+            system_message_lines.append(system_message_from_model)
+
         if self.has_team() and self.team_config.add_transfer_instructions:
             system_message_lines.append(f"{self.get_transfer_prompt()}\n")
 
+        # ── DYNAMIC ZONE (at the very end for prefix-cache friendliness) ──
         workspace_memory = await self.get_workspace_memory_prompt()
         if workspace_memory:
             system_message_lines.append(f"## Workspace Memory\n\n{workspace_memory}\n")
@@ -240,6 +272,11 @@ class PromptsMixin:
                     "\nNote: this information is from previous interactions and may be outdated. "
                     "You should ALWAYS prefer information from this conversation over the past summary.\n"
                 )
+
+        # Datetime: placed at the very end so it doesn't break the static prefix cache.
+        # Truncated to minute precision — requests within the same minute share the cache.
+        if pc.add_datetime_to_instructions:
+            system_message_lines.append(f"The current time is {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
         if self.response_model is not None and not self.structured_outputs:
             system_message_lines.append(self.get_json_output_prompt() + "\n")
@@ -275,6 +312,10 @@ class PromptsMixin:
         workspace_context = None
         if self.workspace and self.workspace.exists():
             workspace_context = await self.workspace.get_context_prompt()
+            # Append git status to workspace context
+            git_context = self.workspace.get_git_context()
+            if git_context:
+                workspace_context = f"{workspace_context}\n\n## Git Status\n\n{git_context}" if workspace_context else git_context
 
         # Dynamic tool list + descriptions from built-in tools or None for plain Agent
         active_tools = None
@@ -372,6 +413,11 @@ class PromptsMixin:
 
         if self.response_model is not None and not self.structured_outputs:
             system_message_lines.append("\n" + self.get_json_output_prompt())
+
+        # Datetime at the very end — day precision for prefix-cache friendliness
+        # Mirrors CC's getLocalISODate(): only YYYY-MM-DD, no time component.
+        if pc.add_datetime_to_instructions:
+            system_message_lines.append(f"\nToday's date is {datetime.now().strftime('%Y-%m-%d')}.")
 
         final_prompt = "\n".join(system_message_lines)
         return Message(role=pc.system_message_role, content=final_prompt.strip())
