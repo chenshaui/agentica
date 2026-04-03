@@ -113,6 +113,8 @@ class SkillRegistry:
         """
         Find a skill that matches the given trigger text.
 
+        Only matches skills that are user_invocable=True.
+
         Args:
             text: User input text (e.g., "/commit fix bug")
 
@@ -121,7 +123,7 @@ class SkillRegistry:
         """
         text = text.strip()
         for skill in self._skills.values():
-            if skill.matches_trigger(text):
+            if skill.user_invocable and skill.matches_trigger(text):
                 return skill
         return None
 
@@ -142,14 +144,16 @@ class SkillRegistry:
 
     def list_triggers(self) -> Dict[str, str]:
         """
-        Get all registered trigger commands.
+        Get all registered trigger commands visible to the user.
+
+        Skips hidden and non-user-invocable skills.
 
         Returns:
             Dict mapping trigger to skill name
         """
         triggers = {}
         for skill in self._skills.values():
-            if skill.trigger:
+            if skill.trigger and skill.user_invocable and not skill.is_hidden:
                 triggers[skill.trigger] = skill.name
         return triggers
 

@@ -63,16 +63,22 @@ manager = CompressionManager(
 当单个工具输出超过阈值时，自动持久化到磁盘：
 
 ```
-.tool_results/
-+-- {session_id}/
-    +-- {tool_use_id}.txt    # 完整输出
+~/.agentica/projects/<project-hash>/<session-id>/tool-results/
++-- {tool_use_id}.txt    # 完整输出
 ```
 
 Context 中只保留前 2000 字符的预览 + 文件路径。
 
+### 两层预算
+
+| 层级 | 阈值 | 说明 |
+|------|------|------|
+| 单工具限制 | 50,000 字符 | 单个 tool result 超过此值 -> 持久化 |
+| 消息预算 | 200,000 字符 | 单条消息中所有 tool_result 总和超过此值 -> 持久化最大的几个 |
+
 ### 配置
 
-通过 `Function.max_result_size_chars` 控制：
+通过 `Function.max_result_size_chars` 控制单工具阈值：
 
 - 默认阈值：50,000 字符
 - 设为 `None` 禁用持久化
@@ -81,9 +87,8 @@ Context 中只保留前 2000 字符的预览 + 文件路径。
 ### 工作流程
 
 1. 工具执行完成，返回输出字符串
-2. `maybe_persist_result()` 检查长度
-3. 超过阈值 -> 写入磁盘 -> 返回预览
-4. 未超过 -> 原样返回
+2. Layer 1: `maybe_persist_result()` 检查单工具大小，超限 -> 写入磁盘 -> 返回预览
+3. Layer 2: `enforce_tool_result_budget()` 检查本轮所有 tool_result 总大小，超限 -> 持久化最大的结果
 
 ## Hooks 集成
 

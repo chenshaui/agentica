@@ -274,9 +274,9 @@ class PromptsMixin:
                 )
 
         # Datetime: placed at the very end so it doesn't break the static prefix cache.
-        # Truncated to minute precision — requests within the same minute share the cache.
+        # Day-level precision — all requests within the same day share the cache prefix.
         if pc.add_datetime_to_instructions:
-            system_message_lines.append(f"The current time is {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+            system_message_lines.append(f"Today's date is {datetime.now().strftime('%Y-%m-%d')}.")
 
         if self.response_model is not None and not self.structured_outputs:
             system_message_lines.append(self.get_json_output_prompt() + "\n")

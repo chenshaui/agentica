@@ -175,8 +175,10 @@ Slash Commands:
   /debug             Show debug info (model, history count)
   /model [p/m]       Show or switch model (e.g., /model deepseek/deepseek-chat)
   /newchat           Start a new chat session
+  /resume            Resume a previous session
   /tools             List available additional tools
   /skills            List available skills and triggers
+  /reload-skills     Reload skills from disk
   /memory            Show conversation history
   /workspace         Show workspace status and files
   /exit, /quit       Exit the CLI
@@ -190,7 +192,7 @@ Keyboard Shortcuts:
 
 Input Features:
   @filename          Reference a file - content will be injected into prompt
-  /command           Type / to trigger slash commands (auto-complete)
+  /command           Type / to trigger slash commands (auto-complete with descriptions)
 
 Shell Mode (Ctrl+X to toggle):
   When in shell mode ($ prompt), commands execute directly without AI.
@@ -201,6 +203,7 @@ Tips:
   - Agent has built-in tools: ls, read_file, write_file, edit_file, glob, grep,
     execute, web_search, fetch_url, write_todos, read_todos, task, save_memory
   - Use --tools to add extra tools, e.g.: --tools calculator shell wikipedia
+  - Use --enable-skills to load skills, then /skills to list them
   - Say "remember this" or "save this" to trigger memory saving
 """
     console.print(help_text, style="yellow")

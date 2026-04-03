@@ -4,5 +4,17 @@
 @description: Compression module for managing context compression.
 """
 from agentica.compression.manager import CompressionManager
+from agentica.compression.tool_result_storage import (
+    maybe_persist_result,
+    enforce_tool_result_budget,
+    DEFAULT_MAX_RESULT_SIZE_CHARS,
+    MAX_TOOL_RESULTS_PER_MESSAGE_CHARS,
+)
 
-__all__ = ["CompressionManager"]
+__all__ = [
+    "CompressionManager",
+    "maybe_persist_result",
+    "enforce_tool_result_budget",
+    "DEFAULT_MAX_RESULT_SIZE_CHARS",
+    "MAX_TOOL_RESULTS_PER_MESSAGE_CHARS",
+]

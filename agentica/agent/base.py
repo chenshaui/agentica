@@ -90,6 +90,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
     name: Optional[str] = None
     agent_id: str = ""
     description: Optional[str] = None
+    when_to_use: Optional[str] = None  # Hint for LLM: when to delegate tasks to this agent
     instructions: Optional[Union[str, List[str], Callable]] = None
     tools: Optional[List[Union[ModelTool, Tool, Callable, Dict, Function]]] = None
     knowledge: Optional[Any] = None  # Knowledge type
@@ -151,6 +152,8 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
 
     # Context for tools and prompt functions (runtime input)
     context: Optional[Dict[str, Any]] = None
+    # Reference to parent agent (set by team.get_tools for transfer hooks)
+    _transfer_caller: Optional["Agent"] = field(default=None, init=False, repr=False)
 
     def __init__(
             self,
@@ -160,6 +163,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
             name: Optional[str] = None,
             agent_id: Optional[str] = None,
             description: Optional[str] = None,
+            when_to_use: Optional[str] = None,
             instructions: Optional[Union[str, List[str], Callable]] = None,
             tools: Optional[List[Union[ModelTool, Tool, Callable, Dict, Function]]] = None,
             knowledge: Optional[Any] = None,
@@ -191,6 +195,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         self.name = name
         self.agent_id = agent_id or str(uuid4())
         self.description = description
+        self.when_to_use = when_to_use
         self.instructions = instructions
         self.tools = tools
         self.knowledge = knowledge
@@ -244,6 +249,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         self._skill_runtime_configs: Dict[str, SkillRuntimeConfig] = {}
         self._enabled_tools = None
         self._enabled_skills = None
+        self._transfer_caller = None
 
         # Create Runner instance
         self._runner = Runner(self)
@@ -570,6 +576,36 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
             logger.debug(f"Loaded runtime config from {config_path}")
         except Exception as e:
             logger.warning(f"Failed to load runtime config from {config_path}: {e}")
+
+    def clone(self) -> "Agent":
+        """Create a lightweight clone of this Agent for concurrent execution.
+
+        Shares heavy config (model definition, tools, instructions, knowledge)
+        but resets all mutable runtime state (run_id, run_response, _running, etc.)
+        and creates a fresh Runner. Safe for parallel asyncio.gather() calls.
+        """
+        import copy
+        clone = copy.copy(self)
+        # Reset mutable runtime state
+        clone.agent_id = str(uuid4())
+        clone.run_id = None
+        clone.run_input = None
+        clone.run_response = RunResponse()
+        clone.stream = None
+        clone.stream_intermediate_steps = False
+        clone._cancelled = False
+        clone._running = False
+        clone._run_hooks = None
+        clone._default_run_hooks = None
+        clone._enabled_tools = None
+        clone._enabled_skills = None
+        clone._session_log = None
+        clone._transfer_caller = None
+        # Fresh working memory (don't share session state)
+        clone.working_memory = WorkingMemory()
+        # Fresh Runner bound to the clone
+        clone._runner = Runner(clone)
+        return clone
 
     def has_team(self) -> bool:
         return self.team is not None and len(self.team) > 0

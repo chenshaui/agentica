@@ -52,10 +52,6 @@ DEFAULT_COMPRESSION_PROMPT = dedent("""\
     Be concise while retaining all critical facts.
     """)
 
-# Truncation marker appended to truncated content
-_TRUNCATED_MARKER = "\n...[truncated]"
-
-
 @dataclass
 class CompressionManager:
     """
@@ -194,15 +190,21 @@ class CompressionManager:
     # -------------------------------------------------------------------------
 
     def _truncate_oldest_tool_results(self, messages: List["Message"]) -> int:
-        """
-        Truncate oldest uncompressed tool result messages to `truncate_head_chars`.
-        
-        Processes from oldest to newest, skipping the most recent `keep_recent_rounds`
-        assistant-tool round groups.
-        
+        """Persist oldest uncompressed tool results to disk, replacing with preview.
+
+        Uses tool_result_storage.maybe_persist_result() so the full content
+        is saved to ~/.agentica/projects/.../ and the context keeps a 2KB
+        preview + file path.  Falls back to simple truncation only if
+        persistence fails.
+
+        Processes from oldest to newest, skipping the most recent
+        `keep_recent_rounds` assistant-tool round groups.
+
         Returns:
-            Number of messages truncated.
+            Number of messages truncated/persisted.
         """
+        from agentica.compression.tool_result_storage import maybe_persist_result
+
         # Identify tool result indices (oldest first)
         tool_indices = [i for i, m in enumerate(messages) if m.role == "tool" and not getattr(m, 'compressed_content', None)]
         if not tool_indices:
@@ -228,15 +230,25 @@ class CompressionManager:
             if len(content_str) <= self.truncate_head_chars:
                 continue
             original_len = len(content_str)
-            truncated_content = content_str[:self.truncate_head_chars] + _TRUNCATED_MARKER
-            msg.content = truncated_content
-            msg.compressed_content = truncated_content
+
+            # Persist to disk + replace with preview (preserves full content)
+            tool_use_id = getattr(msg, 'tool_call_id', None) or f"rule_compact_{idx}"
+            tool_name = getattr(msg, 'tool_name', None) or "tool"
+            new_content = maybe_persist_result(
+                tool_name=tool_name,
+                tool_use_id=tool_use_id,
+                content=content_str,
+                max_result_size_chars=self.truncate_head_chars,
+            )
+
+            msg.content = new_content
+            msg.compressed_content = new_content
             truncated += 1
             self.stats["rule_truncated"] = self.stats.get("rule_truncated", 0) + 1
             self.stats["rule_truncated_saved_chars"] = (
-                self.stats.get("rule_truncated_saved_chars", 0) + original_len - len(truncated_content)
+                self.stats.get("rule_truncated_saved_chars", 0) + original_len - len(new_content)
             )
-            logger.debug(f"Truncated tool result [{idx}]: {original_len} -> {len(truncated_content)} chars")
+            logger.debug(f"Persisted tool result [{idx}]: {original_len} -> {len(new_content)} chars")
 
         return truncated
 

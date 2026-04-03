@@ -341,6 +341,23 @@ def _cmd_debug(agent_config=None, current_agent=None, shell_mode=False,
         console.print(f"  Skills Loaded: {len(skills_registry)}")
 
 
+def _cmd_reload_skills(skills_registry=None, **kwargs):
+    """Reload skills from disk (clears memoization caches)."""
+    if skills_registry is None:
+        console.print("Skills not enabled. Use --enable-skills to enable.", style="yellow")
+        return
+    try:
+        from agentica.skills import load_skills
+        from agentica.skills.skill_registry import get_skill_registry, reset_skill_registry
+        reset_skill_registry()
+        load_skills()
+        new_registry = get_skill_registry()
+        console.print(f"Reloaded {len(new_registry)} skills from disk.", style="green")
+        return {"skills_registry": new_registry}
+    except Exception as e:
+        console.print(f"Failed to reload skills: {e}", style="red")
+
+
 # Command dispatch table
 COMMAND_HANDLERS = {
     "/exit": _cmd_exit,
@@ -357,6 +374,7 @@ COMMAND_HANDLERS = {
     "/model": _cmd_model,
     "/compact": _cmd_compact,
     "/debug": _cmd_debug,
+    "/reload-skills": _cmd_reload_skills,
 }
 
 
@@ -545,18 +563,66 @@ def _setup_prompt_toolkit(shell_mode_ref: list, skills_registry):
         return get_input, False
 
     # Custom completer for @ file mentions and / commands
+    # Command descriptions for typeahead display
+    COMMAND_DESCRIPTIONS = {
+        "/exit": "Exit the CLI",
+        "/quit": "Exit the CLI",
+        "/help": "Show help information",
+        "/tools": "List available tools",
+        "/skills": "List loaded skills",
+        "/memory": "Show conversation history",
+        "/workspace": "Show workspace status",
+        "/newchat": "Start a new chat session",
+        "/resume": "Resume a previous session",
+        "/clear": "Clear screen and reset",
+        "/reset": "Clear screen and reset",
+        "/model": "View or switch model",
+        "/compact": "Compress context",
+        "/debug": "Show debug info",
+        "/reload-skills": "Reload skills from disk",
+    }
+
     class AgenticaCompleter(Completer):
         def get_completions(self, document, complete_event):
             text = document.text_before_cursor
 
             if text.startswith("/"):
-                commands = list(COMMAND_HANDLERS.keys())
+                # Check if user already typed a complete command + space (show argument hint)
+                parts = text.split(None, 1)
+                if len(parts) >= 2:
+                    cmd = parts[0].lower()
+                    # Show argument hint for skill triggers
+                    if skills_registry:
+                        skill = skills_registry.get_skill_by_trigger(cmd)
+                        if skill and skill.argument_hint:
+                            yield Completion(
+                                skill.argument_hint,
+                                start_position=0,
+                                display=skill.argument_hint,
+                                display_meta="argument",
+                            )
+                    return
+
+                query = text.lower()
+
+                # 1. Builtin commands (higher priority)
+                for cmd, desc in COMMAND_DESCRIPTIONS.items():
+                    if cmd.startswith(query):
+                        yield Completion(
+                            cmd, start_position=-len(text),
+                            display=cmd, display_meta=desc,
+                        )
+
+                # 2. Skill triggers (lower priority)
                 if skills_registry:
-                    for trigger in skills_registry.list_triggers().keys():
-                        commands.append(trigger)
-                for cmd in commands:
-                    if cmd.startswith(text):
-                        yield Completion(cmd, start_position=-len(text))
+                    for trigger, skill_name in skills_registry.list_triggers().items():
+                        if trigger.startswith(query):
+                            skill = skills_registry.get_skill_by_trigger(trigger)
+                            meta = skill.description[:40] if skill else skill_name
+                            yield Completion(
+                                trigger, start_position=-len(text),
+                                display=trigger, display_meta=meta,
+                            )
                 return
 
             match = re.search(r"@([\w./-]*)$", text)
@@ -721,8 +787,11 @@ def run_interactive(agent_config: dict, extra_tool_names: Optional[List[str]] = 
                     )
                     if result == "EXIT":
                         break
-                    if isinstance(result, dict) and "current_agent" in result:
-                        current_agent = result["current_agent"]
+                    if isinstance(result, dict):
+                        if "current_agent" in result:
+                            current_agent = result["current_agent"]
+                        if "skills_registry" in result:
+                            skills_registry = result["skills_registry"]
                     continue
                 else:
                     # Handle skill triggers

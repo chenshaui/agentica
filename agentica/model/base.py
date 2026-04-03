@@ -492,8 +492,8 @@ class Model(ABC):
                 if function_call.function.show_result:
                     yield ModelResponse(content=function_call_output)
 
-            # --- Large result persistence (mirrors CC's toolResultStorage) ---
-            # If the result is too large, save to disk and replace with preview.
+            # --- Layer 1: per-tool large result persistence ---
+            # Persist to ~/.agentica/projects/<project-hash>/<session-id>/tool-results/
             if (
                 function_call_success
                 and isinstance(function_call_output, str)
@@ -568,6 +568,20 @@ class Model(ABC):
         # message gets a corresponding tool result message (required by OpenAI API).
         if self.tool_call_limit and len(self.function_call_stack) >= self.tool_call_limit:
             self.deactivate_function_calls()
+
+        # --- Layer 2: per-message budget enforcement ---
+        # If the total tool results in this batch exceed the budget, persist the
+        # largest ones to disk until under budget.
+        try:
+            from agentica.compression.tool_result_storage import enforce_tool_result_budget
+            _agent = self._agent_ref() if self._agent_ref else None
+            _sid = getattr(_agent, 'run_id', 'default') if _agent else 'default'
+            enforce_tool_result_budget(
+                tool_results=function_call_results,
+                session_id=_sid,
+            )
+        except Exception as _budget_err:
+            logger.warning(f"Tool result budget enforcement failed: {_budget_err}")
 
         # Phase 4: post-tool hook (optional reflection / summary injection)
         if self._post_tool_hook is not None:

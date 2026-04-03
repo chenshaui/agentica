@@ -7,6 +7,8 @@ This example shows:
 1. Running multiple agents concurrently using asyncio.gather
 2. Time comparison between parallel and sequential execution
 3. Picking the best result from multiple outputs
+
+Key: each parallel agent must be a SEPARATE instance (Agent is not thread-safe).
 """
 import sys
 import os
@@ -18,17 +20,19 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from agentica import Agent, OpenAIChat
 
 
-# Create a Chinese translator agent
-chinese_agent = Agent(
-    name="chinese_agent",
-    model=OpenAIChat(id='gpt-4o'),
-    instructions="You translate the user's message to Chinese. Only output the translation, nothing else.",
-)
+def create_translator(name: str = "translator") -> Agent:
+    """Create a Chinese translator agent instance."""
+    return Agent(
+        name=name,
+        model=OpenAIChat(id='gpt-4o-mini'),
+        instructions="You translate the user's message to Chinese. Only output the translation, nothing else.",
+    )
+
 
 # Create a translation picker agent
 translation_picker = Agent(
     name="translation_picker",
-    model=OpenAIChat(id='gpt-4o'),
+    model=OpenAIChat(id='gpt-4o-mini'),
     instructions="""You are a translation expert. Pick the best Chinese translation from the given options.
 Consider accuracy, fluency, and naturalness. Only output the best translation, nothing else.""",
 )
@@ -41,25 +45,26 @@ async def main():
     print(f"Input message: {msg}\n")
 
     # ========== Parallel execution ==========
+    # IMPORTANT: each parallel run needs its OWN Agent instance.
+    # Agent is not thread-safe — concurrent runs on the same instance
+    # will overwrite run_id, run_response, and model state.
     print("=" * 50)
     print("Running 3 translations in PARALLEL...")
     print("=" * 50)
-    
+
+    agent_1 = create_translator("translator_1")
+    agent_2 = create_translator("translator_2")
+    agent_3 = create_translator("translator_3")
+
     parallel_start = time.time()
     res_1, res_2, res_3 = await asyncio.gather(
-        chinese_agent.run(msg),
-        chinese_agent.run(msg),
-        chinese_agent.run(msg),
+        agent_1.run(msg),
+        agent_2.run(msg),
+        agent_3.run(msg),
     )
     parallel_time = time.time() - parallel_start
 
-    # Collect translation outputs
-    outputs = [
-        res_1.content,
-        res_2.content,
-        res_3.content,
-    ]
-
+    outputs = [res_1.content, res_2.content, res_3.content]
     translations = "\n\n".join([f"Translation {i+1}: {t}" for i, t in enumerate(outputs)])
     print(f"\nTranslations:\n{translations}")
     print(f"\n[Parallel] 3 translations completed in {parallel_time:.2f}s")
@@ -68,11 +73,13 @@ async def main():
     print("\n" + "=" * 50)
     print("Running 3 translations SEQUENTIALLY for comparison...")
     print("=" * 50)
-    
+
+    # Sequential: reusing a single agent is fine (no concurrency)
+    seq_agent = create_translator("seq_translator")
     sequential_start = time.time()
-    seq_res_1 = await chinese_agent.run(msg)
-    seq_res_2 = await chinese_agent.run(msg)
-    seq_res_3 = await chinese_agent.run(msg)
+    seq_res_1 = await seq_agent.run(msg)
+    seq_res_2 = await seq_agent.run(msg)
+    seq_res_3 = await seq_agent.run(msg)
     sequential_time = time.time() - sequential_start
 
     seq_outputs = [seq_res_1.content, seq_res_2.content, seq_res_3.content]
@@ -86,13 +93,14 @@ async def main():
     print("=" * 50)
     print(f"Parallel time:   {parallel_time:.2f}s")
     print(f"Sequential time: {sequential_time:.2f}s")
-    print(f"Speedup:         {sequential_time / parallel_time:.2f}x faster with parallel execution")
+    if parallel_time > 0:
+        print(f"Speedup:         {sequential_time / parallel_time:.2f}x faster with parallel execution")
 
     # ========== Pick the best translation ==========
     print("\n" + "=" * 50)
     print("Picking the best translation...")
     print("=" * 50)
-    
+
     best_translation = await translation_picker.run(
         f"Input: {msg}\n\nTranslations:\n{translations}"
     )

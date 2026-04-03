@@ -27,6 +27,7 @@ from agentica.config import (
     AGENTICA_LOG_LEVEL,
     AGENTICA_LOG_FILE,
     AGENTICA_WORKSPACE_DIR,
+    AGENTICA_PROJECTS_DIR,
 )
 
 # ── Logging ──
@@ -238,6 +239,10 @@ _LAZY_IMPORTS = {
     # subagent system
     "SubagentType": "agentica.subagent",
 
+    # async agent registry + message bus
+    "AsyncAgentRegistry": "agentica.agent.team",
+    "MessageBus": "agentica.agent.team",
+
     # swarm system
     "Swarm": "agentica.swarm",
     "SwarmResult": "agentica.swarm",
@@ -354,7 +359,7 @@ __all__ = [
     "__version__",
     # config
     "AGENTICA_HOME", "AGENTICA_DOTENV_PATH", "AGENTICA_LOG_LEVEL",
-    "AGENTICA_LOG_FILE", "AGENTICA_WORKSPACE_DIR",
+    "AGENTICA_LOG_FILE", "AGENTICA_WORKSPACE_DIR", "AGENTICA_PROJECTS_DIR",
     # logging
     "set_log_level_to_debug", "set_log_level_to_info", "logger",
     # utils

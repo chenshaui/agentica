@@ -9,7 +9,7 @@ Mirrors CC's sessionStorage.ts:
 - compact_boundary sets parent_uuid=null to break the chain
 - Each entry carries session_id, cwd, version, git_branch
 - timestamp uses ISO string format (CC convention)
-- Default storage: ~/.agentica/projects/<cwd-name>/<session_id>.jsonl
+- Default storage: <AGENTICA_PROJECT_DIR>/<cwd-name>/<session_id>.jsonl
 - load() replays from the last compact_boundary
 - Large file optimization: only parse bytes after the last boundary
 
@@ -20,7 +20,6 @@ JSONL format (CC-aligned):
 """
 import json
 import os
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -33,15 +32,10 @@ _LARGE_FILE_THRESHOLD = 5 * 1024 * 1024
 
 
 def _get_default_base_dir() -> str:
-    """Get default session storage directory: ~/.agentica/projects/<cwd-name>/
-
-    Mirrors CC's ~/.claude/projects/<sanitized-cwd>/ convention.
+    """Get default session storage directory: <AGENTICA_PROJECTS_DIR>/<cwd-name>/
     """
-    home = os.path.expanduser("~")
-    cwd = os.getcwd()
-    # Sanitize cwd to a safe directory name (replace / with -)
-    sanitized = re.sub(r'[/\\]', '-', cwd.strip('/\\'))
-    return os.path.join(home, ".agentica", "projects", sanitized)
+    from agentica.compression.tool_result_storage import get_project_dir
+    return get_project_dir(os.getcwd())
 
 
 def _iso_now() -> str:
@@ -58,7 +52,7 @@ class SessionLog:
     - compact_boundary breaks the chain (parent_uuid=null)
     - Each entry stamped with session_id, cwd, version, git_branch
     - timestamp uses ISO 8601 string format
-    - Default path: ~/.agentica/projects/<cwd-name>/<session_id>.jsonl
+    - Default path: <AGENTICA_PROJECTS_DIR>/<cwd-name>/<session_id>.jsonl
     - Large files: only read bytes after last compact_boundary
     - load() returns messages ready to inject into WorkingMemory
     """

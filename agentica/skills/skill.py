@@ -35,12 +35,17 @@ class Skill:
     description: A skill for doing something useful.
     license: MIT
     trigger: /myskill
+    argument-hint: "<file-path>"
     requires:
       - shell
       - python
     allowed-tools:
       - shell
       - python
+    context: fork
+    paths: "src/**"
+    user-invocable: true
+    is-hidden: false
     metadata:
       emoji: "🔧"
     ---
@@ -62,10 +67,15 @@ class Skill:
         path: Path to the skill directory
         license: Optional license information
         trigger: Optional trigger command (e.g., /commit)
+        argument_hint: Hint for trigger arguments (e.g. "<file-path>")
         requires: List of required tools or commands
         allowed_tools: List of tools allowed for this skill
         metadata: Additional metadata from frontmatter
-        location: Source location type (project, user, managed)
+        user_invocable: If False, cannot be invoked via /trigger
+        is_hidden: If True, hidden from typeahead and /skills listing
+        context: "fork" to execute in isolated sub-agent
+        paths: Glob patterns for conditional activation
+        location: Source location type (project, user, managed, builtin)
     """
 
     name: str
@@ -76,11 +86,18 @@ class Skill:
     # Optional metadata from frontmatter
     license: Optional[str] = None
     trigger: Optional[str] = None  # Trigger command like /commit
+    argument_hint: Optional[str] = None  # Hint for argument (e.g. "<file-path>")
     requires: List[str] = field(default_factory=list)  # Required tools/commands
     allowed_tools: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
-    # Source location type: project, user, managed
+    # Visibility and invocation control (mirrors CC's CommandBase)
+    user_invocable: bool = True  # If False, skill cannot be invoked via /trigger directly
+    is_hidden: bool = False  # If True, hidden from typeahead / /skills listing
+    context: Optional[str] = None  # "fork" = execute in isolated sub-agent
+    paths: Optional[List[str]] = None  # Glob patterns for conditional activation
+
+    # Source location type: project, user, managed, builtin
     location: str = "project"
 
     @classmethod
@@ -110,6 +127,15 @@ class Skill:
         if not name or not description:
             return None
 
+        # Parse paths field (can be string or list)
+        raw_paths = frontmatter.get('paths')
+        if isinstance(raw_paths, str):
+            paths_list = [p.strip() for p in raw_paths.split(',') if p.strip()]
+        elif isinstance(raw_paths, list):
+            paths_list = raw_paths
+        else:
+            paths_list = None
+
         return cls(
             name=name,
             description=description,
@@ -117,9 +143,14 @@ class Skill:
             path=skill_md_path.parent,
             license=frontmatter.get('license'),
             trigger=frontmatter.get('trigger'),
+            argument_hint=frontmatter.get('argument-hint'),
             requires=frontmatter.get('requires', []) or [],
             allowed_tools=frontmatter.get('allowed-tools', []) or [],
             metadata=frontmatter.get('metadata', {}) or {},
+            user_invocable=frontmatter.get('user-invocable', True),
+            is_hidden=frontmatter.get('is-hidden', False),
+            context=frontmatter.get('context'),
+            paths=paths_list,
             location=location,
         )
 
@@ -207,9 +238,14 @@ Base directory: {self.path}
             "path": str(self.path),
             "license": self.license,
             "trigger": self.trigger,
+            "argument_hint": self.argument_hint,
             "requires": self.requires,
             "allowed_tools": self.allowed_tools,
             "metadata": self.metadata,
+            "user_invocable": self.user_invocable,
+            "is_hidden": self.is_hidden,
+            "context": self.context,
+            "paths": self.paths,
             "location": self.location,
         }
 
