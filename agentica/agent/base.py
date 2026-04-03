@@ -253,6 +253,10 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         self._enabled_skills = None
         self._transfer_caller = None
 
+        # Session-level set of memory filenames already surfaced (dedup across turns).
+        # Prevents the same memory entry from occupying system prompt slots every turn.
+        self._surfaced_memories: set = set()
+
         # Create Runner instance
         self._runner = Runner(self)
 
@@ -312,11 +316,27 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         context = await self.workspace.get_context_prompt()
         return context if context else None
 
-    async def get_workspace_memory_prompt(self) -> Optional[str]:
-        """Dynamically load workspace memory for system prompt."""
+    async def get_workspace_memory_prompt(self, query: str = "") -> Optional[str]:
+        """Dynamically load relevant workspace memory for system prompt.
+
+        Uses CC-style relevance-based recall instead of loading all memory:
+        - Scores MEMORY.md index entries against the current query
+        - Loads only the top-k most relevant entry files
+        - Deduplicates entries already shown in this session
+
+        Args:
+            query: Current user query string for relevance scoring.
+
+        Returns:
+            Formatted memory string, or None if workspace/memory not configured.
+        """
         if not self.workspace or not self.long_term_memory_config.load_workspace_memory:
             return None
-        memory = await self.workspace.get_memory_prompt(days=self.long_term_memory_config.memory_days)
+        memory = await self.workspace.get_relevant_memories(
+            query=query,
+            limit=self.long_term_memory_config.max_memory_entries,
+            already_surfaced=self._surfaced_memories,
+        )
         return memory if memory else None
 
     def _load_mcp_tools(self):
@@ -597,6 +617,8 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         clone._transfer_caller = None
         # Fresh working memory (don't share session state)
         clone.working_memory = WorkingMemory()
+        # Fresh session-level memory dedup set
+        clone._surfaced_memories = set()
         # Fresh Runner bound to the clone
         clone._runner = Runner(clone)
         return clone

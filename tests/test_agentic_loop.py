@@ -33,6 +33,7 @@ class _MockModel:
         self._cost_tracker = None
         self._max_cost_usd = None
         self._in_agentic_loop = False
+        self._last_stream_finish_reason = None
 
         # Bind real methods from Model
         self._check_death_spiral = Model._check_death_spiral.__get__(self, type(self))
@@ -338,6 +339,43 @@ class TestAgenticLoopStream:
         async for chunk in model.agentic_loop_stream(messages=messages):
             chunks.append(chunk)
         assert any("streamed" in (c.content or "") for c in chunks)
+
+    @pytest.mark.asyncio
+    async def test_max_tokens_recovery_in_stream(self):
+        """Stream path should detect finish_reason='length' and continue."""
+        model = _MockModel()
+        call_count = 0
+
+        async def mock_stream(messages):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First call: truncated output (finish_reason = "length")
+                messages.append(Message(role="assistant", content=f"part{call_count}"))
+                model._last_stream_finish_reason = "length"
+                yield ModelResponse(content=f"part{call_count}")
+            else:
+                # Second call: final answer
+                messages.append(Message(role="assistant", content=f"part{call_count}"))
+                model._last_stream_finish_reason = "stop"
+                yield ModelResponse(content=f"part{call_count}")
+
+        model.response_stream = mock_stream
+
+        messages = [
+            Message(role="assistant", content=""),
+            Message(role="tool", content="ok"),
+        ]
+        chunks = []
+        async for chunk in model.agentic_loop_stream(messages=messages):
+            chunks.append(chunk)
+        # Should have called twice: first truncated, then continued
+        assert call_count == 2
+        contents = "".join(c.content or "" for c in chunks)
+        assert "part1" in contents
+        assert "part2" in contents
+        # Check that a "Continue" message was injected
+        assert any(m.role == "user" and "Continue" in (m.content or "") for m in messages)
 
 
 # ---------------------------------------------------------------------------

@@ -116,7 +116,7 @@ class DeepAgent(Agent):
                 auto_archive=True,
                 load_workspace_context=True,
                 load_workspace_memory=True,
-                memory_days=7,
+                max_memory_entries=10,
             )
 
         super().__init__(

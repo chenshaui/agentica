@@ -45,7 +45,7 @@ async def demo_basic_workspace_memory():
     print("Saved 2 long-term memories")
 
     # Read memory prompt (what gets injected into Agent context)
-    memory_prompt = await workspace.get_memory_prompt(days=7)
+    memory_prompt = await workspace.get_relevant_memories()
     print(f"\n--- Memory Prompt (injected into Agent context) ---")
     print(memory_prompt[:500] if memory_prompt else "(empty)")
 

@@ -241,7 +241,8 @@ from agentica.agent.config import WorkspaceMemoryConfig
 |------|------|--------|------|
 | `load_workspace_context` | `bool` | `True` | 加载 workspace 上下文 |
 | `load_workspace_memory` | `bool` | `True` | 加载 workspace 记忆 |
-| `memory_days` | `int` | `2` | 记忆回溯天数 |
+| `max_memory_entries` | `int` | `5` | 每次注入的最大记忆条数（按相关性排序） |
+| `auto_archive` | `bool` | `False` | 每次 run() 后自动归档对话 |
 
 ## TeamConfig
 

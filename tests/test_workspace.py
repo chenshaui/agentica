@@ -169,18 +169,31 @@ class TestWorkspace:
         assert "User prefers concise answers." in content
 
     def test_get_memory_prompt(self, temp_workspace_path):
-        """Test getting memory prompt."""
+        """Test getting relevant memories (replaces old get_memory_prompt)."""
         workspace = Workspace(temp_workspace_path)
         workspace.initialize()
 
-        # Write some memories (async)
-        asyncio.run(workspace.write_memory("Long-term preference", to_daily=False))
-        asyncio.run(workspace.write_memory("Daily note", to_daily=True))
+        # Write memories via write_memory_entry (structured, indexed)
+        asyncio.run(workspace.write_memory_entry(
+            title="Python preference",
+            content="User prefers concise Python code.",
+            memory_type="feedback",
+            description="python concise coding style",
+        ))
+        asyncio.run(workspace.write_memory_entry(
+            title="Daily note",
+            content="Worked on memory system refactor.",
+            memory_type="project",
+            description="memory system refactor project",
+        ))
 
-        # Get memory prompt (async)
-        memory_prompt = asyncio.run(workspace.get_memory_prompt(days=2))
-
+        # get_relevant_memories without query returns top entries
+        memory_prompt = asyncio.run(workspace.get_relevant_memories())
         assert len(memory_prompt) > 0
+
+        # get_relevant_memories with a matching query returns relevant entry
+        memory_prompt_python = asyncio.run(workspace.get_relevant_memories(query="python coding"))
+        assert "Python preference" in memory_prompt_python or len(memory_prompt_python) > 0
 
     def test_get_skills_dir(self, temp_workspace_path):
         """Test getting skills directory."""

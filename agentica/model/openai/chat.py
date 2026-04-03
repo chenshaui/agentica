@@ -480,6 +480,9 @@ class OpenAIChat(Model):
 
         self.update_stream_metrics(assistant_message=assistant_message, metrics=metrics)
 
+        # Expose finish_reason so agentic_loop_stream can detect truncated output
+        self._last_stream_finish_reason = stream_finish_reason
+
         messages.append(assistant_message)
         assistant_message.log()
         metrics.log()

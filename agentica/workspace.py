@@ -509,47 +509,270 @@ You are a helpful AI assistant.
 
         return "\n".join(parts) if parts else None
 
-    async def get_memory_prompt(self, days: int = 2) -> str:
-        """Get recent memory (for injecting into context).
+    # =========================================================================
+    # Memory index constants (mirrors CC's MEMORY.md limits)
+    # =========================================================================
+    _MEMORY_INDEX_MAX_LINES: int = 200
+    _MEMORY_INDEX_MAX_BYTES: int = 25_000
 
-        Reads user-specific MEMORY.md long-term memory and recent daily memories.
+    # Injected after memory content to guard against stale references.
+    _MEMORY_DRIFT_DEFENSE: str = (
+        "Note: memories reflect the state at write time. "
+        "If a memory references a specific file path, function, or flag, "
+        "verify it still exists before recommending it."
+    )
+
+    async def get_relevant_memories(
+        self,
+        query: str = "",
+        limit: int = 5,
+        already_surfaced: Optional[set] = None,
+    ) -> str:
+        """Load MEMORY.md index, score entries against query, return top-k content.
+
+        Implements CC-style relevance-based recall instead of dumping all memory:
+        - Parses MEMORY.md as an index of entry links
+        - Scores each entry against the query with keyword overlap
+        - Loads only the top-k most relevant entry files
+        - Appends a drift-defense note to guard against stale references
+
+        Falls back to loading all entries when query is empty (same as before).
 
         Args:
-            days: Number of recent days to read
+            query: Current user query (used for relevance scoring)
+            limit: Maximum number of memory entries to return
+            already_surfaced: Set of filenames already shown this session (dedup)
 
         Returns:
-            Memory content string
+            Formatted memory string ready for system prompt injection, or empty string.
         """
-        contents = []
-
-        # Read long-term memory (user-specific, from users/{user_id}/)
-        long_term_path = self._get_user_memory_md()
-        if long_term_path.exists():
-            long_term = (await _async_read_text(long_term_path)).strip()
-            if long_term:
-                contents.append(f"## Long-term Memory (user: {self._user_id})\n\n{long_term}")
-
-        # Read daily memory (user-specific, from users/{user_id}/memory/)
+        self._initialize_user_dir()
+        index_path = self._get_user_memory_md()
         memory_dir = self._get_user_memory_dir()
-        if memory_dir.exists():
-            files = sorted(memory_dir.glob("*.md"), reverse=True)[:days]
-            for f in files:
-                content = (await _async_read_text(f)).strip()
-                if content:
-                    contents.append(f"## {f.stem}\n\n{content}")
 
-        return "\n\n".join(contents) if contents else ""
+        if not index_path.exists() and not memory_dir.exists():
+            return ""
+
+        # --- Parse MEMORY.md index ---
+        index_entries: List[Dict] = []
+        if index_path.exists():
+            index_content = (await _async_read_text(index_path)).strip()
+            if index_content:
+                index_entries = self._parse_memory_index(index_content)
+
+        # --- If no structured index exists, fall back to listing memory dir files ---
+        if not index_entries and memory_dir.exists():
+            for f in sorted(memory_dir.glob("*.md"), reverse=True):
+                index_entries.append({
+                    "title": f.stem,
+                    "filename": f.name,
+                    "hook": f.stem.replace("_", " "),
+                })
+
+        if not index_entries:
+            return ""
+
+        # --- Filter already-surfaced entries (avoid repeating in same session) ---
+        if already_surfaced:
+            index_entries = [e for e in index_entries if e["filename"] not in already_surfaced]
+
+        if not index_entries:
+            return ""
+
+        # --- Score entries against query ---
+        if query.strip():
+            scored = self._score_memory_entries(query, index_entries)
+        else:
+            # No query: take the most recent entries (already sorted by recency from glob)
+            scored = index_entries[:limit]
+
+        top_entries = scored[:limit]
+
+        # --- Load file content for selected entries ---
+        parts = []
+        for entry in top_entries:
+            content_path = memory_dir / entry["filename"]
+            if content_path.exists():
+                raw = (await _async_read_text(content_path)).strip()
+                # Strip frontmatter (---...---) before injecting
+                body = self._strip_frontmatter(raw)
+                if body:
+                    parts.append(f"### {entry['title']}\n\n{body}")
+                    # Write back to already_surfaced for session-level dedup
+                    if already_surfaced is not None:
+                        already_surfaced.add(entry["filename"])
+
+        if not parts:
+            return ""
+
+        result = "\n\n".join(parts)
+        result += f"\n\n*{self._MEMORY_DRIFT_DEFENSE}*"
+        return result
+
+    async def write_memory_entry(
+        self,
+        title: str,
+        content: str,
+        memory_type: str = "project",
+        description: str = "",
+    ) -> str:
+        """Write a typed memory entry as an individual file and update MEMORY.md index.
+
+        Each entry gets its own .md file under users/{user_id}/memory/ with a
+        YAML frontmatter header (name, description, type). The MEMORY.md index
+        is updated with a single-line reference to the new file.
+
+        The description field is the key relevance signal — it should contain
+        searchable keywords that identify when this memory is relevant.
+
+        Args:
+            title: Short display name for the memory
+            content: Full memory content (why + how to apply)
+            memory_type: One of "user", "feedback", "project", "reference"
+            description: One-line hook for relevance scoring (defaults to title)
+
+        Returns:
+            Absolute path to the written memory file.
+        """
+        import re as _re
+        self._initialize_user_dir()
+        memory_dir = self._get_user_memory_dir()
+        memory_dir.mkdir(parents=True, exist_ok=True)
+
+        # Sanitize title to a safe filename
+        safe_title = _re.sub(r"[^\w\-]", "_", title.lower())[:50].strip("_")
+        filename = f"{memory_type}_{safe_title}.md"
+        filepath = memory_dir / filename
+
+        hook = description or title
+        frontmatter = (
+            f"---\nname: {title}\n"
+            f"description: {hook}\n"
+            f"type: {memory_type}\n---\n\n"
+        )
+        await _async_write_text(filepath, frontmatter + content)
+
+        # Update MEMORY.md index
+        await self._update_memory_index(
+            index_path=self._get_user_memory_md(),
+            filename=filename,
+            title=title,
+            hook=hook,
+        )
+
+        return str(filepath)
+
+    async def _update_memory_index(
+        self,
+        index_path: Path,
+        filename: str,
+        title: str,
+        hook: str,
+    ) -> None:
+        """Append or update an entry in MEMORY.md index, enforcing size limits.
+
+        Format: `- [Title](memory/filename.md) — one-line hook`
+        Limits: 200 lines / 25KB (CC convention). Oldest entries are evicted.
+        """
+        new_entry = f"- [{title}](memory/{filename}) — {hook[:100]}"
+
+        existing = ""
+        if index_path.exists():
+            existing = (await _async_read_text(index_path)).strip()
+
+        lines = [l for l in existing.splitlines() if l.strip()] if existing else []
+
+        # Remove existing entry for this file (update case)
+        lines = [l for l in lines if f"(memory/{filename})" not in l]
+        lines.append(new_entry)
+
+        # Enforce hard limits: evict oldest entries from the front
+        while len(lines) > self._MEMORY_INDEX_MAX_LINES:
+            lines.pop(0)
+
+        content = "\n".join(lines)
+        while len(content.encode("utf-8")) > self._MEMORY_INDEX_MAX_BYTES:
+            if not lines:
+                break
+            lines.pop(0)
+            content = "\n".join(lines)
+
+        await _async_write_text(index_path, content)
+
+    def _parse_memory_index(self, index_content: str) -> List[Dict]:
+        """Parse MEMORY.md index lines into entry dicts.
+
+        Expected format: `- [Title](memory/filename.md) — one-line hook`
+        """
+        import re as _re
+        entries = []
+        for line in index_content.splitlines():
+            m = _re.match(r"-\s+\[(.+?)\]\(memory/(.+?)\)\s*[—\-]\s*(.+)", line)
+            if m:
+                entries.append({
+                    "title": m.group(1).strip(),
+                    "filename": m.group(2).strip(),
+                    "hook": m.group(3).strip(),
+                })
+        return entries
+
+    def _score_memory_entries(self, query: str, entries: List[Dict]) -> List[Dict]:
+        """Score memory entries by token overlap with query.
+
+        Uses a hybrid of word-level and character n-gram matching so that
+        both English (space-delimited) and CJK (no spaces) queries work.
+
+        Returns entries sorted by score descending. Entries with score=0 are
+        included at the end (ensures fallback when no token matches).
+        """
+        query_lower = query.lower()
+        # Word tokens (works for English / space-delimited languages)
+        word_tokens = set(query_lower.split())
+        # Character 2-grams (works for CJK and as a fuzzy fallback)
+        char_ngrams = set()
+        for i in range(len(query_lower) - 1):
+            bigram = query_lower[i:i + 2].strip()
+            if bigram:
+                char_ngrams.add(bigram)
+
+        if not word_tokens and not char_ngrams:
+            return entries
+
+        scored = []
+        for entry in entries:
+            text = f"{entry['title']} {entry['hook']}".lower()
+            score = 0.0
+            # Word overlap (exact word-boundary match via substring; quick and good enough)
+            if word_tokens:
+                word_hits = sum(1.0 for w in word_tokens if w in text)
+                score += word_hits / len(word_tokens)
+            # Character n-gram overlap (boosts CJK and partial matches)
+            if char_ngrams:
+                ngram_hits = sum(1.0 for ng in char_ngrams if ng in text)
+                score += 0.5 * ngram_hits / len(char_ngrams)
+            scored.append({**entry, "_score": score})
+
+        scored.sort(key=lambda x: -x["_score"])
+        return scored
+
+    @staticmethod
+    def _strip_frontmatter(content: str) -> str:
+        """Remove YAML frontmatter block (---...---) from memory file content."""
+        import re as _re
+        stripped = _re.sub(r"^---[\s\S]*?---\s*", "", content, flags=_re.MULTILINE).strip()
+        return stripped if stripped else content
 
     async def write_memory(self, content: str, to_daily: bool = True):
-        """Write memory.
+        """Write memory to a daily or long-term file.
 
-        Writes content to current user's memory file (users/{user_id}/).
+        For structured, typed memory entries, prefer write_memory_entry() which
+        creates individually-addressable files and updates the MEMORY.md index.
 
         Args:
             content: Memory content
-            to_daily: True to write to daily memory, False to write to long-term memory
+            to_daily: True to append to today's daily memory file,
+                      False to append to the long-term MEMORY.md file
         """
-        # Ensure user directory exists
         self._initialize_user_dir()
 
         if to_daily:
@@ -558,7 +781,6 @@ You are a helpful AI assistant.
             memory_dir.mkdir(parents=True, exist_ok=True)
             filepath = memory_dir / f"{today}.md"
 
-            # Append content
             existing = ""
             if filepath.exists():
                 existing = (await _async_read_text(filepath)).strip()
@@ -568,7 +790,6 @@ You are a helpful AI assistant.
             memory_md = self._get_user_memory_md()
             memory_md.parent.mkdir(parents=True, exist_ok=True)
 
-            # Append content
             existing = ""
             if memory_md.exists():
                 existing = (await _async_read_text(memory_md)).strip()

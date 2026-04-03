@@ -61,6 +61,43 @@ export DEEPSEEK_API_KEY="your-api-key"      # DeepSeek
 - **MCP / ACP** — Model Context Protocol and Agent Communication Protocol support
 - **Skill System** — Markdown-based skill injection, model-agnostic
 - **Multi-Modal** — Text, image, audio, video understanding
+- **Persistent Memory** — Index/content separation, relevance-based recall, four-type classification, drift defense
+
+## Workspace Memory
+
+Workspace provides persistent cross-session memory with index/recall design:
+
+```python
+from agentica import Workspace
+
+workspace = Workspace("./workspace")
+workspace.initialize()
+
+# Write a typed memory entry (each entry is an individual file, index auto-updated)
+await workspace.write_memory_entry(
+    title="Python Style",
+    content="User prefers concise, typed Python.",
+    memory_type="feedback",              # user|feedback|project|reference
+    description="python coding style",   # keywords for relevance scoring
+)
+
+# Relevance-based recall (returns top-k most relevant entries for the query)
+memory = await workspace.get_relevant_memories(query="how to write python")
+```
+
+Agents automatically recall the most relevant memories for the current query, rather than dumping all memory:
+
+```python
+from agentica import Agent, Workspace
+from agentica.agent.config import WorkspaceMemoryConfig
+
+agent = Agent(
+    workspace=Workspace("./workspace"),
+    long_term_memory_config=WorkspaceMemoryConfig(
+        max_memory_entries=5,  # inject at most 5 relevant memories
+    ),
+)
+```
 
 ## CLI
 

@@ -84,6 +84,11 @@ class Model(ABC):
     # the outer while-loop drive the next iteration.
     _in_agentic_loop: bool = field(init=False, repr=False, default=False)
 
+    # Finish reason captured from the most recent response_stream() call.
+    # Set by provider response_stream() methods; consumed by agentic_loop_stream()
+    # for max_tokens recovery (finish_reason == "length").
+    _last_stream_finish_reason: Optional[str] = field(init=False, repr=False, default=None)
+
     # Max cost (USD) for this run.  Set by Runner from agent._run_max_cost_usd.
     _max_cost_usd: Optional[float] = field(init=False, repr=False, default=None)
 
@@ -617,36 +622,61 @@ class Model(ABC):
             await self._post_tool_hook(messages, function_call_results)
 
     async def _maybe_compress_messages(self, messages: List[Message]) -> None:
-        """Run the three-layer compression pipeline before each LLM call.
+        """Run the multi-stage compression pipeline before each LLM call.
 
-        Layer 1 — Micro-compact (always, zero cost):
-            Truncate old tool-result content to a short placeholder.
+        Stages are ordered cheapest-first (mirrors CC's queryLoop pre-processing):
+
+        Stage 1 — Tool result budget (free, O(n)):
+            Persist oversized individual tool results to disk, replace with
+            short preview + file path. Already applied at tool-call time,
+            but re-checked here to catch any that slipped through.
+
+        Stage 2 — Micro-compact (free, O(n)):
+            Clear old tool-result content entirely, replacing with placeholder.
             Mirrors CC's microcompactMessages() time-based path.
 
-        Layer 2 — Auto-compact (token-threshold, LLM summarisation):
-            If the ConpressionManager is configured AND the context is above
-            the trigger threshold, LLM-summarise the conversation.
+        Stage 3 — Rule-based compress (free, O(n)):
+            Truncate oldest tool results to head chars + drop old assistant-tool
+            rounds. Only triggered when token count exceeds threshold.
+
+        Stage 4 — Auto-compact (costly, LLM summarisation):
+            LLM-summarise the entire conversation when context is near the
+            window limit. Circuit-breaker protected.
             Mirrors CC's autoCompactIfNeeded().
 
-        Layer 3 — Reactive compact (prompt_too_long guard):
-            Handled separately in agentic_loop() / _call_with_retry() via the
-            CompressionManager.auto_compact() circuit-breaker path.
+        Stage 5 — Reactive compact (emergency, in _call_with_retry):
+            Not called here. Triggered on prompt_too_long API errors as a
+            last resort. See _call_with_retry() / _try_reactive_compact().
         """
+        agent = self._agent_ref() if self._agent_ref else None
+
         # ------------------------------------------------------------------
-        # Layer 1: micro-compact (every turn, free)
+        # Stage 1: tool result budget (persist oversized results to disk)
+        # ------------------------------------------------------------------
+        try:
+            from agentica.compression.tool_result_storage import enforce_tool_result_budget
+            _sid = agent.run_id or 'default' if agent else 'default'
+            # Collect recent tool messages that haven't been persisted yet
+            _recent_tools = [m for m in messages if m.role == "tool" and not m.compressed_content]
+            if _recent_tools:
+                enforce_tool_result_budget(tool_results=_recent_tools, session_id=_sid)
+        except Exception as _budget_err:
+            logger.debug(f"Stage 1 (tool result budget) skipped: {_budget_err}")
+
+        # ------------------------------------------------------------------
+        # Stage 2: micro-compact (clear old tool results, free)
         # ------------------------------------------------------------------
         try:
             from agentica.compression.micro import micro_compact
             n = micro_compact(messages)
             if n:
-                logger.debug(f"Micro-compact: cleared {n} old tool result(s)")
+                logger.debug(f"Stage 2 (micro-compact): cleared {n} old tool result(s)")
         except Exception as _mc_err:
-            logger.debug(f"Micro-compact skipped: {_mc_err}")
+            logger.debug(f"Stage 2 (micro-compact) skipped: {_mc_err}")
 
         # ------------------------------------------------------------------
-        # Layer 2: auto-compact via CompressionManager (token-threshold)
+        # Stage 3 & 4 require CompressionManager
         # ------------------------------------------------------------------
-        agent = self._agent_ref() if self._agent_ref else None
         if agent is None:
             return
         if not agent.tool_config.compress_tool_results:
@@ -662,24 +692,27 @@ class Model(ABC):
                 if fn is not None:
                     await fn(agent=agent, messages=messages)
 
-        # Try auto_compact first (token-based, with circuit-breaker)
-        try:
-            if cm._should_auto_compact(messages, model=self):
-                await _fire_compact_hooks('on_pre_compact')
-            compacted = await cm.auto_compact(messages, model=self)
-            if compacted:
-                logger.debug("Auto-compact triggered: context compressed")
-                await _fire_compact_hooks('on_post_compact')
-                return  # messages replaced — skip rule-based compress
-        except Exception as _ac_err:
-            logger.warning(f"Auto-compact failed: {_ac_err}")
-
-        # Fallback: rule-based compress (truncate + drop old rounds)
+        # ------------------------------------------------------------------
+        # Stage 3: rule-based compress (truncate + drop old rounds, free)
+        # Only triggered when token count exceeds compress threshold.
+        # ------------------------------------------------------------------
         if cm.should_compress(messages, tools=self.tools, model=self):
             await _fire_compact_hooks('on_pre_compact')
-            logger.debug("Compressing tool results to reduce context size")
+            logger.debug("Stage 3 (rule-based compress): truncating + dropping old messages")
             await cm.compress(messages, tools=self.tools, model=self)
             await _fire_compact_hooks('on_post_compact')
+
+        # ------------------------------------------------------------------
+        # Stage 4: auto-compact via LLM summarisation (expensive, last resort
+        #          before reactive compact). Only when near context limit.
+        # ------------------------------------------------------------------
+        try:
+            compacted = await cm.auto_compact(messages, model=self)
+            if compacted:
+                logger.debug("Stage 4 (auto-compact): conversation summarised by LLM")
+                await _fire_compact_hooks('on_post_compact')
+        except Exception as _ac_err:
+            logger.warning(f"Stage 4 (auto-compact) failed: {_ac_err}")
 
 
     # ------------------------------------------------------------------
@@ -956,12 +989,26 @@ class Model(ABC):
             self._check_agent_cancelled(agent)
 
             # -- Stream API call (with sentinel flag) --
+            self._last_stream_finish_reason = None
             self._in_agentic_loop = True
             try:
                 async for chunk in self.response_stream(messages=messages):
                     yield chunk
             finally:
                 self._in_agentic_loop = False
+
+            # -- max_tokens recovery (mirrors non-streaming agentic_loop) --
+            if (
+                self._last_stream_finish_reason == "length"
+                and state.max_tokens_recovery_count < state.max_tokens_recovery_limit
+            ):
+                state.max_tokens_recovery_count += 1
+                logger.info(
+                    f"[MaxTokensRecovery] stream output truncated, "
+                    f"continuing ({state.max_tokens_recovery_count}/{state.max_tokens_recovery_limit})"
+                )
+                messages.append(Message(role="user", content="Continue from where you left off."))
+                continue  # next iteration handles the continuation
 
             # -- Check if tool calls happened --
             if not self._response_has_tool_calls(messages):
@@ -1368,3 +1415,4 @@ class Model(ABC):
         self.function_call_stack = None
         self.session_id = None
         self._in_agentic_loop = False
+        self._last_stream_finish_reason = None

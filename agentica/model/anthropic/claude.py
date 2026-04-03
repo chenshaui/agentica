@@ -732,6 +732,11 @@ class Claude(Model):
 
                 if isinstance(delta, MessageStopEvent):
                     message_data.response_usage = delta.message.usage
+                    # Capture stop_reason: "max_tokens" → "length" for consistency with OpenAI
+                    _stop = delta.message.stop_reason
+                    self._last_stream_finish_reason = (
+                        "length" if _stop == "max_tokens" else _stop
+                    )
         yield ModelResponse(content="\n\n")
 
         metrics.response_timer.stop()

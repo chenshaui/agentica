@@ -96,7 +96,9 @@ class WorkspaceMemoryConfig:
     """Workspace memory loading configuration."""
     load_workspace_context: bool = True
     load_workspace_memory: bool = True
-    memory_days: int = 2
+    # Maximum number of memory entries to inject per run (relevance-ranked).
+    # Maps to CC's "select up to N memories" in sidequery.
+    max_memory_entries: int = 5
     auto_archive: bool = False  # Auto-archive conversation after each run()
 
 

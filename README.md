@@ -61,6 +61,43 @@ export DEEPSEEK_API_KEY="your-api-key"      # DeepSeek
 - **MCP / ACP** — Model Context Protocol 和 Agent Communication Protocol 支持
 - **Skill 系统** — 基于 Markdown 的技能注入，模型无关
 - **多模态** — 文本、图像、音频、视频理解
+- **持久化记忆** — 索引/内容分离、相关性召回、四类型分类、drift 防御
+
+## Workspace 记忆
+
+Workspace 提供跨会话的持久化记忆，采用索引/召回设计：
+
+```python
+from agentica import Workspace
+
+workspace = Workspace("./workspace")
+workspace.initialize()
+
+# 写入带类型的记忆条目（每条独立文件，自动更新索引）
+await workspace.write_memory_entry(
+    title="Python Style",
+    content="User prefers concise, typed Python.",
+    memory_type="feedback",              # user|feedback|project|reference
+    description="python coding style",   # 相关性匹配关键词
+)
+
+# 相关性召回（根据当前 query 返回最相关的 ≤5 条）
+memory = await workspace.get_relevant_memories(query="how to write python")
+```
+
+Agent 自动根据当前 query 召回最相关记忆，而非全量注入：
+
+```python
+from agentica import Agent, Workspace
+from agentica.agent.config import WorkspaceMemoryConfig
+
+agent = Agent(
+    workspace=Workspace("./workspace"),
+    long_term_memory_config=WorkspaceMemoryConfig(
+        max_memory_entries=5,  # 最多注入 5 条相关记忆
+    ),
+)
+```
 
 ## CLI
 

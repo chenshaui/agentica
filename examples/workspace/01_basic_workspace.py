@@ -71,7 +71,7 @@ You are a helpful AI assistant specialized in Python programming.
 
     # Verify memory was saved
     print("\n=== Workspace Memory ===")
-    memory_content = await workspace.get_memory_prompt(days=1)
+    memory_content = await workspace.get_relevant_memories()
     print(memory_content)
 
     # Method 2: Create agent from workspace using factory method

@@ -89,6 +89,7 @@ ZhipuAI = ZhipuAIChat
 # ── Memory ──
 from agentica.memory import (
     AgentRun, SessionSummary, MemorySummarizer, WorkingMemory,
+    MemoryType, MemoryEntry,
     WorkflowRun, WorkflowMemory, MemoryChunk, WorkspaceMemorySearch,
 )
 
@@ -372,6 +373,7 @@ __all__ = [
     "ZhipuAIChat", "ZhipuAI",
     # memory
     "AgentRun", "SessionSummary", "MemorySummarizer", "WorkingMemory",
+    "MemoryType", "MemoryEntry",
     "WorkflowRun", "WorkflowMemory", "MemoryChunk", "WorkspaceMemorySearch",
     # database
     "BaseDb", "SessionRow", "MemoryRow", "MetricsRow",

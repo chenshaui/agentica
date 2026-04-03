@@ -20,10 +20,27 @@ A "public API" is anything importable from `agentica` top-level `__init__.py`.
 ## [Unreleased]
 
 ### Added
+- `MemoryType` enum — four-type memory classification (`user`, `feedback`, `project`, `reference`) for workspace memory entries
+- `MemoryEntry` Pydantic model — typed memory entry with `name`, `description`, `memory_type`, `file_path`, `content` fields
+- `Workspace.write_memory_entry()` — write a typed memory as an individual `.md` file with YAML frontmatter, auto-updates `MEMORY.md` index
+- `Workspace.get_relevant_memories()` — relevance-based recall: parses `MEMORY.md` index, scores entries by keyword overlap against current query, loads only top-k content files; supports `already_surfaced` set for session-level dedup
+- `Workspace._update_memory_index()` — enforces MEMORY.md hard limits (200 lines / 25KB); FIFO eviction of oldest entries
+- `Workspace._score_memory_entries()` — hybrid keyword scoring (word-level + char 2-gram) supporting both English and CJK queries
+- `Workspace._strip_frontmatter()` — strips YAML frontmatter before injecting memory content into system prompt
+- Memory drift-defense note — appended to all injected memory to guard against stale file/function references
+- `WorkspaceMemoryConfig.max_memory_entries` — max memory entries to inject per run (default: 5); replaces removed `memory_days`
+- `Agent._surfaced_memories` — session-level set tracking surfaced memory filenames, prevents cross-turn re-injection of same entries
+- `Agent.get_workspace_memory_prompt(query)` — now accepts `query` parameter, passes it to `get_relevant_memories()` for query-aware recall
+- `CompressionManager.auto_compact(working_memory=...)` — reuses `WorkingMemory.summary` directly when available, skipping LLM summarization call; faster and cheaper with no information loss
 - `SandboxConfig.allowed_commands` — optional command whitelist for `execute` tool (prefix-matched on first token)
 - `Agent._running` flag — concurrent reuse of the same Agent instance now logs a warning
 - `WorkingMemory.max_messages` — soft FIFO eviction limit (default: 200) to prevent unbounded memory growth
 - `Message.role` field validator — rejects invalid roles at construction time (`system`, `user`, `assistant`, `tool` only)
+
+### Changed
+- `Workspace.get_memory_prompt(days=N)` removed — replaced by `get_relevant_memories(query, limit, already_surfaced)`; full-dump memory injection is no longer the default behavior
+- `WorkspaceMemoryConfig.memory_days` removed — no longer needed; relevance-based recall replaces time-window-based loading
+- System prompt memory zone: both `_build_default_system_message` and `_build_enhanced_system_message` now extract `self.run_input` as query and pass it to `get_workspace_memory_prompt(query=...)`
 
 ### Fixed
 - `update_model()` now clears `model.functions` and `model.tools` before each run, preventing tool accumulation on reused Agent instances
@@ -35,6 +52,7 @@ A "public API" is anything importable from `agentica` top-level `__init__.py`.
 - `task()` recursion depth capped at 5 levels via `_task_depth` context propagation
 
 ### Added (Tests)
+- `tests/test_workspace.py::test_get_memory_prompt` updated to cover `write_memory_entry()` + `get_relevant_memories()` with and without query
 - `tests/test_hooks.py` — AgentHooks, RunHooks, `_CompositeRunHooks`, ConversationArchiveHooks
 - `tests/test_runner.py` — empty message guard, concurrent warning, run_timeout, structured output fallback
 - `tests/test_swarm.py` — parallel mode, partial failure, duplicate name detection

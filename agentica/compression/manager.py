@@ -566,12 +566,15 @@ class CompressionManager:
         messages: List["Message"],
         model: Optional[Any] = None,
         force: bool = False,
+        working_memory: Optional[Any] = None,
     ) -> bool:
         """Layer 2 compaction: LLM-summarise when context is near the limit.
 
         Mirrors CC's autoCompactIfNeeded():
         - Circuit breaker: stops after _max_auto_compact_failures consecutive
           failures to avoid wasting API calls.
+        - If WorkingMemory has an existing session summary, reuses it directly
+          without calling LLM (SM-compact optimization: faster + cheaper).
         - Saves a transcript to .transcripts/ before replacing messages.
         - Replaces all messages with a two-message [compressed] context.
 
@@ -579,6 +582,8 @@ class CompressionManager:
             messages: Current message list (mutated in-place on success).
             model:    The active LLM instance (used for token counting + summary).
             force:    If True, bypass threshold check (reactive compact path).
+            working_memory: Optional WorkingMemory instance. When its session
+                summary is available, it is used directly instead of calling LLM.
 
         Returns:
             True if compaction occurred, False otherwise.
@@ -599,7 +604,19 @@ class CompressionManager:
         # Save transcript before mutating
         self._save_transcript(messages)
 
-        summary = await self._summarise_conversation(messages, model)
+        # SM-compact optimization: reuse existing WorkingMemory session summary
+        # when available (avoids LLM call, faster + cheaper).
+        summary: Optional[str] = None
+        if working_memory is not None and working_memory.summary is not None:
+            sm = working_memory.summary
+            summary = sm.summary
+            if sm.topics:
+                summary += f"\n\nTopics covered: {', '.join(sm.topics)}"
+            logger.debug("Auto-compact: reusing WorkingMemory session summary (SM-compact)")
+
+        if summary is None:
+            summary = await self._summarise_conversation(messages, model)
+
         if not summary:
             self._consecutive_auto_compact_failures += 1
             logger.warning(

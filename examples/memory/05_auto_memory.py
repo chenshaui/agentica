@@ -75,7 +75,7 @@ async def demo_auto_memory():
 
     # Show what the LLM saved (without manual intervention)
     print("\n--- What LLM auto-saved to workspace ---")
-    memory_content = await ws1.get_memory_prompt(days=7)
+    memory_content = await ws1.get_relevant_memories()
     if memory_content:
         print(memory_content)
     else:

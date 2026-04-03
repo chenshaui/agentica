@@ -271,7 +271,8 @@ class PromptsMixin:
             system_message_lines.append(f"{self.get_transfer_prompt()}\n")
 
         # ── DYNAMIC ZONE (at the very end for prefix-cache friendliness) ──
-        workspace_memory = await self.get_workspace_memory_prompt()
+        _query = self.run_input if isinstance(self.run_input, str) else ""
+        workspace_memory = await self.get_workspace_memory_prompt(query=_query)
         if workspace_memory:
             system_message_lines.append(f"## Workspace Memory\n\n{workspace_memory}\n")
 
@@ -415,7 +416,8 @@ class PromptsMixin:
             resolved_work_dir = os.path.abspath(work_dir)
             system_message_lines.append(f"\n**Working directory:** `{resolved_work_dir}`\n")
 
-        workspace_memory = await self.get_workspace_memory_prompt()
+        _query = self.run_input if isinstance(self.run_input, str) else ""
+        workspace_memory = await self.get_workspace_memory_prompt(query=_query)
         if workspace_memory:
             system_message_lines.append(f"\n## Workspace Memory\n\n{workspace_memory}")
 
