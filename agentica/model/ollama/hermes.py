@@ -121,5 +121,6 @@ class Hermes(Ollama):
         if assistant_message.tool_calls is not None and len(assistant_message.tool_calls) > 0 and self.run_tools:
             async for tool_call_response in self.handle_stream_tool_calls(assistant_message, messages):
                 yield tool_call_response
-            async for post_tool_call_response in self.handle_post_tool_call_messages_stream(messages=messages):
-                yield post_tool_call_response
+            if not self._in_agentic_loop:
+                async for post_tool_call_response in self.agentic_loop_stream(messages=messages):
+                    yield post_tool_call_response

@@ -389,7 +389,9 @@ class LiteLLMChat(Model):
                 model_response=model_response,
                 tool_role=tool_role,
         ) is not None:
-            return await self.handle_post_tool_call_messages(messages=messages, model_response=model_response)
+            if self._in_agentic_loop:
+                return model_response
+            return await self.agentic_loop(messages=messages, model_response=model_response)
         
         return model_response
     
@@ -458,5 +460,6 @@ class LiteLLMChat(Model):
                 tool_role=tool_role
             ):
                 yield tool_call_response
-            async for post_tool_call_response in self.handle_post_tool_call_messages_stream(messages=messages):
-                yield post_tool_call_response
+            if not self._in_agentic_loop:
+                async for post_tool_call_response in self.agentic_loop_stream(messages=messages):
+                    yield post_tool_call_response

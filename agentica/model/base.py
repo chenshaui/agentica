@@ -79,6 +79,11 @@ class Model(ABC):
     # Reset to a fresh CostTracker at the start of each Agent.run().
     _cost_tracker: Optional[CostTracker] = field(init=False, repr=False, default=None)
 
+    # Sentinel flag for the agentic loop: when True, provider response() methods
+    # should NOT call agentic_loop() — they just execute tools and return, letting
+    # the outer while-loop drive the next iteration.
+    _in_agentic_loop: bool = field(init=False, repr=False, default=False)
+
     # Model-layer lifecycle hooks (injected by Agent.update_model()).
     # _pre_tool_hook:  called before each batch of tool calls with (messages, function_calls).
     #                  May mutate messages (e.g. truncate context, inject reflection).
@@ -601,7 +606,7 @@ class Model(ABC):
             Mirrors CC's autoCompactIfNeeded().
 
         Layer 3 — Reactive compact (prompt_too_long guard):
-            Handled separately in handle_post_tool_call_messages via the
+            Handled separately in agentic_loop() / _call_with_retry() via the
             CompressionManager.auto_compact() circuit-breaker path.
         """
         # ------------------------------------------------------------------
@@ -658,252 +663,303 @@ class Model(ABC):
             await _fire_compact_hooks('on_post_compact')
 
 
-    async def handle_post_tool_call_messages(self, messages: List[Message], model_response: ModelResponse) -> ModelResponse:
-        """Handle messages after tool calls — with Agent-Loop state management.
+    # ------------------------------------------------------------------
+    # Agentic Loop: shared safety helpers
+    # ------------------------------------------------------------------
 
-        Enhancements over the original single-call implementation:
+    def _check_agent_cancelled(self, agent: Any) -> None:
+        """Check if the agent has been cancelled. Raises AgentCancelledError."""
+        if agent is not None and getattr(agent, '_cancelled', False):
+            agent._cancelled = False
+            raise RuntimeError("Agent run cancelled by user")
 
-        1. **Safety valve** — stops after MAX_TOOL_LOOP_TURNS recursive tool rounds
-           to prevent runaway loops.
-        2. **max_tokens recovery** — when a provider signals the output was truncated
-           (finish_reason == "length"), automatically appends a continuation prompt
-           and re-calls, up to MAX_TOKENS_RECOVERY_LIMIT times.
-        3. **API-error retry** — transient errors (rate-limit, connection, 5xx) are
-           retried with exponential back-off, up to MAX_API_RETRY attempts.
-        4. **Reactive compact** — if compression is enabled and a ``prompt_too_long``
-           error is raised, one emergency compaction attempt is made before giving up.
-           Mirrors CC's REACTIVE_COMPACT feature gate.
-
-        All four mechanisms are additive; the core response() contract is unchanged.
-        """
-        last_message = messages[-1]
-        if last_message.stop_after_tool_call:
-            logger.debug("Stopping execution as stop_after_tool_call=True")
-            if (
-                    last_message.role == "assistant"
-                    and last_message.content is not None
-                    and isinstance(last_message.content, str)
-            ):
-                if model_response.content is None:
-                    model_response.content = ""
-                model_response.content += last_message.content
-            return model_response
-
-        # ------------------------------------------------------------------
-        # Loop-state constants
-        # Note: CC's main loop has NO maxTurns limit (undefined); 200 is our
-        # defensive safety-valve to prevent runaway tool loops.
-        # Configurable via ToolConfig(max_tool_turns=N).
-        # ------------------------------------------------------------------
-        _MAX_TOOL_LOOP_TURNS       = getattr(self, '_max_tool_loop_turns',       200)
-        _MAX_TOKENS_RECOVERY       = getattr(self, '_max_tokens_recovery',        3)
-        _MAX_API_RETRY             = getattr(self, '_max_api_retry',              3)
-        _DEATH_SPIRAL_THRESHOLD    = getattr(self, '_death_spiral_threshold',     5)
-        _RETRYABLE_SUBSTRINGS  = ("rate_limit", "rate limit", "429", "503", "502",
-                                   "connection", "timeout", "overloaded")
-        _PROMPT_TOO_LONG_HINTS = ("prompt_too_long", "context_length_exceeded",
-                                   "maximum context", "too many tokens", "413")
-
-        # Retrieve or initialise per-run loop counters stored on the model object.
-        # Using model-level attributes is safe because `response()` creates a fresh
-        # chain for each top-level user message; these are reset in `reset_model()`.
-        if not hasattr(self, '_loop_turn_count'):
-            self._loop_turn_count: int = 0
-            self._max_tokens_recovery_count: int = 0
-            self._reactive_compact_done: bool = False
-            self._consecutive_all_error_turns: int = 0
-
-        self._loop_turn_count += 1
-
-        # ------------------------------------------------------------------
-        # Death spiral detection (mirrors CC's death-spiral guard)
-        # If the last batch of tool results are ALL errors, increment counter.
-        # N consecutive all-error turns → error→hook→retry→error loop, stop early.
-        # ------------------------------------------------------------------
-        recent_tool_results = []
+    def _check_death_spiral(self, messages: List[Message], state: "LoopState") -> bool:
+        """Check if all recent tool results are errors. Returns True to stop."""
+        recent_tool_results: List[Message] = []
         for m in reversed(messages):
-            if m.role in ("tool",) and hasattr(m, 'tool_call_error'):
+            if m.role == "tool" and hasattr(m, 'tool_call_error'):
                 recent_tool_results.append(m)
             elif m.role == "assistant":
-                break  # stop at the assistant message that triggered these tool calls
-        if recent_tool_results and all(getattr(m, 'tool_call_error', False) for m in recent_tool_results):
-            self._consecutive_all_error_turns += 1
+                break
+        if recent_tool_results and all(
+            getattr(m, 'tool_call_error', False) for m in recent_tool_results
+        ):
+            state.consecutive_all_error_turns += 1
         else:
-            self._consecutive_all_error_turns = 0
+            state.consecutive_all_error_turns = 0
 
-        if self._consecutive_all_error_turns >= _DEATH_SPIRAL_THRESHOLD:
+        if state.consecutive_all_error_turns >= state.death_spiral_threshold:
             logger.warning(
-                f"[DeathSpiral] {self._consecutive_all_error_turns} consecutive turns "
-                f"with ALL tool calls failing — stopping to prevent infinite error loop."
+                f"[DeathSpiral] {state.consecutive_all_error_turns} consecutive turns "
+                f"with ALL tool calls failing -- stopping to prevent infinite error loop."
             )
-            if model_response.content is None:
-                model_response.content = ""
-            model_response.content += (
-                f"\n\n[Error: stopped after {self._consecutive_all_error_turns} consecutive "
-                f"turns of all tool calls failing. This appears to be an unrecoverable error loop.]"
-            )
-            return model_response
+            return True
+        return False
 
-        # ------------------------------------------------------------------
-        # Cost budget check: stop if accumulated cost exceeds max_cost_usd
-        # ------------------------------------------------------------------
+    def _check_cost_budget(self) -> Optional[str]:
+        """Check cost budget. Returns warning message string if exceeded, None otherwise."""
         _max_cost = getattr(self, '_max_cost_usd', None)
         if _max_cost is not None and self._cost_tracker is not None:
             if self._cost_tracker.total_cost_usd >= _max_cost:
                 logger.warning(
                     f"[BudgetExceeded] ${self._cost_tracker.total_cost_usd:.4f} >= "
-                    f"${_max_cost:.4f} — stopping run."
+                    f"${_max_cost:.4f} -- stopping run."
                 )
-                if model_response.content is None:
-                    model_response.content = ""
-                model_response.content += (
+                return (
                     f"\n\n[Warning: cost budget exceeded "
                     f"(${self._cost_tracker.total_cost_usd:.4f} >= ${_max_cost:.4f})]"
                 )
-                return model_response
+        return None
 
-        # ------------------------------------------------------------------
-        # Apply compression before the next LLM call
-        # ------------------------------------------------------------------
-        await self._maybe_compress_messages(messages)
+    def _response_has_tool_calls(self, messages: List[Message]) -> bool:
+        """Check if the last assistant message triggered tool calls (results in messages).
 
-        # ------------------------------------------------------------------
-        # Call next LLM round — with retry + max_tokens recovery
-        # ------------------------------------------------------------------
+        Walk backwards: if we find tool-role messages before the next assistant message,
+        it means tools were executed and the loop should continue.
+        """
+        for m in reversed(messages):
+            if m.role == "tool":
+                return True
+            if m.role == "assistant":
+                return bool(m.tool_calls)
+        return False
+
+    async def _try_reactive_compact(self, messages: List[Message]) -> bool:
+        """Attempt emergency compression on prompt_too_long. Returns True if compacted."""
+        agent = self._agent_ref() if self._agent_ref else None
+        cm = None
+        if agent is not None:
+            tc = getattr(agent, 'tool_config', None)
+            if tc is not None:
+                cm = getattr(tc, 'compression_manager', None)
+        _auto_compact_fn = getattr(cm, 'auto_compact', None) if cm else None
+        if _auto_compact_fn is not None:
+            try:
+                compacted = await _auto_compact_fn(messages, model=self, force=True)
+                if compacted:
+                    logger.info("Reactive compact triggered (prompt_too_long) -- retrying")
+                    return True
+            except Exception as _rc_err:
+                logger.warning(f"Reactive compact failed: {_rc_err}")
+        return False
+
+    async def _call_with_retry(
+        self, messages: List[Message], state: "LoopState"
+    ) -> ModelResponse:
+        """Call self.response() with retry and reactive compact.
+
+        Sets _in_agentic_loop=True so provider response() does NOT recurse.
+        """
         import random as _random
 
-        for _attempt in range(_MAX_API_RETRY):
-            try:
-                response_after_tool_calls = await self.response(messages=messages)
-                break  # success
-            except Exception as _exc:
-                _err = str(_exc).lower()
+        self._in_agentic_loop = True
+        try:
+            for _attempt in range(state.max_api_retry):
+                try:
+                    return await self.response(messages=messages)
+                except Exception as _exc:
+                    _err = str(_exc).lower()
 
-                # --- Reactive compact: prompt_too_long → emergency compress ---
-                _is_too_long = any(h in _err for h in _PROMPT_TOO_LONG_HINTS)
-                if _is_too_long and not self._reactive_compact_done:
-                    self._reactive_compact_done = True
-                    agent = self._agent_ref() if self._agent_ref else None
-                    cm = None
-                    if agent is not None:
-                        tc = getattr(agent, 'tool_config', None)
-                        if tc is not None:
-                            cm = getattr(tc, 'compression_manager', None)
-                    _auto_compact_fn = getattr(cm, 'auto_compact', None) if cm else None
-                    if _auto_compact_fn is not None:
-                        try:
-                            compacted = await _auto_compact_fn(messages, model=self, force=True)
-                            if compacted:
-                                logger.info("Reactive compact triggered (prompt_too_long) — retrying")
-                                continue  # retry with compacted context
-                        except Exception as _rc_err:
-                            logger.warning(f"Reactive compact failed: {_rc_err}")
+                    # Reactive compact: prompt_too_long -> emergency compress
+                    _is_too_long = any(h in _err for h in state.PROMPT_TOO_LONG_HINTS)
+                    if _is_too_long and not state.reactive_compact_done:
+                        state.reactive_compact_done = True
+                        if await self._try_reactive_compact(messages):
+                            continue  # retry with compacted context
 
-                # --- Retryable errors: exponential back-off ---
-                _is_retryable = any(r in _err for r in _RETRYABLE_SUBSTRINGS)
-                if _is_retryable and _attempt < _MAX_API_RETRY - 1:
-                    _wait = (2 ** _attempt) + _random.uniform(0.0, 1.0)
-                    logger.warning(
-                        f"[APIRetry] attempt {_attempt + 1}/{_MAX_API_RETRY}, "
-                        f"retrying in {_wait:.1f}s: {_exc}"
-                    )
-                    await asyncio.sleep(_wait)
-                    continue
+                    # Retryable errors: exponential back-off
+                    _is_retryable = any(r in _err for r in state.RETRYABLE_SUBSTRINGS)
+                    if _is_retryable and _attempt < state.max_api_retry - 1:
+                        _wait = (2 ** _attempt) + _random.uniform(0.0, 1.0)
+                        logger.warning(
+                            f"[APIRetry] attempt {_attempt + 1}/{state.max_api_retry}, "
+                            f"retrying in {_wait:.1f}s: {_exc}"
+                        )
+                        await asyncio.sleep(_wait)
+                        continue
 
-                raise  # non-retryable or exhausted retries
-        else:
-            # All retry attempts exhausted without breaking out of the loop
-            logger.error(f"[APIRetry] All {_MAX_API_RETRY} attempts failed")
-            raise RuntimeError(f"LLM API call failed after {_MAX_API_RETRY} retries")
+                    raise  # non-retryable or exhausted retries
 
-        # ------------------------------------------------------------------
-        # max_tokens recovery: output was truncated — ask model to continue
-        # ------------------------------------------------------------------
-        finish = getattr(response_after_tool_calls, '_finish_reason', None)
-        if finish == "length" and self._max_tokens_recovery_count < _MAX_TOKENS_RECOVERY:
-            self._max_tokens_recovery_count += 1
-            logger.info(
-                f"[MaxTokensRecovery] output truncated, "
-                f"continuing ({self._max_tokens_recovery_count}/{_MAX_TOKENS_RECOVERY})"
-            )
-            messages.append(Message(role="user", content="Continue from where you left off."))
-            # Recurse for the continuation turn (counts as a new tool-loop turn)
-            return await self.handle_post_tool_call_messages(messages, response_after_tool_calls)
+            logger.error(f"[APIRetry] All {state.max_api_retry} attempts failed")
+            raise RuntimeError(f"LLM API call failed after {state.max_api_retry} retries")
+        finally:
+            self._in_agentic_loop = False
 
-        # ------------------------------------------------------------------
-        # Merge sub-response into the accumulated model_response
-        # ------------------------------------------------------------------
-        if response_after_tool_calls.content is not None:
-            if model_response.content is None:
-                model_response.content = ""
-            model_response.content += response_after_tool_calls.content
-        if response_after_tool_calls.parsed is not None:
-            model_response.parsed = response_after_tool_calls.parsed
-        if response_after_tool_calls.audio is not None:
-            model_response.audio = response_after_tool_calls.audio
+    # ------------------------------------------------------------------
+    # Agentic Loop: iterative while-loop (replaces recursive
+    # handle_post_tool_call_messages / handle_post_tool_call_messages_stream)
+    # ------------------------------------------------------------------
 
-        return model_response
+    async def agentic_loop(
+        self,
+        messages: List[Message],
+        model_response: ModelResponse,
+    ) -> ModelResponse:
+        """Iterative agentic tool loop (non-streaming).
 
+        Called by provider response() when tool calls are detected.
+        Uses while-loop instead of recursion to avoid stack overflow.
+        Unifies all safety checks: death spiral, cost budget, compression,
+        max_tokens recovery, API retry with reactive compact.
+        """
+        from agentica.model.loop_state import LoopState
 
-    async def handle_post_tool_call_messages_stream(self, messages: List[Message]) -> AsyncIterator[ModelResponse]:
-        """Handle streaming messages after tool calls (async-only, single implementation)."""
-        last_message = messages[-1]
-        if last_message.stop_after_tool_call:
-            logger.debug("Stopping execution as stop_after_tool_call=True")
-            if (
+        agent = self._agent_ref() if self._agent_ref else None
+        state = LoopState(
+            max_tokens_recovery_limit=getattr(self, '_max_tokens_recovery', 3),
+            max_api_retry=getattr(self, '_max_api_retry', 3),
+            death_spiral_threshold=getattr(self, '_death_spiral_threshold', 5),
+        )
+
+        while True:
+            # -- Cancellation checkpoint 1 (top of loop) --
+            self._check_agent_cancelled(agent)
+
+            # -- stop_after_tool_call --
+            last_message = messages[-1]
+            if last_message.stop_after_tool_call:
+                logger.debug("Stopping execution as stop_after_tool_call=True")
+                if (
                     last_message.role == "assistant"
                     and last_message.content is not None
                     and isinstance(last_message.content, str)
-            ):
-                yield ModelResponse(content=last_message.content)
-        else:
-            # Death spiral detection (mirrors non-stream path)
-            _DEATH_SPIRAL_THRESHOLD = getattr(self, '_death_spiral_threshold', 5)
-            if not hasattr(self, '_loop_turn_count'):
-                self._loop_turn_count = 0
-                self._consecutive_all_error_turns = 0
-            self._loop_turn_count += 1
+                ):
+                    if model_response.content is None:
+                        model_response.content = ""
+                    model_response.content += last_message.content
+                return model_response
 
-            # Death spiral: all tool results in the last batch are errors
-            recent_tool_results = []
-            for m in reversed(messages):
-                if m.role in ("tool",) and hasattr(m, 'tool_call_error'):
-                    recent_tool_results.append(m)
-                elif m.role == "assistant":
-                    break
-            if recent_tool_results and all(getattr(m, 'tool_call_error', False) for m in recent_tool_results):
-                self._consecutive_all_error_turns = getattr(self, '_consecutive_all_error_turns', 0) + 1
-            else:
-                self._consecutive_all_error_turns = 0
+            state.turn_count += 1
 
-            if self._consecutive_all_error_turns >= _DEATH_SPIRAL_THRESHOLD:
-                logger.warning(
-                    f"[DeathSpiral] Stream: {self._consecutive_all_error_turns} consecutive "
-                    f"all-error turns — stopping."
+            # -- Death spiral detection --
+            if self._check_death_spiral(messages, state):
+                if model_response.content is None:
+                    model_response.content = ""
+                model_response.content += (
+                    f"\n\n[Error: stopped after {state.consecutive_all_error_turns} consecutive "
+                    f"turns of all tool calls failing. This appears to be an unrecoverable error loop.]"
                 )
+                return model_response
+
+            # -- Cost budget check --
+            budget_msg = self._check_cost_budget()
+            if budget_msg is not None:
+                if model_response.content is None:
+                    model_response.content = ""
+                model_response.content += budget_msg
+                return model_response
+
+            # -- Compression --
+            await self._maybe_compress_messages(messages)
+
+            # -- Cancellation checkpoint 2 (before API call) --
+            self._check_agent_cancelled(agent)
+
+            # -- API call with retry --
+            response_after = await self._call_with_retry(messages, state)
+
+            # -- max_tokens recovery --
+            finish = getattr(response_after, '_finish_reason', None)
+            if (
+                finish == "length"
+                and state.max_tokens_recovery_count < state.max_tokens_recovery_limit
+            ):
+                state.max_tokens_recovery_count += 1
+                logger.info(
+                    f"[MaxTokensRecovery] output truncated, "
+                    f"continuing ({state.max_tokens_recovery_count}/{state.max_tokens_recovery_limit})"
+                )
+                # Merge truncated content before continuing
+                if response_after.content is not None:
+                    if model_response.content is None:
+                        model_response.content = ""
+                    model_response.content += response_after.content
+                messages.append(Message(role="user", content="Continue from where you left off."))
+                continue  # next iteration handles the continuation
+
+            # -- Merge sub-response --
+            if response_after.content is not None:
+                if model_response.content is None:
+                    model_response.content = ""
+                model_response.content += response_after.content
+            if response_after.parsed is not None:
+                model_response.parsed = response_after.parsed
+            if response_after.audio is not None:
+                model_response.audio = response_after.audio
+
+            # -- Check if response triggered more tool calls --
+            if not self._response_has_tool_calls(messages):
+                return model_response
+            # else: continue the while loop for the next tool round
+
+    async def agentic_loop_stream(
+        self,
+        messages: List[Message],
+    ) -> AsyncIterator[ModelResponse]:
+        """Iterative agentic tool loop (streaming).
+
+        Shares the same safety checks as non-streaming agentic_loop().
+        Previously the stream path (handle_post_tool_call_messages_stream)
+        lacked max_tokens recovery and API retry — now unified.
+        """
+        from agentica.model.loop_state import LoopState
+
+        agent = self._agent_ref() if self._agent_ref else None
+        state = LoopState(
+            death_spiral_threshold=getattr(self, '_death_spiral_threshold', 5),
+        )
+
+        while True:
+            # -- Cancellation checkpoint 1 --
+            self._check_agent_cancelled(agent)
+
+            # -- stop_after_tool_call --
+            last_message = messages[-1]
+            if last_message.stop_after_tool_call:
+                logger.debug("Stopping execution as stop_after_tool_call=True")
+                if (
+                    last_message.role == "assistant"
+                    and last_message.content is not None
+                    and isinstance(last_message.content, str)
+                ):
+                    yield ModelResponse(content=last_message.content)
+                return
+
+            state.turn_count += 1
+
+            # -- Death spiral detection --
+            if self._check_death_spiral(messages, state):
                 yield ModelResponse(
-                    content=f"\n\n[Error: stopped after {self._consecutive_all_error_turns} consecutive "
-                    f"turns of all tool calls failing. Unrecoverable error loop detected.]"
+                    content=f"\n\n[Error: stopped after {state.consecutive_all_error_turns} "
+                    f"consecutive turns of all tool calls failing. "
+                    f"Unrecoverable error loop detected.]"
                 )
                 return
 
-            # Cost budget check
-            _max_cost = getattr(self, '_max_cost_usd', None)
-            if _max_cost is not None and self._cost_tracker is not None:
-                if self._cost_tracker.total_cost_usd >= _max_cost:
-                    logger.warning(
-                        f"[BudgetExceeded] Stream: ${self._cost_tracker.total_cost_usd:.4f} >= "
-                        f"${_max_cost:.4f} — stopping."
-                    )
-                    yield ModelResponse(
-                        content=f"\n\n[Warning: cost budget exceeded "
-                        f"(${self._cost_tracker.total_cost_usd:.4f} >= ${_max_cost:.4f})]"
-                    )
-                    return
+            # -- Cost budget check --
+            budget_msg = self._check_cost_budget()
+            if budget_msg is not None:
+                yield ModelResponse(content=budget_msg)
+                return
 
+            # -- Compression --
             await self._maybe_compress_messages(messages)
-            async for model_response in self.response_stream(messages=messages):
-                yield model_response
+
+            # -- Cancellation checkpoint 2 --
+            self._check_agent_cancelled(agent)
+
+            # -- Stream API call (with sentinel flag) --
+            self._in_agentic_loop = True
+            try:
+                async for chunk in self.response_stream(messages=messages):
+                    yield chunk
+            finally:
+                self._in_agentic_loop = False
+
+            # -- Check if tool calls happened --
+            if not self._response_has_tool_calls(messages):
+                return
+            # else: continue loop
 
     # ── Default tool call handling (OpenAI-compatible protocol) ──────────────
     # Providers using a different protocol (e.g. Anthropic) override these.
@@ -1296,8 +1352,4 @@ class Model(ABC):
         self.functions = None
         self.function_call_stack = None
         self.session_id = None
-        # Reset per-run loop-state counters (set by handle_post_tool_call_messages)
-        self._loop_turn_count = 0
-        self._max_tokens_recovery_count = 0
-        self._reactive_compact_done = False
-        self._consecutive_all_error_turns = 0
+        self._in_agentic_loop = False

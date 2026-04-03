@@ -243,11 +243,9 @@ class Runner:
             if agent.model is not None:
                 from agentica.cost_tracker import CostTracker as _CostTracker
                 agent.model._cost_tracker = _CostTracker()
-                # Reset per-run loop state counters on the model
-                agent.model._loop_turn_count = 0
-                agent.model._max_tokens_recovery_count = 0
-                agent.model._reactive_compact_done = False
-                agent.model._consecutive_all_error_turns = 0
+                # Loop state is now managed per-invocation in LoopState dataclass;
+                # only reset the sentinel flag here.
+                agent.model._in_agentic_loop = False
                 # Pass cost budget to model for per-turn checking
                 agent.model._max_cost_usd = getattr(agent, '_run_max_cost_usd', None)
 
