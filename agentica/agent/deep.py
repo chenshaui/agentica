@@ -107,8 +107,6 @@ class DeepAgent(Agent):
         if tool_config is None:
             tool_config = ToolConfig(
                 compress_tool_results=True,
-                read_chat_history=True,
-                read_tool_call_history=True,
                 context_overflow_threshold=0.8,
                 max_repeated_tool_calls=3,
             )

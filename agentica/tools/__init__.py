@@ -1,16 +1,13 @@
-# -*- coding: utf-8 -*-
-"""
-@author: XuMing(xuming624@qq.com)
-@description: Tools module exports
+"""Tools module exports.
 
 Available tools:
 - Base: Tool base class
-- Builtin tools: File, Execute, WebSearch, FetchUrl, Todo, Task, Memory (used by Agent)
+- Builtin tools: File, Execute, WebSearch, FetchUrl, Todo, Task (used by Agent)
 - CodeTool: Code analysis, formatting, and linting
 - LspTool: LSP-based code navigation (goto definition, find references)
 - PatchTool: Apply diff/patch files (V4A and unified diff formats)
 - @tool decorator: Attach metadata to tool functions
-- Tool Registry: Global tool name → callable registry
+- Tool Registry: Global tool name -> callable registry
 """
 from agentica.tools.base import Tool, Function, FunctionCall
 from agentica.tools.decorators import tool
@@ -22,8 +19,6 @@ from agentica.tools.buildin_tools import (
     BuiltinFetchUrlTool,
     BuiltinTodoTool,
     BuiltinTaskTool,
-    BuiltinMemoryTool,
-    BuiltinConversationTool,
 )
 from agentica.tools.code_tool import CodeTool
 from agentica.tools.lsp_tool import LspTool
@@ -49,8 +44,6 @@ __all__ = [
     "BuiltinFetchUrlTool",   # URL content fetching
     "BuiltinTodoTool",       # Task list management
     "BuiltinTaskTool",       # Sub-agent task delegation
-    "BuiltinMemoryTool",     # Persistent memory
-    "BuiltinConversationTool",  # Conversation archive search
     # Extended tools
     "CodeTool",      # Code analysis, formatting, linting
     "LspTool",       # LSP-based code navigation

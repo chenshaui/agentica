@@ -233,7 +233,6 @@ _LAZY_IMPORTS = {
     "BuiltinFetchUrlTool": "agentica.tools.buildin_tools",
     "BuiltinTodoTool": "agentica.tools.buildin_tools",
     "BuiltinTaskTool": "agentica.tools.buildin_tools",
-    "BuiltinConversationTool": "agentica.tools.buildin_tools",
     "get_builtin_tools": "agentica.tools.buildin_tools",
 
     # subagent system

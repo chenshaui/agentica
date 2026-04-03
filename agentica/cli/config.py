@@ -44,8 +44,6 @@ TOOL_ICONS = {
     "read_todos": "📋",
     # Subagent
     "task": "🤖",
-    # Memory
-    "save_memory": "💾",
     # Default
     "default": "🔧",
 }

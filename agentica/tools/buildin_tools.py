@@ -1964,295 +1964,6 @@ class BuiltinTaskTool(Tool):
         return ""
 
 
-class BuiltinMemoryTool(Tool):
-    """
-    Built-in memory tool for saving important information to workspace.
-    
-    This tool allows the agent to persist important user information, preferences,
-    and conversation highlights to the workspace memory system.
-    
-    Memory types:
-    - Daily memory: Temporary notes for the current day (auto-cleared after 7 days)
-    - Long-term memory: Persistent information (user preferences, important facts)
-    """
-
-    MEMORY_SYSTEM_PROMPT = dedent("""## Memory Tools
-
-    You have access to memory tools to persist and retrieve important information across conversations.
-
-    ### Available Tools
-
-    1. **save_memory(content, long_term)** — Save information to memory
-       - `long_term=False` (default): Daily memory, cleared after 7 days
-       - `long_term=True`: Permanent memory that persists indefinitely
-
-    2. **read_memory(days)** — Read recent memories
-       - Returns long-term memory + daily memories from the last N days (default: 7)
-       - Use to recall previously saved context before responding
-
-    3. **search_memory(query, limit)** — Search all memories by keyword
-       - Searches across all memory files (long-term + daily) using keyword matching
-       - Returns matching results ranked by relevance score
-       - Note: `search_memory` searches saved memory notes; use `search_conversations` (if available) to search full conversation archives
-
-    ### When to Use
-
-    - **save_memory**: User says "remember", "save", "note this", or shares important preferences/facts
-    - **read_memory**: At the start of a conversation or when you need to recall saved context
-    - **search_memory**: When looking for specific previously saved information
-
-    ### Guidelines
-
-    1. **Be Selective**: Only save truly important or explicitly requested information
-    2. **Be Concise**: Write clear, brief memory entries (1-2 sentences)
-    3. **Privacy Aware**: Don't save sensitive information unless explicitly asked
-
-    ### Examples
-
-    - User says "I prefer Python over JavaScript" → save_memory("User prefers Python over JavaScript", long_term=True)
-    - User says "Remember to check the API docs tomorrow" → save_memory("Check API docs", long_term=False)
-    - User asks "What do you know about me?" → read_memory() to recall saved info
-    - User asks "Did I mention my project name?" → search_memory("project name")
-    """)
-
-    def __init__(self, workspace=None):
-        """Initialize BuiltinMemoryTool.
-        
-        Args:
-            workspace: Workspace instance for storing memories. If None, memories won't be persisted.
-        """
-        super().__init__(name="builtin_memory_tool")
-        self._workspace = workspace
-        self.register(self.save_memory, is_destructive=True)
-        self.register(self.read_memory, is_read_only=True)
-        self.register(self.search_memory, is_read_only=True)
-
-    def set_workspace(self, workspace):
-        """Set or update the workspace instance.
-        
-        Args:
-            workspace: Workspace instance
-        """
-        self._workspace = workspace
-
-    def get_system_prompt(self) -> Optional[str]:
-        """Get the system prompt for memory tool usage."""
-        return self.MEMORY_SYSTEM_PROMPT
-
-    async def save_memory(self, content: str, long_term: bool = False) -> str:
-        """Save important information to memory for future conversations.
-
-        Use this tool to remember important user preferences, personal information,
-        or any details that should be recalled in future conversations.
-
-        Args:
-            content: The information to remember. Should be a concise, clear statement.
-                Examples:
-                - "User prefers concise responses"
-                - "User is working on a Python web project"
-                - "User's name is Alice, she is a data scientist"
-            long_term: If True, save to permanent long-term memory.
-                If False (default), save to daily memory (cleared after 7 days).
-                Use long_term=True for: user preferences, personal info, important facts.
-                Use long_term=False for: temporary notes, daily tasks, short-term context.
-
-        Returns:
-            Confirmation message indicating where the memory was saved.
-        """
-        if not content or not content.strip():
-            return "Error: Memory content cannot be empty."
-
-        content = content.strip()
-        
-        if self._workspace is None:
-            logger.warning("No workspace configured, memory not saved to disk.")
-            return json.dumps({
-                "success": False,
-                "error": "No workspace configured. Memory not persisted.",
-                "content": content,
-            }, ensure_ascii=False)
-
-        try:
-            await self._workspace.save_memory(content, long_term=long_term)
-            memory_type = "long-term" if long_term else "daily"
-            logger.debug(f"Saved {memory_type} memory: {content[:50]}...")
-            
-            return json.dumps({
-                "success": True,
-                "memory_type": memory_type,
-                "content": content,
-                "message": f"Memory saved to {memory_type} storage.",
-            }, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.error(f"Error saving memory: {e}")
-            return json.dumps({
-                "success": False,
-                "error": f"Failed to save memory: {e}",
-                "content": content,
-            }, ensure_ascii=False)
-
-    async def read_memory(self, days: int = 7) -> str:
-        """Read recent memories from workspace storage.
-
-        Retrieves long-term memory and daily memories from the last N days.
-        Use this to recall previously saved context about the user.
-
-        Args:
-            days: Number of recent days of daily memory to read. Default is 7.
-
-        Returns:
-            Memory content string with long-term and recent daily memories.
-        """
-        if self._workspace is None:
-            return json.dumps({
-                "success": False,
-                "error": "No workspace configured. Cannot read memory.",
-            }, ensure_ascii=False)
-
-        try:
-            content = await self._workspace.get_memory_prompt(days=days)
-            return json.dumps({
-                "success": True,
-                "days": days,
-                "content": content if content else "No memories found.",
-            }, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.error(f"Error reading memory: {e}")
-            return json.dumps({
-                "success": False,
-                "error": f"Failed to read memory: {e}",
-            }, ensure_ascii=False)
-
-    def search_memory(self, query: str, limit: int = 5) -> str:
-        """Search all saved memories by keyword.
-
-        Searches across all memory files (long-term and daily) using keyword matching.
-        Returns results ranked by relevance score.
-
-        Note: This searches saved memory notes. Use search_conversations (if available)
-        to search full conversation archives.
-
-        Args:
-            query: Search query string (keywords to match against memory content).
-            limit: Maximum number of results to return. Default is 5.
-
-        Returns:
-            JSON string with matching memory entries and their relevance scores.
-        """
-        if self._workspace is None:
-            return json.dumps({
-                "success": False,
-                "error": "No workspace configured. Cannot search memory.",
-            }, ensure_ascii=False)
-
-        if not query or not query.strip():
-            return json.dumps({
-                "success": False,
-                "error": "Search query cannot be empty.",
-            }, ensure_ascii=False)
-
-        try:
-            results = self._workspace.search_memory(query=query, limit=limit)
-            return json.dumps({
-                "success": True,
-                "query": query,
-                "count": len(results),
-                "results": results,
-            }, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.error(f"Error searching memory: {e}")
-            return json.dumps({
-                "success": False,
-                "error": f"Failed to search memory: {e}",
-            }, ensure_ascii=False)
-
-
-class BuiltinConversationTool(Tool):
-    """
-    Built-in conversation archive search tool.
-
-    Allows the agent to search historical conversations stored in the workspace,
-    enabling long-term recall of past interactions beyond the current session.
-    """
-
-    CONVERSATION_SYSTEM_PROMPT = dedent("""## search_conversations Tool
-
-    You have access to a `search_conversations` tool to search your historical conversations with the user.
-
-    ### When to Use This Tool
-
-    Use this tool when:
-    1. User refers to past conversations: "remember when we discussed...", "last time you said..."
-    2. User asks to recall specific past work: "the code you wrote last week", "that analysis from yesterday"
-    3. You need historical context that is not in the current conversation
-    4. User explicitly asks about conversation history
-
-    ### Guidelines
-
-    1. Use specific keywords related to what you're looking for
-    2. Results show conversation snippets with dates - use dates to orient the user
-    3. The search is keyword-based, so try multiple relevant terms if first search misses
-    """)
-
-    def __init__(self, workspace=None):
-        """Initialize BuiltinConversationTool.
-
-        Args:
-            workspace: Workspace instance for searching conversation archives.
-        """
-        super().__init__(name="builtin_conversation_tool")
-        self._workspace = workspace
-        self.register(self.search_conversations, is_read_only=True)
-
-    def set_workspace(self, workspace):
-        """Set or update the workspace instance."""
-        self._workspace = workspace
-
-    def get_system_prompt(self) -> Optional[str]:
-        """Get the system prompt for conversation search tool."""
-        return self.CONVERSATION_SYSTEM_PROMPT
-
-    def search_conversations(
-        self,
-        query: str,
-        limit: int = 10,
-        max_files: Optional[int] = None,
-    ) -> str:
-        """Search historical conversation archives for past interactions.
-
-        Use this tool to recall past conversations, find previously discussed topics,
-        or retrieve information from earlier sessions.
-
-        Args:
-            query: Keywords to search for in conversation history.
-            limit: Maximum number of results to return (default: 10).
-            max_files: Only search the most recent N archive files (default: None = search all).
-
-        Returns:
-            JSON string with matching conversation snippets, dates, and relevance scores.
-        """
-        if not self._workspace:
-            return json.dumps({
-                "success": False,
-                "error": "No workspace configured. Conversation search not available.",
-            }, ensure_ascii=False)
-
-        results = self._workspace.search_conversations(query=query, limit=limit, max_files=max_files)
-        if not results:
-            return json.dumps({
-                "success": True,
-                "message": f"No conversations found matching '{query}'.",
-                "results": [],
-            }, ensure_ascii=False)
-
-        return json.dumps({
-            "success": True,
-            "query": query,
-            "count": len(results),
-            "results": results,
-        }, ensure_ascii=False, indent=2)
-
-
 def get_builtin_tools(
         work_dir: Optional[str] = None,
         include_file_tools: bool = True,
@@ -2262,8 +1973,6 @@ def get_builtin_tools(
         include_todos: bool = True,
         include_task: bool = True,
         include_skills: bool = False,
-        include_memory: bool = True,
-        include_conversations: bool = True,
         task_model: Optional["Model"] = None,
         task_tools: Optional[List[Any]] = None,
         custom_skill_dirs: Optional[List[str]] = None,
@@ -2282,12 +1991,10 @@ def get_builtin_tools(
         include_todos: Whether to include task management tools
         include_task: Whether to include subagent task tool
         include_skills: Whether to include skill tool for executing skills (default: False)
-        include_memory: Whether to include memory save tool
-        include_conversations: Whether to include conversation archive search tool
         task_model: Model for subagent tasks (optional, will use parent agent's model if not set)
         task_tools: Tools for subagent tasks (optional)
         custom_skill_dirs: Custom skill directories to load (optional)
-        workspace: Workspace instance for memory tool (optional)
+        workspace: Unused, kept for backward compatibility
         sandbox_config: SandboxConfig instance for security isolation (optional)
 
     Returns:
@@ -2313,19 +2020,11 @@ def get_builtin_tools(
     if include_task:
         tools.append(BuiltinTaskTool(model=task_model, tools=task_tools))
 
-    if include_memory:
-        tools.append(BuiltinMemoryTool(workspace=workspace))
-
-    if include_conversations and workspace is not None:
-        tools.append(BuiltinConversationTool(workspace=workspace))
-
     if include_skills:
         from agentica.tools.skill_tool import SkillTool
         tools.append(SkillTool(custom_skill_dirs=custom_skill_dirs))
 
     return tools
-
-
 if __name__ == '__main__':
     # Test file tool
     file_tool = BuiltinFileTool()

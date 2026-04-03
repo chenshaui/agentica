@@ -183,13 +183,7 @@ class TeamMixin:
             tools.extend(self.tools)
 
         # Add default tools based on settings
-        if self.tool_config.read_chat_history:
-            tools.append(self.get_chat_history)
-
-        if self.tool_config.read_tool_call_history:
-            tools.append(self.get_tool_call_history)
-
-        # Add knowledge base tools if knowledge is configured
+        # (knowledge and team transfer tools; history tools removed — history is in context)
         if self.knowledge is not None:
             if self.tool_config.search_knowledge:
                 tools.append(self.search_knowledge_base)

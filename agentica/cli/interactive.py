@@ -126,7 +126,6 @@ def _cmd_workspace(workspace=None, **kwargs):
             else:
                 console.print("  [dim]No memory files yet[/dim]")
             console.print()
-            console.print("[dim]Tip: Long-term memory is saved via Agent's save_memory tool[/dim]")
     else:
         console.print("Workspace not configured.", style="yellow")
 

@@ -456,19 +456,6 @@ class TestSearchConversationsRename:
         results = ws.search_conversations(query="test", max_files=5)
         assert isinstance(results, list)
 
-    def test_builtin_conversation_tool_uses_max_files(self):
-        """BuiltinConversationTool.search_conversations should pass max_files."""
-        from agentica.tools.buildin_tools import BuiltinConversationTool
-
-        workspace = MagicMock()
-        workspace.search_conversations = MagicMock(return_value=[])
-        tool = BuiltinConversationTool(workspace=workspace)
-
-        result = tool.search_conversations(query="test", max_files=3)
-        workspace.search_conversations.assert_called_once_with(
-            query="test", limit=10, max_files=3
-        )
-
 
 # =========================================================================
 # M1: _initialize_user_dir caching

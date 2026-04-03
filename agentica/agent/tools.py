@@ -1,10 +1,7 @@
-# -*- coding: utf-8 -*-
-"""
-@author:XuMing(xuming624@qq.com)
-@description: Default tools for Agent
+"""Default tools for Agent.
 
 This module contains the default tool implementations that can be
-enabled on the Agent (chat history, knowledge base, memory, etc.)
+enabled on the Agent (knowledge base search, memory, etc.)
 """
 
 import json
@@ -25,57 +22,6 @@ from agentica.tools.base import Function
 
 class ToolsMixin:
     """Mixin class containing default tool implementations for Agent."""
-
-    def get_chat_history(self, num_chats: Optional[int] = None) -> str:
-        """Use this function to get the chat history between the user and agent.
-
-        Args:
-            num_chats: The number of chats to return.
-                Each chat contains 2 messages. One from the user and one from the agent.
-                Default: None, means get all chats.
-
-        Returns:
-            str: A JSON of a list of dictionaries representing the chat history.
-
-        Example:
-            - To get the last chat, use num_chats=1.
-            - To get the last 5 chats, use num_chats=5.
-            - To get all chats, use num_chats=None.
-            - To get the first chat, use num_chats=None and pick the first message.
-        """
-        history: List[Dict[str, Any]] = []
-        all_chats = self.working_memory.get_message_pairs()
-        if len(all_chats) == 0:
-            return ""
-
-        chats_added = 0
-        for chat in all_chats[::-1]:
-            history.insert(0, chat[1].to_dict())
-            history.insert(0, chat[0].to_dict())
-            chats_added += 1
-            if num_chats is not None and chats_added >= num_chats:
-                break
-        return json.dumps(history, ensure_ascii=False)
-
-    def get_tool_call_history(self, num_calls: int = 3) -> str:
-        """Use this function to get the tools called by the agent in reverse chronological order.
-
-        Args:
-            num_calls: The number of tool calls to return.
-                Default: 3
-
-        Returns:
-            str: A JSON of a list of dictionaries representing the tool call history.
-
-        Example:
-            - To get the last tool call, use num_calls=1.
-            - To get all tool calls, use num_calls=None.
-        """
-        tool_calls = self.working_memory.get_tool_calls(num_calls)
-        if len(tool_calls) == 0:
-            return ""
-        logger.debug(f"tool_calls: {tool_calls}")
-        return json.dumps(tool_calls, ensure_ascii=False)
 
     def search_knowledge_base(self, query: str) -> str:
         """Use this function to search the knowledge base for information about a query.

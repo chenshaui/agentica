@@ -68,9 +68,6 @@ class ToolConfig:
     # Knowledge tools
     search_knowledge: bool = True
     update_knowledge: bool = False
-    # History tools
-    read_chat_history: bool = False
-    read_tool_call_history: bool = False
     # References
     add_references: bool = False
     # Compression

@@ -443,14 +443,6 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
 
         return cls(workspace=workspace, model=model, **kwargs)
 
-    async def save_memory(self, content: str, long_term: bool = False):
-        """Save memory to workspace."""
-        if self.workspace:
-            await self.workspace.write_memory(content, to_daily=not long_term)
-            logger.debug(f"Saved memory to workspace: long_term={long_term}")
-        else:
-            logger.warning("No workspace configured, memory not saved")
-
     def add_instruction(self, instruction: str):
         """Dynamically add instruction to Agent."""
         if not instruction:
