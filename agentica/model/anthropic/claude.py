@@ -408,7 +408,7 @@ class Claude(Model):
                 response_time=metrics.response_timer.elapsed,
             )
             # Anthropic cache_creation_input_tokens / cache_read_input_tokens
-            cache_read = getattr(usage, 'cache_read_input_tokens', None)
+            cache_read = usage.cache_read_input_tokens
             if cache_read:
                 entry.input_tokens_details = TokenDetails(cached_tokens=cache_read)
             self.usage.add(entry)
@@ -641,7 +641,7 @@ class Claude(Model):
         # -*- Handle tool calls
         # Expose stop_reason so agentic_loop can detect
         # max_tokens truncation (stop_reason == "max_tokens") for recovery.
-        model_response._finish_reason = (  # type: ignore[attr-defined]
+        model_response.finish_reason = (
             "length" if response.stop_reason == "max_tokens" else response.stop_reason
         )
 

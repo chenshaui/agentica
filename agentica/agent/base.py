@@ -141,6 +141,8 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
     _run_hooks: Optional[RunHooks] = field(default=None, init=False, repr=False)
     # Default run hooks (auto-injected, e.g. ConversationArchiveHooks when auto_archive=True)
     _default_run_hooks: Optional[RunHooks] = field(default=None, init=False, repr=False)
+    # Per-run cost budget (USD). Set by Runner before _run_impl, read by Model.
+    _run_max_cost_usd: Optional[float] = field(default=None, init=False, repr=False)
 
     # Tool/Skill runtime configs (Agent-level enable/disable)
     _tool_runtime_configs: Dict[str, ToolRuntimeConfig] = field(default_factory=dict, init=False, repr=False)
@@ -746,7 +748,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
 
             # ---- 1. Context overflow handling ----
             if overflow_threshold > 0.0:
-                context_window = getattr(model, 'context_window', 128000) or 128000
+                context_window = model.context_window or 128000
                 # Estimate tokens: sum of all message content lengths / 4 (chars-per-token heuristic)
                 total_chars = sum(
                     len(str(m.content)) if m.content else 0

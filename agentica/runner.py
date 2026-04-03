@@ -158,7 +158,7 @@ class Runner:
             # Agent is not thread-safe — concurrent runs share mutable state
             # (run_id, run_response, _run_hooks, _enabled_tools, model.functions).
             # Swarm autonomous mode avoids this by cloning agents before parallel dispatch.
-            if getattr(agent, '_running', False):
+            if agent._running:
                 logger.warning(
                     f"Agent '{agent.identifier}' is already running. "
                     "Concurrent reuse of the same Agent instance is not safe — "
@@ -247,7 +247,7 @@ class Runner:
                 # only reset the sentinel flag here.
                 agent.model._in_agentic_loop = False
                 # Pass cost budget to model for per-turn checking
-                agent.model._max_cost_usd = getattr(agent, '_run_max_cost_usd', None)
+                agent.model._max_cost_usd = agent._run_max_cost_usd
 
             # Add introduction if provided
             if agent.prompt_config.introduction is not None:
@@ -343,8 +343,8 @@ class Runner:
                     await agent._run_hooks.on_llm_end(agent=agent, response=model_response)
 
                 # --- Context window usage warning ---
-                _used_tokens = getattr(agent.model, 'metrics', {}).get('total_tokens', [])
-                _window = getattr(agent.model, 'context_window', None)
+                _used_tokens = agent.model.metrics.get('total_tokens', [])
+                _window = agent.model.context_window
                 if _window and _used_tokens:
                     _total = sum(_used_tokens) if isinstance(_used_tokens, list) else _used_tokens
                     _pct = _total / _window
@@ -381,8 +381,8 @@ class Runner:
                                 "tool_name": m.tool_name,
                                 "tool_args": m.tool_args,
                                 "content": m.content,
-                                "tool_call_error": getattr(m, "tool_call_error", False),
-                                "metrics": m.metrics if hasattr(m, "metrics") else {},
+                                "tool_call_error": m.tool_call_error or False,
+                                "metrics": m.metrics if m.metrics else {},
                             }
                         )
                 if tool_calls_data:
@@ -402,7 +402,7 @@ class Runner:
                 _cache_read = 0
                 _cache_write = 0
                 if _last.input_tokens_details:
-                    _cache_read = getattr(_last.input_tokens_details, 'cached_tokens', 0)
+                    _cache_read = _last.input_tokens_details.cached_tokens
                 agent.run_response.cost_tracker.record(
                     model_id=agent.model.id,
                     input_tokens=_last.input_tokens,

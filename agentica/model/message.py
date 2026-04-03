@@ -83,6 +83,9 @@ class Message(BaseModel):
     # Compressed content for tool results (used by CompressionManager)
     compressed_content: Optional[str] = None
 
+    # Flag set by micro_compact() to avoid re-processing the same tool result
+    _micro_compacted: bool = False
+
     # The Unix timestamp the message was created.
     created_at: int = Field(default_factory=lambda: int(time()))
 

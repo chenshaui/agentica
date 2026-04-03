@@ -208,7 +208,7 @@ def enforce_tool_result_budget(
             break
         msg = tool_results[idx]
         content = msg.content if isinstance(msg.content, str) else str(msg.content or "")
-        tool_use_id = getattr(msg, 'tool_call_id', None) or f"budget_{idx}"
+        tool_use_id = msg.tool_call_id or f"budget_{idx}"
         file_path = get_tool_result_path(tool_use_id, cwd=cwd, session_id=session_id)
 
         if _persist_to_disk(file_path, content):

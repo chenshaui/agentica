@@ -200,17 +200,17 @@ class ConversationArchiveHooks(RunHooks):
 
     async def on_agent_start(self, agent: Any, **kwargs) -> None:
         """Capture run_input at start time for reliable access in on_agent_end."""
-        agent_id = getattr(agent, 'agent_id', 'unknown')
-        run_input = getattr(agent, 'run_input', None)
+        agent_id = agent.agent_id
+        run_input = agent.run_input
         self._run_inputs[agent_id] = run_input if isinstance(run_input, str) else None
 
     async def on_agent_end(self, agent: Any, output: Any, **kwargs) -> None:
         """Archive conversation after agent completes."""
-        workspace = getattr(agent, 'workspace', None)
+        workspace = agent.workspace
         if workspace is None:
             return
 
-        agent_id = getattr(agent, 'agent_id', 'unknown')
+        agent_id = agent.agent_id
         messages_to_archive = []
 
         # Use run_input captured at start time
@@ -226,7 +226,7 @@ class ConversationArchiveHooks(RunHooks):
             return
 
         try:
-            session_id = getattr(agent, 'run_id', None)
+            session_id = agent.run_id
             await workspace.archive_conversation(messages_to_archive, session_id=session_id)
             logger.debug(f"Archived conversation for agent {agent_id}")
         except Exception as e:

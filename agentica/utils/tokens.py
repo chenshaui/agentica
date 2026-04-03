@@ -223,7 +223,7 @@ def _get_image_dimensions(image: "Image") -> Tuple[int, int]:
     """Returns the image dimensions (width, height) from an Image object."""
     try:
         # Try to get format hint from metadata
-        img_format = getattr(image, 'format', None)
+        img_format = image.format
 
         # Get raw bytes from the appropriate source
         if hasattr(image, 'content') and image.content:
@@ -272,7 +272,7 @@ def count_image_tokens(image: "Image") -> int:
     4. tokens = 85 + (170 * tiles)
     """
     width, height = _get_image_dimensions(image)
-    detail = getattr(image, 'detail', None) or "auto"
+    detail = image.detail or "auto"
 
     if width <= 0 or height <= 0:
         return 0

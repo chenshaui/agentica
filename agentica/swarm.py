@@ -92,7 +92,7 @@ def _clone_agent_for_task(source: Any) -> Any:
     # Shallow-copy the model so each clone has its own tool registry,
     # metrics dict, and can create its own HTTP client on demand.
     # We reset runtime fields that must not be shared between concurrent runs.
-    src_model = getattr(source, 'model', None)
+    src_model = source.model
     if src_model is not None:
         try:
             cloned_model = src_model.model_copy()
@@ -114,14 +114,14 @@ def _clone_agent_for_task(source: Any) -> Any:
     clone = Agent(
         model=cloned_model,
         name=source.name,                          # keep same name for logging
-        description=getattr(source, 'description', None),
+        description=source.description,
         instructions=source.instructions,
         tools=source.tools,                        # shared Tool objects (stateless)
-        knowledge=getattr(source, 'knowledge', None),
-        team=getattr(source, 'team', None),
-        workspace=getattr(source, 'workspace', None),
-        work_dir=getattr(source, 'work_dir', None),
-        response_model=getattr(source, 'response_model', None),
+        knowledge=source.knowledge,
+        team=source.team,
+        workspace=source.workspace,
+        work_dir=source.work_dir,
+        response_model=source.response_model,
         add_history_to_messages=source.add_history_to_messages,
         history_window=source.history_window,
         structured_outputs=source.structured_outputs,
@@ -132,7 +132,7 @@ def _clone_agent_for_task(source: Any) -> Any:
         tool_config=source.tool_config,
         long_term_memory_config=source.long_term_memory_config,
         team_config=source.team_config,
-        sandbox_config=getattr(source, 'sandbox_config', None),
+        sandbox_config=source.sandbox_config,
         working_memory=WorkingMemory(),            # fresh, isolated
         context=dict(source.context) if source.context else None,
     )
@@ -341,7 +341,7 @@ class Swarm:
         the coordinator's instructions (which would be unsafe under concurrency).
         """
         team_desc = "\n".join(
-            f"- {name}: {getattr(a, 'description', '') or getattr(a, 'name', name)}"
+            f"- {name}: {a.description or a.name or name}"
             for name, a in self._agent_map.items()
         )
         prompt = COORDINATOR_SYSTEM_PROMPT.format(team_description=team_desc)

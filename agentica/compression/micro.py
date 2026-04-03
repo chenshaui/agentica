@@ -27,7 +27,7 @@ MICRO_COMPACT_PLACEHOLDER = "[Old tool result content cleared]"
 _MIN_CONTENT_LEN = 80
 
 # Default: keep this many most-recent tool results untouched.
-DEFAULT_KEEP_RECENT = 3
+DEFAULT_KEEP_RECENT = 5
 
 
 def micro_compact(
@@ -39,7 +39,7 @@ def micro_compact(
     Args:
         messages:    Full message list for the current turn (mutated in place).
         keep_recent: How many of the *most recent* tool-result messages to
-                     leave untouched.  Defaults to 3.
+                     leave untouched. 
 
     Returns:
         Number of messages whose content was replaced.
@@ -48,7 +48,7 @@ def micro_compact(
     tool_indices: List[int] = [
         i for i, m in enumerate(messages)
         if m.role == "tool"
-        and not getattr(m, "_micro_compacted", False)
+        and not m._micro_compacted
     ]
 
     if len(tool_indices) <= keep_recent:
@@ -69,7 +69,7 @@ def micro_compact(
 
         msg.content = MICRO_COMPACT_PLACEHOLDER
         # Mark so subsequent calls don't double-process this message.
-        msg._micro_compacted = True  # type: ignore[attr-defined]
+        msg._micro_compacted = True
         compacted += 1
 
     return compacted

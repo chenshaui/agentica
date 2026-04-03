@@ -115,7 +115,7 @@ def read_docx_file(path: Path) -> str:
         raise ImportError("`python-docx` not installed, please install using `pip install python-docx`")
 
     def get_hyperlink_target(doc, r_id):
-        """获取超链接目标URL或者路径."""
+        """Get hyperlink target URL or path."""
         if r_id in doc.part.rels:
             rel = doc.part.rels[r_id]
             if hasattr(rel, 'target_ref'):
@@ -128,7 +128,7 @@ def read_docx_file(path: Path) -> str:
         return ext.lower() in image_extensions
 
     def get_numbering(paragraph):
-        """获取段落的编号信息."""
+        """Get paragraph numbering info."""
         numbering = paragraph._element.xpath('.//w:numPr')
         if (numbering and len(numbering) > 0 and
                 numbering[0].xpath('.//w:numId') and numbering[0].xpath('.//w:ilvl')):
@@ -157,7 +157,7 @@ def read_docx_file(path: Path) -> str:
             for run in paragraph.runs:
                 run_text = run.text
 
-                # 查找 Run 中的超链接
+                # Find hyperlinks within the Run element
                 hyperlink_elements = run._r.findall(".//w:hyperlink", namespaces=run._r.nsmap)
                 for el in hyperlink_elements:
                     r_id = el.get(qn("r:id"))
@@ -172,7 +172,7 @@ def read_docx_file(path: Path) -> str:
                                 run_text += md_url
                 para_text += run_text
 
-            # 查找段落中的超链接
+            # Find hyperlinks within the paragraph element
             hyperlink_elements = paragraph._element.findall(".//w:hyperlink", namespaces=paragraph._element.nsmap)
             for el in hyperlink_elements:
                 r_id = el.get(qn("r:id"))
@@ -187,16 +187,16 @@ def read_docx_file(path: Path) -> str:
                             para_text += md_url
             doc_content += para_text + "\n"
 
-        # 处理插入的图片
+        # Process embedded images
         # for rel in doc.part.rels.values():
         #     if "image" in rel.target_ref and is_image_url(rel.target_ref):
         #         img_id = rel.rId
         #         img_part = doc.part.related_parts[img_id]
         #         img_data = img_part.blob
-        #         # 生成保存图片的文件名
+        #         # Generate filename for the image
         #         os.makedirs(DATA_DIR, exist_ok=True)
         #         img_filename = os.path.join(DATA_DIR, f'image_{img_id}.png')
-        #         # 保存图片数据到本地
+        #         # Save image data to disk
         #         with open(img_filename, 'wb') as img_file:
         #             img_file.write(img_data)
         #         logger.debug(f"Image found: {rel.target_ref}, size: {len(img_data)} bytes")

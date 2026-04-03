@@ -70,7 +70,7 @@ class TeamMixin:
         # Generate description: prefer tool_description > when_to_use > description > role
         description = (
             tool_description
-            or getattr(self, 'when_to_use', None)
+            or self.when_to_use
             or self.description
             or self.prompt_config.role
             or f"Run the {name} agent."
@@ -104,7 +104,7 @@ class TeamMixin:
         """
         agent_name = self.name or "agent"
         agent_description = (
-            getattr(self, 'when_to_use', None)
+            self.when_to_use
             or self.description
             or self.prompt_config.role
             or f"Transfer task to {agent_name}"
@@ -122,7 +122,7 @@ class TeamMixin:
                 The response from the agent.
             """
             # Lifecycle: agent transfer hook
-            caller = getattr(agent_self, '_transfer_caller', None)
+            caller = agent_self._transfer_caller
             if caller is not None and hasattr(caller, '_run_hooks') and caller._run_hooks is not None:
                 await caller._run_hooks.on_agent_transfer(from_agent=caller, to_agent=agent_self)
 
@@ -155,7 +155,7 @@ class TeamMixin:
         for member in self.team:
             member_name = member.name or "unnamed_agent"
             member_desc = (
-                getattr(member, 'when_to_use', None)
+                member.when_to_use
                 or member.prompt_config.role
                 or member.description
                 or "No description"

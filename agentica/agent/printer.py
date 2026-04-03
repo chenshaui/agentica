@@ -148,7 +148,7 @@ class PrinterMixin:
             config=_cfg,
             **kwargs,
         ):
-            event = getattr(run_response, "event", "")
+            event = run_response.event
 
             if show_tool_calls and event == RunEvent.tool_call_started.value:
                 tool_info = run_response.tools[-1] if run_response.tools else None
@@ -175,7 +175,7 @@ class PrinterMixin:
             if event in (RunEvent.run_started.value, RunEvent.run_completed.value, RunEvent.updating_memory.value):
                 continue
 
-            if show_reasoning and getattr(run_response, "reasoning_content", None):
+            if show_reasoning and run_response.reasoning_content:
                 if not _reasoning_displayed:
                     print("💭 THINKING")
                     print("-" * 40)

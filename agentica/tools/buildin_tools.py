@@ -70,16 +70,23 @@ class BuiltinFileTool(Tool):
         self._file_locks: Dict[str, asyncio.Lock] = {}
         self._sandbox_config = sandbox_config
 
-        # Register all file operation functions
+        # Session-level file state cache for:
+        # 1. Read dedup: skip re-reading unchanged files (CC saves ~18% of Read calls)
+        # 2. mtime check: detect external modifications before edit/write
+        # Key: resolved absolute path (str)
+        # Value: {"mtime": float, "offset": int, "limit": int|None}
+        self._file_read_state: Dict[str, Dict[str, Any]] = {}
+
+        # Register all file operation functions.
         # Read-only tools are concurrency_safe (can run in parallel with each other).
         # Write tools (write_file, edit_file, multi_edit_file) stay serialised.
-        self.register(self.ls, concurrency_safe=True)
-        self.register(self.read_file, concurrency_safe=True)
-        self.register(self.write_file, sanitize_arguments=False)
-        self.register(self.edit_file, sanitize_arguments=False)
-        self.register(self.multi_edit_file, sanitize_arguments=False)
-        self.register(self.glob, concurrency_safe=True)
-        self.register(self.grep, concurrency_safe=True)
+        self.register(self.ls, concurrency_safe=True, is_read_only=True)
+        self.register(self.read_file, concurrency_safe=True, is_read_only=True)
+        self.register(self.write_file, sanitize_arguments=False, is_destructive=True)
+        self.register(self.edit_file, sanitize_arguments=False, is_destructive=True)
+        self.register(self.multi_edit_file, sanitize_arguments=False, is_destructive=True)
+        self.register(self.glob, concurrency_safe=True, is_read_only=True)
+        self.register(self.grep, concurrency_safe=True, is_read_only=True)
 
     def _resolve_path(self, path: str) -> Path:
         """Resolve path, supporting absolute, relative, and ~ paths.
@@ -103,19 +110,31 @@ class BuiltinFileTool(Tool):
         return self._file_locks[path]
 
     def _validate_path(self, path: str) -> str:
-        """Validate path against sandbox restrictions.
+        """Validate path against sandbox restrictions and blocked device files.
 
-        When sandbox is enabled, checks that:
+        Always checks:
+        - Path must not resolve to a known device file (/dev/zero, etc.)
+
+        When sandbox is enabled, also checks:
         - Path components do not match any blocked_paths entries
         - Uses path component matching (not substring) to avoid false positives
         - For write operations, caller should use _validate_write_path instead
 
         Raises:
-            PermissionError: If path is blocked by sandbox config
+            PermissionError: If path is blocked by sandbox config or is a device file
         """
+        resolved = self._resolve_path(path).resolve()
+
+        # Device-file guard: always active regardless of sandbox setting.
+        # Reading /dev/zero or /dev/random hangs indefinitely or exhausts memory.
+        if str(resolved) in self.BLOCKED_DEVICE_FILES:
+            raise PermissionError(
+                f"Reading device file '{path}' is blocked for safety. "
+                f"Resolved path: {resolved}"
+            )
+
         if self._sandbox_config is None or not self._sandbox_config.enabled:
             return path
-        resolved = self._resolve_path(path).resolve()
         resolved_parts = set(resolved.parts)
         for blocked in self._sandbox_config.blocked_paths:
             if blocked in resolved_parts:
@@ -201,6 +220,15 @@ class BuiltinFileTool(Tool):
     # Mirrors CC's FileReadTool maxSizeBytes (256KB).
     MAX_FILE_SIZE_BYTES = 256_000
 
+    # Device files that must never be read: reading /dev/zero or /dev/random
+    # hangs indefinitely or exhausts memory.  Absolute paths only — checked
+    # after resolving the input path so symlinks cannot bypass the guard.
+    BLOCKED_DEVICE_FILES: frozenset = frozenset({
+        "/dev/zero", "/dev/random", "/dev/urandom", "/dev/full",
+        "/dev/tty", "/dev/stdin", "/dev/stdout", "/dev/stderr",
+        "/dev/mem", "/dev/kmem", "/dev/port",
+    })
+
     async def read_file(
             self,
             file_path: str,
@@ -241,6 +269,24 @@ class BuiltinFileTool(Tool):
             if not path.is_file():
                 return f"Error: Not a file: {file_path}"
 
+            # --- Read dedup: skip re-reading unchanged files ---
+            # CC saves ~18% of Read calls by detecting same-file re-reads.
+            abs_path = str(path.resolve())
+            try:
+                current_mtime = path.stat().st_mtime
+            except OSError:
+                current_mtime = None
+
+            if current_mtime is not None and abs_path in self._file_read_state:
+                prev = self._file_read_state[abs_path]
+                if (
+                    prev.get("mtime") == current_mtime
+                    and prev.get("offset") == offset
+                    and prev.get("limit") == limit
+                ):
+                    logger.debug(f"Read dedup: file unchanged since last read: {file_path}")
+                    return "[File unchanged since last read — content identical to previous read_file call]"
+
             # --- Large-file guard (mirrors CC's maxSizeBytes) ---
             try:
                 file_size = path.stat().st_size
@@ -276,6 +322,14 @@ class BuiltinFileTool(Tool):
             actual_end = min(offset + len(output_lines), total_lines)
             if actual_end < total_lines:
                 result += f"\n\n[Showing lines {offset + 1}-{actual_end} of {total_lines} total lines]"
+
+            # Update file read state for dedup and mtime tracking
+            if current_mtime is not None:
+                self._file_read_state[abs_path] = {
+                    "mtime": current_mtime,
+                    "offset": offset,
+                    "limit": limit,
+                }
 
             logger.debug(f"Read file {file_path}: lines {offset + 1}-{actual_end}, total {total_lines} lines")
             return result
@@ -329,6 +383,14 @@ class BuiltinFileTool(Tool):
 
             # Return absolute path to help LLM use correct path in subsequent operations
             absolute_path = str(path.resolve())
+            # Update file read state so subsequent reads detect the new mtime
+            try:
+                self._file_read_state[absolute_path] = {
+                    "mtime": path.stat().st_mtime,
+                    "offset": None, "limit": None,  # full write invalidates partial reads
+                }
+            except OSError:
+                self._file_read_state.pop(absolute_path, None)
             logger.debug(f"{action} file: {absolute_path}, file content length: {len(content)} characters")
             return f"{action} file, absolute path: {absolute_path}"
         except Exception as e:
@@ -380,6 +442,27 @@ class BuiltinFileTool(Tool):
             # Per-file lock to serialize concurrent edits on the same file
             lock = self._get_file_lock(path_key)
             async with lock:
+                # mtime guard: detect external modifications since last read.
+                # Mirrors CC's FileEdit read-before-write protocol.
+                abs_path = str(path.resolve())
+                try:
+                    current_mtime = path.stat().st_mtime
+                except OSError:
+                    current_mtime = None
+                if current_mtime is not None and abs_path in self._file_read_state:
+                    prev_mtime = self._file_read_state[abs_path].get("mtime")
+                    if prev_mtime is not None and current_mtime != prev_mtime:
+                        logger.warning(
+                            f"File '{file_path}' was modified externally since last read "
+                            f"(mtime {prev_mtime} -> {current_mtime}). "
+                            f"Please re-read the file before editing."
+                        )
+                        return (
+                            f"Warning: File '{file_path}' was modified externally since your last read. "
+                            f"Please re-read the file with read_file() before editing to avoid "
+                            f"overwriting someone else's changes."
+                        )
+
                 async with aiofiles.open(path, 'r', encoding='utf-8') as f:
                     content = await f.read()
 
@@ -403,6 +486,14 @@ class BuiltinFileTool(Tool):
                     raise
 
             logger.debug(f"Replaced {result['count']} occurrence(s) in {file_path}")
+            # Update file read state with new mtime after edit
+            try:
+                self._file_read_state[abs_path] = {
+                    "mtime": path.stat().st_mtime,
+                    "offset": None, "limit": None,
+                }
+            except OSError:
+                self._file_read_state.pop(abs_path, None)
             return f"Successfully replaced {result['count']} occurrence(s) in '{file_path}'"
 
         except Exception as e:
@@ -495,6 +586,19 @@ class BuiltinFileTool(Tool):
             logger.error(f"Error multi-editing file {file_path}: {e}")
             return f"Error multi-editing file: {e}"
 
+    @staticmethod
+    def _normalize_quotes(s: str) -> str:
+        """Replace curly/typographic quotes with their ASCII equivalents.
+
+        LLMs sometimes emit curly quotes (\u201c\u201d\u2018\u2019) when the
+        source file uses straight ASCII quotes, causing exact-match failures.
+        """
+        return (
+            s.replace('\u201c', '"').replace('\u201d', '"')   # left/right double
+             .replace('\u2018', "'").replace('\u2019', "'")   # left/right single
+             .replace('\u2032', "'").replace('\u2033', '"')   # prime / double prime
+        )
+
     def _str_replace(
             self,
             content: str,
@@ -503,6 +607,10 @@ class BuiltinFileTool(Tool):
             replace_all: bool = False,
     ) -> dict:
         """Internal string replacement logic.
+
+        Tries exact match first.  If that fails, retries after normalizing
+        curly/typographic quotes in old_string to ASCII equivalents — LLMs
+        sometimes emit curly quotes when the file uses straight ASCII quotes.
 
         Returns:
             {"success": bool, "new_content": str, "count": int, "error": str}
@@ -517,6 +625,35 @@ class BuiltinFileTool(Tool):
             matches.append(idx)
             start = idx + len(old_string)
 
+        # Quote-normalization fallback: if exact match failed, retry with
+        # normalized quotes.  We search the normalized content for the
+        # normalized needle, then map positions back to the original content
+        # so the actual replacement preserves the file's quote style.
+        if not matches:
+            norm_content = self._normalize_quotes(content)
+            norm_old = self._normalize_quotes(old_string)
+            if norm_old != old_string and norm_old in norm_content:
+                # Find positions in normalized content, then use them on original
+                # (lengths are identical because _normalize_quotes is 1-to-1).
+                start = 0
+                while True:
+                    idx = norm_content.find(norm_old, start)
+                    if idx == -1:
+                        break
+                    matches.append(idx)
+                    start = idx + len(norm_old)
+                if matches:
+                    # Replace using the normalized needle on the original content
+                    # (positions are identical because character counts don't change).
+                    old_string = norm_old
+                    content_for_replace = norm_content
+                else:
+                    content_for_replace = content
+            else:
+                content_for_replace = content
+        else:
+            content_for_replace = content
+
         if not matches:
             display_old = old_string[:100] + "..." if len(old_string) > 100 else old_string
             return {
@@ -530,11 +667,11 @@ class BuiltinFileTool(Tool):
         if not replace_all and len(matches) > 1:
             contexts = []
             for idx in matches[:3]:  # Show first 3 matches
-                line_num = content[:idx].count('\n') + 1
+                line_num = content_for_replace[:idx].count('\n') + 1
                 # Get surrounding context (up to 50 chars around the match)
                 context_start = max(0, idx - 20)
-                context_end = min(len(content), idx + len(old_string) + 30)
-                context = content[context_start:context_end].replace('\n', '\\n')
+                context_end = min(len(content_for_replace), idx + len(old_string) + 30)
+                context = content_for_replace[context_start:context_end].replace('\n', '\\n')
                 contexts.append(f"  Line {line_num}: ...{context}...")
 
             error_msg = (
@@ -554,12 +691,12 @@ class BuiltinFileTool(Tool):
 
         # Perform replacement
         if replace_all:
-            new_content = content.replace(old_string, new_string)
+            new_content = content_for_replace.replace(old_string, new_string)
             count = len(matches)
         else:
             # Replace only the first match (leftmost)
             idx = matches[0]
-            new_content = content[:idx] + new_string + content[idx + len(old_string):]
+            new_content = content_for_replace[:idx] + new_string + content_for_replace[idx + len(old_string):]
             count = 1
 
         return {
@@ -888,7 +1025,7 @@ class BuiltinExecuteTool(Tool):
         # Import ShellTool for its syntax-fix helpers
         from agentica.tools.shell_tool import ShellTool
         self._shell = ShellTool(work_dir=work_dir, timeout=timeout)
-        self.register(self.execute)
+        self.register(self.execute, is_destructive=True)
         # Large bash outputs are persisted to disk (context gets preview only).
         # read_file keeps max_result_size_chars=None (never persist — avoids
         # reading its own persisted output file in a loop).
@@ -1047,7 +1184,7 @@ class BuiltinWebSearchTool(Tool):
         super().__init__(name="builtin_web_search_tool")
         from agentica.tools.baidu_search_tool import BaiduSearchTool
         self._search = BaiduSearchTool()
-        self.register(self.web_search, concurrency_safe=True)
+        self.register(self.web_search, concurrency_safe=True, is_read_only=True)
 
     async def web_search(self, queries: Union[str, List[str]], max_results: int = 5) -> str:
         """Search the web using Baidu for multiple queries and return results
@@ -1094,7 +1231,7 @@ class BuiltinFetchUrlTool(Tool):
         # Import and initialize UrlCrawlerTool (uses default cache dir ~/.cache/agentica/web_cache/)
         from agentica.tools.url_crawler_tool import UrlCrawlerTool
         self._crawler = UrlCrawlerTool(max_content_length=max_content_length)
-        self.register(self.fetch_url, concurrency_safe=True)
+        self.register(self.fetch_url, concurrency_safe=True, is_read_only=True)
 
     async def fetch_url(self, url: str) -> str:
         """Fetch URL content and convert to clean text format.
@@ -1140,8 +1277,8 @@ class BuiltinTodoTool(Tool):
         """Initialize BuiltinTodoTool."""
         super().__init__(name="builtin_todo_tool")
         self._todos: List[Dict[str, Any]] = []
-        self.register(self.write_todos)
-        self.register(self.read_todos)
+        self.register(self.write_todos, is_destructive=True)
+        self.register(self.read_todos, is_read_only=True)
 
     def get_system_prompt(self) -> Optional[str]:
         """Get the system prompt for todo tool usage guidance."""
@@ -1442,7 +1579,7 @@ class BuiltinTaskTool(Tool):
         # Inherit sandbox_config from parent agent
         sandbox_cfg = None
         if self._parent_agent is not None:
-            sandbox_cfg = getattr(self._parent_agent, 'sandbox_config', None)
+            sandbox_cfg = self._parent_agent.sandbox_config
 
         # Default tools if no config found
         if config is None:
@@ -1491,20 +1628,20 @@ class BuiltinTaskTool(Tool):
         """Extract a brief context summary from the parent agent's recent conversation."""
         if self._parent_agent is None:
             return ""
-        memory = getattr(self._parent_agent, 'working_memory', None)
+        memory = self._parent_agent.working_memory
         if memory is None:
             return ""
-        messages = getattr(memory, 'messages', None)
+        messages = memory.messages
         if not messages:
             return ""
         # Take last few messages, extract content
         summary_parts = []
         total = 0
         for msg in reversed(messages[-6:]):
-            content = getattr(msg, 'content', None)
+            content = msg.content
             if content and isinstance(content, str):
                 snippet = content[:500]
-                summary_parts.append(f"[{getattr(msg, 'role', '?')}] {snippet}")
+                summary_parts.append(f"[{msg.role}] {snippet}")
                 total += len(snippet)
                 if total > max_chars:
                     break
@@ -1577,7 +1714,7 @@ class BuiltinTaskTool(Tool):
         if current_depth >= _MAX_TASK_DEPTH:
             logger.warning(
                 f"task() blocked: max recursion depth {_MAX_TASK_DEPTH} reached "
-                f"(parent agent: {getattr(self._parent_agent, 'name', 'unknown')})"
+                f"(parent agent: {self._parent_agent.name if self._parent_agent else 'unknown'})"
             )
             return json.dumps({
                 "success": False,
@@ -1672,13 +1809,13 @@ class BuiltinTaskTool(Tool):
 
             # Conditionally inherit workspace from parent
             if config.inherit_workspace and self._parent_agent is not None:
-                parent_workspace = getattr(self._parent_agent, 'workspace', None)
+                parent_workspace = self._parent_agent.workspace
                 if parent_workspace is not None:
                     subagent_kwargs['workspace'] = parent_workspace
 
             # Conditionally inherit knowledge base from parent
             if config.inherit_knowledge and self._parent_agent is not None:
-                parent_knowledge = getattr(self._parent_agent, 'knowledge', None)
+                parent_knowledge = self._parent_agent.knowledge
                 if parent_knowledge is not None:
                     subagent_kwargs['knowledge'] = parent_knowledge
                     subagent_kwargs['search_knowledge'] = True
@@ -1886,9 +2023,9 @@ class BuiltinMemoryTool(Tool):
         """
         super().__init__(name="builtin_memory_tool")
         self._workspace = workspace
-        self.register(self.save_memory)
-        self.register(self.read_memory)
-        self.register(self.search_memory)
+        self.register(self.save_memory, is_destructive=True)
+        self.register(self.read_memory, is_read_only=True)
+        self.register(self.search_memory, is_read_only=True)
 
     def set_workspace(self, workspace):
         """Set or update the workspace instance.
@@ -2065,7 +2202,7 @@ class BuiltinConversationTool(Tool):
         """
         super().__init__(name="builtin_conversation_tool")
         self._workspace = workspace
-        self.register(self.search_conversations)
+        self.register(self.search_conversations, is_read_only=True)
 
     def set_workspace(self, workspace):
         """Set or update the workspace instance."""

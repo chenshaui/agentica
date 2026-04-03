@@ -66,14 +66,14 @@ def calculate_sha256(file):
 
 def literal_similarity(text1, text2):
     """
-    判断两个文本的字面相似度
+    Compute literal (character-level) similarity between two texts.
 
-    参数:
-    text1: 第一个文本字符串
-    text2: 第二个文本字符串
+    Args:
+        text1: First text string.
+        text2: Second text string.
 
-    返回值:
-    相似度分数，介于0和1之间，其中1表示完全相同
+    Returns:
+        Similarity score between 0 and 1, where 1 means identical.
     """
     from difflib import SequenceMatcher
     matcher = SequenceMatcher(None, text1, text2)

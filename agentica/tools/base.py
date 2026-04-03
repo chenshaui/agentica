@@ -110,6 +110,12 @@ class Function(BaseModel):
     # Write/shell tools (execute, write_file, edit_file …) must remain False (default).
     # Mirrors CC's StreamingToolExecutor.isConcurrencySafe flag.
     concurrency_safe: bool = False
+    # If True, the tool only reads data and never modifies state.
+    # Used by permission systems to skip confirmation for safe operations.
+    is_read_only: bool = False
+    # If True, the tool performs irreversible operations (delete, overwrite, send, execute).
+    # Used by permission systems to require extra caution or user confirmation.
+    is_destructive: bool = False
     # Maximum result size (chars) before persisting to disk.
     # None = never persist (e.g. read_file — avoids reading its own persisted file).
     # Set a positive int to enable (e.g. 50_000 for execute/bash tools).
@@ -121,6 +127,21 @@ class Function(BaseModel):
     # If True, the tool handles its own timeout internally (e.g. execute tool).
     # The outer asyncio.wait_for wrapper in Model.run_function_calls is skipped.
     manages_own_timeout: bool = False
+    # Optional input validator called BEFORE execution.
+    # Signature: (arguments: Dict[str, Any]) -> Optional[str]
+    # Return None = valid; return error string = reject (skip execution, return as tool error).
+    # Mirrors CC's validateInput() layer that runs before checkPermissions().
+    validate_input: Optional[Callable] = None
+    # Interrupt behavior when user cancels during tool execution.
+    # "cancel" = tool can be cleanly terminated mid-execution (e.g. shell commands).
+    # "block"  = tool must complete before honoring cancellation (e.g. agent delegation).
+    # Mirrors CC's interruptBehavior() declaration.
+    interrupt_behavior: str = "cancel"  # "cancel" | "block"
+    # If True, tool description is NOT sent to LLM by default.
+    # The tool can be discovered via a tool_search mechanism and loaded on demand.
+    # Reduces per-call token cost when many tools are registered.
+    # Mirrors CC's shouldDefer / isDeferredTool pattern.
+    deferred: bool = False
 
     # --*-- FOR INTERNAL USE ONLY --*--
     # Weak reference to the agent that the function is associated with.
@@ -206,6 +227,8 @@ class Function(BaseModel):
                 sanitize_arguments=metadata.get("sanitize_arguments", True),
                 stop_after_tool_call=metadata.get("stop_after_tool_call", False),
                 concurrency_safe=metadata.get("concurrency_safe", False),
+                is_read_only=metadata.get("is_read_only", False),
+                is_destructive=metadata.get("is_destructive", False),
             )
 
         return cls(
@@ -354,6 +377,19 @@ class FunctionCall(BaseModel):
             return False
 
         logger.debug(f"Running: {self.get_call_str()}")
+
+        # Input validation — runs BEFORE pre_hook and execution.
+        # Mirrors CC's validateInput() → checkPermissions() → call() pipeline.
+        if self.function.validate_input is not None:
+            try:
+                validation_error = self.function.validate_input(self.arguments or {})
+                if validation_error is not None:
+                    self.error = f"Input validation failed: {validation_error}"
+                    logger.debug(f"validate_input rejected {self.function.name}: {validation_error}")
+                    return False
+            except Exception as ve:
+                self.error = f"Input validation error: {ve}"
+                return False
 
         # Pre-hook
         await self._run_hook(self.function.pre_hook)
@@ -550,15 +586,18 @@ class Tool:
         self.functions: Dict[str, Function] = OrderedDict()
 
     def register(self, function: Callable[..., Any], sanitize_arguments: bool = True,
-                 concurrency_safe: bool = False):
+                 concurrency_safe: bool = False, is_read_only: bool = False,
+                 is_destructive: bool = False):
         """Register a function with the toolkit.
 
         Args:
-            function:          The callable to register.
+            function:           The callable to register.
             sanitize_arguments: If True, the arguments will be sanitized before
                                 being passed to the function.
-            concurrency_safe:  If True the function may run concurrently with other
-                               concurrency_safe tools (e.g. read_file, glob).
+            concurrency_safe:   If True the function may run concurrently with other
+                                concurrency_safe tools (e.g. read_file, glob).
+            is_read_only:       If True, the function only reads data and never modifies state.
+            is_destructive:     If True, the function performs irreversible operations.
 
         Returns:
             The registered function
@@ -570,9 +609,10 @@ class Tool:
                 entrypoint=function,
                 sanitize_arguments=sanitize_arguments,
                 concurrency_safe=concurrency_safe,
+                is_read_only=is_read_only,
+                is_destructive=is_destructive,
             )
             self.functions[f.name] = f
-            # logger.debug(f"Function: {f.name} registered with {self.name}")
         except Exception as e:
             logger.warning(f"Failed to create Function for: {function.__name__}")
             raise e

@@ -398,7 +398,7 @@ class PromptsMixin:
             for d in directives:
                 system_message_lines.append(f"- {d}")
 
-        work_dir = getattr(self, 'work_dir', None)
+        work_dir = self.work_dir
         if work_dir:
             resolved_work_dir = os.path.abspath(work_dir)
             system_message_lines.append(f"\n**Working directory:** `{resolved_work_dir}`\n")

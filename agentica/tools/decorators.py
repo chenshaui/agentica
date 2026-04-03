@@ -23,6 +23,8 @@ def tool(
     sanitize_arguments: bool = True,
     stop_after_tool_call: bool = False,
     concurrency_safe: bool = False,
+    is_read_only: bool = False,
+    is_destructive: bool = False,
 ):
     """Decorator: attach tool metadata to a function for Agent auto-detection.
 
@@ -38,6 +40,9 @@ def tool(
         concurrency_safe: If True the tool may run in parallel with other
             concurrency_safe tools (e.g. read_file, glob, grep).
             Write/shell tools should keep this False (default).
+        is_read_only: If True, the tool only reads data and never modifies state.
+        is_destructive: If True, the tool performs irreversible operations
+            (delete, overwrite, send, execute).
 
     Returns:
         Decorated function with _tool_metadata attribute.
@@ -50,6 +55,8 @@ def tool(
             "sanitize_arguments": sanitize_arguments,
             "stop_after_tool_call": stop_after_tool_call,
             "concurrency_safe": concurrency_safe,
+            "is_read_only": is_read_only,
+            "is_destructive": is_destructive,
         }
 
         @wraps(func)

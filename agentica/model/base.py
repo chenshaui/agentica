@@ -26,7 +26,7 @@ from agentica.cost_tracker import CostTracker
 
 @dataclass
 class Model(ABC):
-    """LLM 模型抽象基类。子类必须实现 invoke/invoke_stream/response/response_stream。"""
+    """Abstract base class for LLM models. Subclasses must implement invoke/invoke_stream/response/response_stream."""
 
     # ID of the model to use.
     id: str = "not-provided"
@@ -84,6 +84,9 @@ class Model(ABC):
     # the outer while-loop drive the next iteration.
     _in_agentic_loop: bool = field(init=False, repr=False, default=False)
 
+    # Max cost (USD) for this run.  Set by Runner from agent._run_max_cost_usd.
+    _max_cost_usd: Optional[float] = field(init=False, repr=False, default=None)
+
     # Model-layer lifecycle hooks (injected by Agent.update_model()).
     # _pre_tool_hook:  called before each batch of tool calls with (messages, function_calls).
     #                  May mutate messages (e.g. truncate context, inject reflection).
@@ -101,7 +104,7 @@ class Model(ABC):
     @property
     @abstractmethod
     def request_kwargs(self) -> Dict[str, Any]:
-        """构建 API 请求参数字典，子类必须实现。"""
+        """Build the API request parameters dict. Subclasses must implement."""
         ...
 
     def to_dict(self) -> Dict[str, Any]:
@@ -139,22 +142,22 @@ class Model(ABC):
 
     @abstractmethod
     async def invoke(self, messages: List[Message]) -> Any:
-        """调用 LLM API，返回原始 SDK 响应。"""
+        """Invoke the LLM API, returns the raw SDK response."""
         ...
 
     @abstractmethod
     async def invoke_stream(self, messages: List[Message]) -> Any:
-        """流式调用 LLM API，yield 原始 SDK chunk。"""
+        """Stream-invoke the LLM API, yields raw SDK chunks."""
         ...
 
     @abstractmethod
     async def response(self, messages: List[Message]) -> ModelResponse:
-        """完整响应（含工具调用循环），返回 ModelResponse。"""
+        """Full response (including tool-call loop). Returns ModelResponse."""
         ...
 
     @abstractmethod
     async def response_stream(self, messages: List[Message]) -> AsyncIterator[ModelResponse]:
-        """流式响应（含工具调用循环），yield ModelResponse。"""
+        """Streaming response (including tool-call loop). Yields ModelResponse."""
         ...
 
     @staticmethod
@@ -182,7 +185,7 @@ class Model(ABC):
             if msg.role == "assistant" and msg.tool_calls:
                 expected_ids = {}
                 for tc in msg.tool_calls:
-                    tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+                    tc_id = tc.get("id") if isinstance(tc, dict) else tc.id
                     if tc_id:
                         expected_ids[tc_id] = tc
 
@@ -277,7 +280,10 @@ class Model(ABC):
                         if strict and self.supports_structured_outputs:
                             func.strict = True
                         self.functions[name] = func
-                        self.tools.append({"type": "function", "function": func.to_dict()})
+                        # Deferred tools: register in functions (executable) but
+                        # don't add schema to tools (invisible to LLM until discovered).
+                        if not func.deferred:
+                            self.tools.append({"type": "function", "function": func.to_dict()})
                         logger.debug(f"Function {name} from {tool.name} added to model.")
 
             elif isinstance(tool, Function):
@@ -287,7 +293,8 @@ class Model(ABC):
                     if strict and self.supports_structured_outputs:
                         tool.strict = True
                     self.functions[tool.name] = tool
-                    self.tools.append({"type": "function", "function": tool.to_dict()})
+                    if not tool.deferred:
+                        self.tools.append({"type": "function", "function": tool.to_dict()})
                     logger.debug(f"Function {tool.name} added to model.")
 
             elif callable(tool):
@@ -421,6 +428,15 @@ class Model(ABC):
                 timers[idx].start()
                 timers[idx].stop()
                 continue
+            # Cancellation check before each unsafe tool (interrupt_behavior aware).
+            # "cancel" tools are skipped; "block" tools are allowed to run.
+            if _agent is not None and getattr(_agent, '_cancelled', False):
+                if fc.function.interrupt_behavior == "cancel":
+                    exceptions[idx] = RuntimeError("Tool cancelled by user")
+                    results[idx] = False
+                    timers[idx].start()
+                    timers[idx].stop()
+                    continue
             timers[idx].start()
             try:
                 if fc.function.manages_own_timeout:
@@ -514,7 +530,7 @@ class Model(ABC):
                 try:
                     from agentica.compression.tool_result_storage import maybe_persist_result
                     _agent = self._agent_ref() if self._agent_ref else None
-                    _sid = getattr(_agent, 'run_id', 'default') if _agent else 'default'
+                    _sid = _agent.run_id or 'default' if _agent else 'default'
                     function_call_output = maybe_persist_result(
                         tool_name=function_call.function.name,
                         tool_use_id=function_call.call_id or f"call_{i}",
@@ -587,7 +603,7 @@ class Model(ABC):
         try:
             from agentica.compression.tool_result_storage import enforce_tool_result_budget
             _agent = self._agent_ref() if self._agent_ref else None
-            _sid = getattr(_agent, 'run_id', 'default') if _agent else 'default'
+            _sid = _agent.run_id or 'default' if _agent else 'default'
             enforce_tool_result_budget(
                 tool_results=function_call_results,
                 session_id=_sid,
@@ -633,39 +649,35 @@ class Model(ABC):
         agent = self._agent_ref() if self._agent_ref else None
         if agent is None:
             return
-        tool_config = getattr(agent, 'tool_config', None)
-        if tool_config is None or not getattr(tool_config, 'compress_tool_results', False):
+        if not agent.tool_config.compress_tool_results:
             return
-        cm = getattr(tool_config, 'compression_manager', None)
+        cm = agent.tool_config.compression_manager
         if cm is None:
             return
 
         # Helper: fire compact hooks on the agent
         async def _fire_compact_hooks(event: str) -> None:
-            _hooks = getattr(agent, '_run_hooks', None)
-            if _hooks is not None:
-                fn = getattr(_hooks, event, None)
+            if agent._run_hooks is not None:
+                fn = getattr(agent._run_hooks, event, None)
                 if fn is not None:
                     await fn(agent=agent, messages=messages)
 
         # Try auto_compact first (token-based, with circuit-breaker)
-        _auto_compact = getattr(cm, 'auto_compact', None)
-        if _auto_compact is not None:
-            try:
-                if cm._should_auto_compact(messages, model=self):
-                    await _fire_compact_hooks('on_pre_compact')
-                compacted = await _auto_compact(messages, model=self)
-                if compacted:
-                    logger.info("Auto-compact triggered: context compressed")
-                    await _fire_compact_hooks('on_post_compact')
-                    return  # messages replaced — skip rule-based compress
-            except Exception as _ac_err:
-                logger.warning(f"Auto-compact failed: {_ac_err}")
+        try:
+            if cm._should_auto_compact(messages, model=self):
+                await _fire_compact_hooks('on_pre_compact')
+            compacted = await cm.auto_compact(messages, model=self)
+            if compacted:
+                logger.debug("Auto-compact triggered: context compressed")
+                await _fire_compact_hooks('on_post_compact')
+                return  # messages replaced — skip rule-based compress
+        except Exception as _ac_err:
+            logger.warning(f"Auto-compact failed: {_ac_err}")
 
         # Fallback: rule-based compress (truncate + drop old rounds)
         if cm.should_compress(messages, tools=self.tools, model=self):
             await _fire_compact_hooks('on_pre_compact')
-            logger.info("Compressing tool results to reduce context size")
+            logger.debug("Compressing tool results to reduce context size")
             await cm.compress(messages, tools=self.tools, model=self)
             await _fire_compact_hooks('on_post_compact')
 
@@ -676,7 +688,7 @@ class Model(ABC):
 
     def _check_agent_cancelled(self, agent: Any) -> None:
         """Check if the agent has been cancelled. Raises AgentCancelledError."""
-        if agent is not None and getattr(agent, '_cancelled', False):
+        if agent is not None and agent._cancelled:
             agent._cancelled = False
             raise RuntimeError("Agent run cancelled by user")
 
@@ -684,12 +696,12 @@ class Model(ABC):
         """Check if all recent tool results are errors. Returns True to stop."""
         recent_tool_results: List[Message] = []
         for m in reversed(messages):
-            if m.role == "tool" and hasattr(m, 'tool_call_error'):
+            if m.role == "tool" and m.tool_call_error is not None:
                 recent_tool_results.append(m)
             elif m.role == "assistant":
                 break
         if recent_tool_results and all(
-            getattr(m, 'tool_call_error', False) for m in recent_tool_results
+            m.tool_call_error for m in recent_tool_results
         ):
             state.consecutive_all_error_turns += 1
         else:
@@ -705,16 +717,15 @@ class Model(ABC):
 
     def _check_cost_budget(self) -> Optional[str]:
         """Check cost budget. Returns warning message string if exceeded, None otherwise."""
-        _max_cost = getattr(self, '_max_cost_usd', None)
-        if _max_cost is not None and self._cost_tracker is not None:
-            if self._cost_tracker.total_cost_usd >= _max_cost:
+        if self._max_cost_usd is not None and self._cost_tracker is not None:
+            if self._cost_tracker.total_cost_usd >= self._max_cost_usd:
                 logger.warning(
                     f"[BudgetExceeded] ${self._cost_tracker.total_cost_usd:.4f} >= "
-                    f"${_max_cost:.4f} -- stopping run."
+                    f"${self._max_cost_usd:.4f} -- stopping run."
                 )
                 return (
                     f"\n\n[Warning: cost budget exceeded "
-                    f"(${self._cost_tracker.total_cost_usd:.4f} >= ${_max_cost:.4f})]"
+                    f"(${self._cost_tracker.total_cost_usd:.4f} >= ${self._max_cost_usd:.4f})]"
                 )
         return None
 
@@ -734,15 +745,10 @@ class Model(ABC):
     async def _try_reactive_compact(self, messages: List[Message]) -> bool:
         """Attempt emergency compression on prompt_too_long. Returns True if compacted."""
         agent = self._agent_ref() if self._agent_ref else None
-        cm = None
-        if agent is not None:
-            tc = getattr(agent, 'tool_config', None)
-            if tc is not None:
-                cm = getattr(tc, 'compression_manager', None)
-        _auto_compact_fn = getattr(cm, 'auto_compact', None) if cm else None
-        if _auto_compact_fn is not None:
+        cm = agent.tool_config.compression_manager if agent is not None else None
+        if cm is not None:
             try:
-                compacted = await _auto_compact_fn(messages, model=self, force=True)
+                compacted = await cm.auto_compact(messages, model=self, force=True)
                 if compacted:
                     logger.info("Reactive compact triggered (prompt_too_long) -- retrying")
                     return True
@@ -812,11 +818,7 @@ class Model(ABC):
         from agentica.model.loop_state import LoopState
 
         agent = self._agent_ref() if self._agent_ref else None
-        state = LoopState(
-            max_tokens_recovery_limit=getattr(self, '_max_tokens_recovery', 3),
-            max_api_retry=getattr(self, '_max_api_retry', 3),
-            death_spiral_threshold=getattr(self, '_death_spiral_threshold', 5),
-        )
+        state = LoopState()
 
         while True:
             # -- Cancellation checkpoint 1 (top of loop) --
@@ -866,7 +868,7 @@ class Model(ABC):
             response_after = await self._call_with_retry(messages, state)
 
             # -- max_tokens recovery --
-            finish = getattr(response_after, '_finish_reason', None)
+            finish = response_after.finish_reason
             if (
                 finish == "length"
                 and state.max_tokens_recovery_count < state.max_tokens_recovery_limit
@@ -912,9 +914,7 @@ class Model(ABC):
         from agentica.model.loop_state import LoopState
 
         agent = self._agent_ref() if self._agent_ref else None
-        state = LoopState(
-            death_spiral_threshold=getattr(self, '_death_spiral_threshold', 5),
-        )
+        state = LoopState()
 
         while True:
             # -- Cancellation checkpoint 1 --
@@ -1066,9 +1066,15 @@ class Model(ABC):
         assistant_message.metrics["time"] = metrics.response_timer.elapsed
         self.metrics.setdefault("response_times", []).append(metrics.response_timer.elapsed)
         if response_usage:
-            prompt_tokens = getattr(response_usage, 'prompt_tokens', None) or response_usage.get("prompt_eval_count", 0) if isinstance(response_usage, dict) else getattr(response_usage, 'prompt_tokens', 0)
-            completion_tokens = getattr(response_usage, 'completion_tokens', None) or response_usage.get("eval_count", 0) if isinstance(response_usage, dict) else getattr(response_usage, 'completion_tokens', 0)
-            total_tokens = getattr(response_usage, 'total_tokens', None) or (prompt_tokens + completion_tokens)
+            # Two paths: Ollama returns dict, OpenAI returns CompletionUsage object
+            if isinstance(response_usage, dict):
+                prompt_tokens = response_usage.get("prompt_eval_count", 0)
+                completion_tokens = response_usage.get("eval_count", 0)
+                total_tokens = prompt_tokens + completion_tokens
+            else:
+                prompt_tokens = response_usage.prompt_tokens or 0
+                completion_tokens = response_usage.completion_tokens or 0
+                total_tokens = response_usage.total_tokens or (prompt_tokens + completion_tokens)
 
             if prompt_tokens:
                 metrics.input_tokens = prompt_tokens
@@ -1096,41 +1102,43 @@ class Model(ABC):
                 response_time=metrics.response_timer.elapsed,
             )
 
-            # Parse prompt_tokens_details
-            prompt_details = getattr(response_usage, 'prompt_tokens_details', None)
-            if prompt_details is not None:
-                from pydantic import BaseModel as PydanticBaseModel
-                if isinstance(prompt_details, dict):
-                    metrics.prompt_tokens_details = prompt_details
-                elif isinstance(prompt_details, PydanticBaseModel):
-                    metrics.prompt_tokens_details = prompt_details.model_dump(exclude_none=True)
-                assistant_message.metrics["prompt_tokens_details"] = metrics.prompt_tokens_details
-                if metrics.prompt_tokens_details is not None:
-                    entry.input_tokens_details = TokenDetails(
-                        cached_tokens=metrics.prompt_tokens_details.get("cached_tokens", 0),
-                    )
-                    if "prompt_tokens_details" not in self.metrics:
-                        self.metrics["prompt_tokens_details"] = {}
-                    for k, v in metrics.prompt_tokens_details.items():
-                        self.metrics["prompt_tokens_details"][k] = self.metrics["prompt_tokens_details"].get(k, 0) + v
+            # Parse prompt_tokens_details (only on CompletionUsage, not dict)
+            if not isinstance(response_usage, dict):
+                prompt_details = response_usage.prompt_tokens_details
+                if prompt_details is not None:
+                    from pydantic import BaseModel as PydanticBaseModel
+                    if isinstance(prompt_details, dict):
+                        metrics.prompt_tokens_details = prompt_details
+                    elif isinstance(prompt_details, PydanticBaseModel):
+                        metrics.prompt_tokens_details = prompt_details.model_dump(exclude_none=True)
+                    assistant_message.metrics["prompt_tokens_details"] = metrics.prompt_tokens_details
+                    if metrics.prompt_tokens_details is not None:
+                        entry.input_tokens_details = TokenDetails(
+                            cached_tokens=metrics.prompt_tokens_details.get("cached_tokens", 0),
+                        )
+                        if "prompt_tokens_details" not in self.metrics:
+                            self.metrics["prompt_tokens_details"] = {}
+                        for k, v in metrics.prompt_tokens_details.items():
+                            self.metrics["prompt_tokens_details"][k] = self.metrics["prompt_tokens_details"].get(k, 0) + v
 
-            # Parse completion_tokens_details
-            completion_details = getattr(response_usage, 'completion_tokens_details', None)
-            if completion_details is not None:
-                from pydantic import BaseModel as PydanticBaseModel
-                if isinstance(completion_details, dict):
-                    metrics.completion_tokens_details = completion_details
-                elif isinstance(completion_details, PydanticBaseModel):
-                    metrics.completion_tokens_details = completion_details.model_dump(exclude_none=True)
-                assistant_message.metrics["completion_tokens_details"] = metrics.completion_tokens_details
-                if metrics.completion_tokens_details is not None:
-                    entry.output_tokens_details = TokenDetails(
-                        reasoning_tokens=metrics.completion_tokens_details.get("reasoning_tokens", 0),
-                    )
-                    if "completion_tokens_details" not in self.metrics:
-                        self.metrics["completion_tokens_details"] = {}
-                    for k, v in metrics.completion_tokens_details.items():
-                        self.metrics["completion_tokens_details"][k] = self.metrics["completion_tokens_details"].get(k, 0) + v
+            # Parse completion_tokens_details (only on CompletionUsage, not dict)
+            if not isinstance(response_usage, dict):
+                completion_details = response_usage.completion_tokens_details
+                if completion_details is not None:
+                    from pydantic import BaseModel as PydanticBaseModel
+                    if isinstance(completion_details, dict):
+                        metrics.completion_tokens_details = completion_details
+                    elif isinstance(completion_details, PydanticBaseModel):
+                        metrics.completion_tokens_details = completion_details.model_dump(exclude_none=True)
+                    assistant_message.metrics["completion_tokens_details"] = metrics.completion_tokens_details
+                    if metrics.completion_tokens_details is not None:
+                        entry.output_tokens_details = TokenDetails(
+                            reasoning_tokens=metrics.completion_tokens_details.get("reasoning_tokens", 0),
+                        )
+                        if "completion_tokens_details" not in self.metrics:
+                            self.metrics["completion_tokens_details"] = {}
+                        for k, v in metrics.completion_tokens_details.items():
+                            self.metrics["completion_tokens_details"][k] = self.metrics["completion_tokens_details"].get(k, 0) + v
 
             self.usage.add(entry)
 

@@ -73,7 +73,6 @@ class CompressionManager:
             If None, auto-resolved from model.context_window * 0.8 at runtime
         compress_target_token_limit: Target token count after compression (e.g. context_window * 0.5).
             If None, auto-resolved from model.context_window * 0.5, or compress_token_limit * 0.6
-        compress_tool_results_limit: Number of uncompressed tool results before triggering compression
         truncate_head_chars: Max characters to keep per tool result in rule-based truncation (default 150)
         keep_recent_rounds: Number of recent assistant-tool rounds to preserve when dropping old messages (default 3)
         use_llm_compression: Whether to enable LLM-based compression as Stage 2 (default False)
@@ -104,7 +103,6 @@ class CompressionManager:
     """
     model: Optional[Any] = None
     compress_tool_results: bool = True
-    compress_tool_results_limit: Optional[int] = None
     compress_token_limit: Optional[int] = None
     compress_target_token_limit: Optional[int] = None
     truncate_head_chars: int = 150
@@ -116,20 +114,14 @@ class CompressionManager:
     stats: Dict[str, Any] = field(default_factory=dict)
 
     # ------------------------------------------------------------------
-    # Auto-compact state (Layer 2 — mirrors CC's circuit-breaker)
+    # Auto-compact state (Layer 2 -- mirrors CC's circuit-breaker)
     # ------------------------------------------------------------------
-    # Number of consecutive auto_compact failures this session.
-    # Resets to 0 on success.  When it reaches _max_auto_compact_failures
-    # we stop retrying (CC's MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3).
     _consecutive_auto_compact_failures: int = field(init=False, default=0)
     _max_auto_compact_failures: int = field(init=False, default=3)
-    # Buffer tokens reserved for the compaction summary output.
-    # CC uses AUTOCOMPACT_BUFFER_TOKENS = 13_000.
+    # Buffer tokens reserved for the compaction summary output (CC uses 13_000).
     _auto_compact_buffer_tokens: int = field(init=False, default=13_000)
 
     def __post_init__(self):
-        if self.compress_tool_results_limit is None and self.compress_token_limit is None:
-            self.compress_tool_results_limit = 3
         # Default target: 60% of trigger threshold
         if self.compress_target_token_limit is None and self.compress_token_limit is not None:
             self.compress_target_token_limit = int(self.compress_token_limit * 0.6)
@@ -138,11 +130,11 @@ class CompressionManager:
         """Auto-resolve compress_token_limit and target from model.context_window if not set."""
         if self.compress_token_limit is not None:
             return
-        context_window = getattr(model, 'context_window', None)
+        context_window = model.context_window if model is not None else None
         if context_window:
             self.compress_token_limit = int(context_window * 0.8)
             self.compress_target_token_limit = int(context_window * 0.5)
-            logger.info(
+            logger.debug(
                 f"Auto-set compress limits from context_window={context_window}: "
                 f"trigger={self.compress_token_limit}, target={self.compress_target_token_limit}"
             )
@@ -154,34 +146,24 @@ class CompressionManager:
         model: Optional[Any] = None,
         response_format: Optional[Union[Dict, Type[BaseModel]]] = None,
     ) -> bool:
-        """Check if compression should be triggered."""
+        """Check if compression should be triggered (pure token-based)."""
         if not self.compress_tool_results:
             return False
 
         # Auto-resolve limits from model context_window
         self._resolve_limits(model)
 
-        # Token-based threshold
+        # Token-based threshold only
         if self.compress_token_limit is not None:
             try:
                 from agentica.utils.tokens import count_tokens
-                model_id = getattr(model, 'id', 'gpt-4o') if model else 'gpt-4o'
+                model_id = model.id if model else 'gpt-4o'
                 tokens = count_tokens(messages, tools, model_id, response_format)
                 if tokens >= self.compress_token_limit:
-                    logger.info(f"Token limit hit: {tokens} >= {self.compress_token_limit}")
+                    logger.debug(f"Token limit hit: {tokens} >= {self.compress_token_limit}")
                     return True
             except Exception as e:
                 logger.warning(f"Error counting tokens: {e}")
-
-        # Count-based threshold
-        if self.compress_tool_results_limit is not None:
-            uncompressed_count = sum(
-                1 for m in messages
-                if m.role == "tool" and not getattr(m, 'compressed_content', None)
-            )
-            if uncompressed_count >= self.compress_tool_results_limit:
-                logger.info(f"Tool count limit hit: {uncompressed_count} >= {self.compress_tool_results_limit}")
-                return True
 
         return False
 
@@ -206,7 +188,7 @@ class CompressionManager:
         from agentica.compression.tool_result_storage import maybe_persist_result
 
         # Identify tool result indices (oldest first)
-        tool_indices = [i for i, m in enumerate(messages) if m.role == "tool" and not getattr(m, 'compressed_content', None)]
+        tool_indices = [i for i, m in enumerate(messages) if m.role == "tool" and not m.compressed_content]
         if not tool_indices:
             return 0
 
@@ -232,8 +214,8 @@ class CompressionManager:
             original_len = len(content_str)
 
             # Persist to disk + replace with preview (preserves full content)
-            tool_use_id = getattr(msg, 'tool_call_id', None) or f"rule_compact_{idx}"
-            tool_name = getattr(msg, 'tool_name', None) or "tool"
+            tool_use_id = msg.tool_call_id or f"rule_compact_{idx}"
+            tool_name = msg.tool_name or "tool"
             new_content = maybe_persist_result(
                 tool_name=tool_name,
                 tool_use_id=tool_use_id,
@@ -313,7 +295,7 @@ class CompressionManager:
         messages.extend(kept_tail)
 
         self.stats["messages_dropped"] = self.stats.get("messages_dropped", 0) + dropped_count
-        logger.info(f"Dropped {dropped_count} old messages, kept {len(messages)} messages")
+        logger.debug(f"Dropped {dropped_count} old messages, kept {len(messages)} messages")
         return dropped_count
 
     def _archive_dropped_messages(self, dropped_messages: List["Message"]) -> None:
@@ -371,7 +353,7 @@ class CompressionManager:
         if not tool_result or not self.model:
             return None
 
-        tool_name = getattr(tool_result, 'tool_name', None) or 'unknown'
+        tool_name = tool_result.tool_name or 'unknown'
         tool_content = f"Tool: {tool_name}\n{tool_result.content}"
         compression_prompt = self.compress_tool_call_instructions or DEFAULT_COMPRESSION_PROMPT
 
@@ -410,7 +392,7 @@ class CompressionManager:
 
         targets = [
             msg for i, msg in enumerate(messages)
-            if msg.role == "tool" and not getattr(msg, 'compressed_content', None) and i < protect_from_idx
+            if msg.role == "tool" and not msg.compressed_content and i < protect_from_idx
         ]
         if not targets:
             return 0
@@ -456,20 +438,20 @@ class CompressionManager:
         # Stage 1a: Truncate oldest tool results
         truncated = self._truncate_oldest_tool_results(messages)
         if truncated:
-            logger.info(f"Stage 1a: Truncated {truncated} old tool results")
+            logger.debug(f"Stage 1a: Truncated {truncated} old tool results")
 
         # Check if still over limit
         if self._still_over_limit(messages, tools, model, response_format):
             # Stage 1b: Drop old messages
             dropped = self._drop_old_messages(messages)
             if dropped:
-                logger.info(f"Stage 1b: Dropped {dropped} old messages")
+                logger.debug(f"Stage 1b: Dropped {dropped} old messages")
 
         # Stage 2: LLM compression (optional)
         if self.use_llm_compression and self._still_over_limit(messages, tools, model, response_format):
             llm_count = await self._llm_compress_old_tool_results(messages)
             if llm_count:
-                logger.info(f"Stage 2: LLM compressed {llm_count} tool results")
+                logger.debug(f"Stage 2: LLM compressed {llm_count} tool results")
 
     def _still_over_limit(
         self,
@@ -484,7 +466,7 @@ class CompressionManager:
             return False
         try:
             from agentica.utils.tokens import count_tokens
-            model_id = getattr(model, 'id', 'gpt-4o') if model else 'gpt-4o'
+            model_id = model.id if model else 'gpt-4o'
             tokens = count_tokens(messages, tools, model_id, response_format)
             over = tokens >= target
             if over:
@@ -500,13 +482,13 @@ class CompressionManager:
 
     def _should_auto_compact(self, messages: List["Message"], model: Optional[Any] = None) -> bool:
         """Return True when token count is within _auto_compact_buffer_tokens of the context window."""
-        context_window = getattr(model, 'context_window', None)
+        context_window = model.context_window if model is not None else None
         if context_window is None:
             return False
         threshold = context_window - self._auto_compact_buffer_tokens
         try:
             from agentica.utils.tokens import count_tokens
-            model_id = getattr(model, 'id', 'gpt-4o') if model else 'gpt-4o'
+            model_id = model.id if model else 'gpt-4o'
             tokens = count_tokens(messages, None, model_id, None)
             over = tokens >= threshold
             if over:
@@ -608,7 +590,7 @@ class CompressionManager:
         if not force and not self._should_auto_compact(messages, model):
             return False
 
-        logger.info("Auto-compact triggered: summarising conversation …")
+        logger.debug("Auto-compact triggered: summarising conversation")
 
         # Save transcript before mutating
         self._save_transcript(messages)
@@ -632,15 +614,15 @@ class CompressionManager:
 
         self._consecutive_auto_compact_failures = 0
         self.stats["auto_compact_count"] = self.stats.get("auto_compact_count", 0) + 1
-        logger.info(f"Auto-compact complete — messages reduced to {len(messages)}")
+        logger.debug(f"Auto-compact complete, messages reduced to {len(messages)}")
 
         # Write compact boundary to JSONL session log (if configured)
         try:
             if model is not None:
-                _agent_ref = getattr(model, '_agent_ref', None)
+                _agent_ref = model._agent_ref
                 _agent = _agent_ref() if _agent_ref else None
                 if _agent is not None:
-                    _slog = getattr(_agent, '_session_log', None)
+                    _slog = _agent._session_log
                     if _slog is not None:
                         _slog.append_compact_boundary(summary)
                         logger.debug("Compact boundary written to session log")

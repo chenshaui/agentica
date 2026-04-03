@@ -385,7 +385,7 @@ class OpenAIChat(Model):
 
         # Expose finish_reason so agentic_loop can detect
         # truncated output (finish_reason == "length") for max_tokens recovery.
-        model_response._finish_reason = response.choices[0].finish_reason  # type: ignore[attr-defined]
+        model_response.finish_reason = response.choices[0].finish_reason
 
         tool_role = "tool"
         if (

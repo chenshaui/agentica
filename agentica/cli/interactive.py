@@ -79,8 +79,8 @@ def _cmd_memory(current_agent=None, **kwargs):
             console.print(f"[bold cyan]Conversation History ({len(messages)} messages)[/bold cyan]")
             console.print()
             for i, msg in enumerate(messages[-20:], 1):
-                role = getattr(msg, 'role', 'unknown')
-                content = getattr(msg, 'content', '')
+                role = msg.role
+                content = msg.content or ''
                 
                 role_colors = {'user': '[cyan]User[/cyan]', 'assistant': '[green]Assistant[/green]',
                                'system': '[yellow]System[/yellow]'}
@@ -288,8 +288,8 @@ def _cmd_compact(current_agent=None, **kwargs):
             
             summary_parts = []
             for msg in messages[-10:]:
-                role = getattr(msg, 'role', 'unknown')
-                content = getattr(msg, 'content', '')
+                role = msg.role
+                content = msg.content or ''
                 if isinstance(content, str) and content:
                     preview = content[:200] + "..." if len(content) > 200 else content
                     summary_parts.append(f"- {role}: {preview}")
