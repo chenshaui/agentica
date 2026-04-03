@@ -105,9 +105,6 @@ class TeamConfig:
     respond_directly: bool = False
     add_transfer_instructions: bool = True
     team_response_separator: str = "\n"
-    # P3: Share parent context with subagents (fork-lite)
-    share_parent_context: bool = False
-    parent_context_window: int = 5  # Number of recent messages to pass to subagents
 
 
 @dataclass

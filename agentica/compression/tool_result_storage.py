@@ -21,8 +21,8 @@ Usage (automatic - called from Model.run_function_calls):
         content=huge_bash_output, session_id="sess_xyz",
     )
 """
+import hashlib
 import os
-import re
 from pathlib import Path
 from typing import List, Optional, TYPE_CHECKING
 
@@ -52,18 +52,15 @@ MAX_TOOL_RESULTS_PER_MESSAGE_CHARS = 200_000
 # Path helpers
 # ---------------------------------------------------------------------------
 
-def _sanitize_path(raw: str) -> str:
-    """Sanitize a filesystem path into a safe directory name.
-
-    Replaces path separators with '-', strips leading separators.
-    """
-    return re.sub(r'[/\\]', '-', raw.strip('/\\'))
+def _hash_path(raw: str) -> str:
+    """Hash a filesystem path into a short, safe directory name."""
+    return hashlib.md5(raw.encode()).hexdigest()[:12]
 
 
 def get_project_dir(cwd: Optional[str] = None) -> str:
     """Return <AGENTICA_PROJECTS_DIR>/<project-hash>/ for the given working directory."""
     cwd = cwd or os.getcwd()
-    return os.path.join(AGENTICA_PROJECTS_DIR, _sanitize_path(cwd))
+    return os.path.join(AGENTICA_PROJECTS_DIR, _hash_path(cwd))
 
 
 def get_tool_results_dir(cwd: Optional[str] = None, session_id: str = "default") -> str:

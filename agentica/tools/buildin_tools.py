@@ -893,6 +893,9 @@ class BuiltinExecuteTool(Tool):
         # read_file keeps max_result_size_chars=None (never persist — avoids
         # reading its own persisted output file in a loop).
         self.functions["execute"].max_result_size_chars = 50_000
+        # Execute tool manages its own timeout internally via asyncio.wait_for
+        # on the subprocess. Skip the outer timeout wrapper in Model.run_function_calls.
+        self.functions["execute"].manages_own_timeout = True
 
     async def execute(self, command: str, timeout: Optional[int] = None) -> str:
         """Executes a shell command, capturing both stdout and stderr.

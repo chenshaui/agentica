@@ -40,10 +40,6 @@ class RunEvent(str, Enum):
     multi_round_tool_call = "MultiRoundToolCall"
     multi_round_tool_result = "MultiRoundToolResult"
     multi_round_completed = "MultiRoundCompleted"
-    # Subagent events
-    subagent_launched = "SubagentLaunched"
-    subagent_progress = "SubagentProgress"
-    subagent_completed = "SubagentCompleted"
 
 
 class ToolCallInfo(BaseModel):

@@ -239,10 +239,6 @@ _LAZY_IMPORTS = {
     # subagent system
     "SubagentType": "agentica.subagent",
 
-    # async agent registry + message bus
-    "AsyncAgentRegistry": "agentica.agent.team",
-    "MessageBus": "agentica.agent.team",
-
     # swarm system
     "Swarm": "agentica.swarm",
     "SwarmResult": "agentica.swarm",

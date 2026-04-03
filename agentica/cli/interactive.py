@@ -358,24 +358,28 @@ def _cmd_reload_skills(skills_registry=None, **kwargs):
         console.print(f"Failed to reload skills: {e}", style="red")
 
 
-# Command dispatch table
-COMMAND_HANDLERS = {
-    "/exit": _cmd_exit,
-    "/quit": _cmd_exit,
-    "/help": _cmd_help,
-    "/tools": _cmd_tools,
-    "/skills": _cmd_skills,
-    "/memory": _cmd_memory,
-    "/workspace": _cmd_workspace,
-    "/newchat": _cmd_newchat,
-    "/resume": _cmd_resume,
-    "/clear": _cmd_clear,
-    "/reset": _cmd_clear,
-    "/model": _cmd_model,
-    "/compact": _cmd_compact,
-    "/debug": _cmd_debug,
-    "/reload-skills": _cmd_reload_skills,
+# Command dispatch table: {command: (handler, description)}
+# Single source of truth for both dispatch and typeahead completion.
+COMMAND_REGISTRY = {
+    "/exit":          (_cmd_exit,          "Exit the CLI"),
+    "/quit":          (_cmd_exit,          "Exit the CLI"),
+    "/help":          (_cmd_help,          "Show help information"),
+    "/tools":         (_cmd_tools,         "List available tools"),
+    "/skills":        (_cmd_skills,        "List loaded skills"),
+    "/memory":        (_cmd_memory,        "Show conversation history"),
+    "/workspace":     (_cmd_workspace,     "Show workspace status"),
+    "/newchat":       (_cmd_newchat,       "Start a new chat session"),
+    "/resume":        (_cmd_resume,        "Resume a previous session"),
+    "/clear":         (_cmd_clear,         "Clear screen and reset"),
+    "/reset":         (_cmd_clear,         "Clear screen and reset"),
+    "/model":         (_cmd_model,         "View or switch model"),
+    "/compact":       (_cmd_compact,       "Compress context"),
+    "/debug":         (_cmd_debug,         "Show debug info"),
+    "/reload-skills": (_cmd_reload_skills, "Reload skills from disk"),
 }
+
+# For backward compat / quick dispatch lookup
+COMMAND_HANDLERS = {cmd: handler for cmd, (handler, _) in COMMAND_REGISTRY.items()}
 
 
 def _handle_shell_command(user_input: str, work_dir: Optional[str] = None) -> None:
@@ -563,25 +567,6 @@ def _setup_prompt_toolkit(shell_mode_ref: list, skills_registry):
         return get_input, False
 
     # Custom completer for @ file mentions and / commands
-    # Command descriptions for typeahead display
-    COMMAND_DESCRIPTIONS = {
-        "/exit": "Exit the CLI",
-        "/quit": "Exit the CLI",
-        "/help": "Show help information",
-        "/tools": "List available tools",
-        "/skills": "List loaded skills",
-        "/memory": "Show conversation history",
-        "/workspace": "Show workspace status",
-        "/newchat": "Start a new chat session",
-        "/resume": "Resume a previous session",
-        "/clear": "Clear screen and reset",
-        "/reset": "Clear screen and reset",
-        "/model": "View or switch model",
-        "/compact": "Compress context",
-        "/debug": "Show debug info",
-        "/reload-skills": "Reload skills from disk",
-    }
-
     class AgenticaCompleter(Completer):
         def get_completions(self, document, complete_event):
             text = document.text_before_cursor
@@ -605,8 +590,8 @@ def _setup_prompt_toolkit(shell_mode_ref: list, skills_registry):
 
                 query = text.lower()
 
-                # 1. Builtin commands (higher priority)
-                for cmd, desc in COMMAND_DESCRIPTIONS.items():
+                # 1. Builtin commands (higher priority) - from single registry
+                for cmd, (_, desc) in COMMAND_REGISTRY.items():
                     if cmd.startswith(query):
                         yield Completion(
                             cmd, start_position=-len(text),

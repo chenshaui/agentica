@@ -380,11 +380,15 @@ class Model(ABC):
 
         # Phase 2a: run safe tools in parallel
         async def _execute_safe(idx: int, fc: FunctionCall) -> None:
-            _timeout = fc.function.timeout or _DEFAULT_TOOL_TIMEOUT
             timers[idx].start()
             try:
-                results[idx] = await asyncio.wait_for(fc.execute(), timeout=_timeout)
+                if fc.function.manages_own_timeout:
+                    results[idx] = await fc.execute()
+                else:
+                    _timeout = fc.function.timeout or _DEFAULT_TOOL_TIMEOUT
+                    results[idx] = await asyncio.wait_for(fc.execute(), timeout=_timeout)
             except asyncio.TimeoutError:
+                _timeout = fc.function.timeout or _DEFAULT_TOOL_TIMEOUT
                 exceptions[idx] = TimeoutError(
                     f"Tool '{fc.function.name}' timed out after {_timeout}s"
                 )
@@ -419,8 +423,11 @@ class Model(ABC):
                 continue
             timers[idx].start()
             try:
-                _timeout = fc.function.timeout or _DEFAULT_TOOL_TIMEOUT
-                results[idx] = await asyncio.wait_for(fc.execute(), timeout=_timeout)
+                if fc.function.manages_own_timeout:
+                    results[idx] = await fc.execute()
+                else:
+                    _timeout = fc.function.timeout or _DEFAULT_TOOL_TIMEOUT
+                    results[idx] = await asyncio.wait_for(fc.execute(), timeout=_timeout)
             except asyncio.TimeoutError:
                 exceptions[idx] = TimeoutError(
                     f"Tool '{fc.function.name}' timed out after {fc.function.timeout or _DEFAULT_TOOL_TIMEOUT}s"

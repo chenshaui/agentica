@@ -117,8 +117,10 @@ class Function(BaseModel):
     max_result_size_chars: Optional[int] = None
     # Execution timeout in seconds. None = use default (120s).
     # Each tool invocation is wrapped with asyncio.wait_for(timeout=).
-    # Mirrors CC's per-tool timeout (e.g. "timeout 2m" for bash).
     timeout: Optional[int] = None
+    # If True, the tool handles its own timeout internally (e.g. execute tool).
+    # The outer asyncio.wait_for wrapper in Model.run_function_calls is skipped.
+    manages_own_timeout: bool = False
 
     # --*-- FOR INTERNAL USE ONLY --*--
     # Weak reference to the agent that the function is associated with.
