@@ -383,7 +383,7 @@ class OpenAIChat(Model):
         if assistant_message.audio is not None:
             model_response.audio = assistant_message.audio
 
-        # Expose finish_reason so handle_post_tool_call_messages can detect
+        # Expose finish_reason so agentic_loop can detect
         # truncated output (finish_reason == "length") for max_tokens recovery.
         model_response._finish_reason = response.choices[0].finish_reason  # type: ignore[attr-defined]
 
@@ -397,7 +397,9 @@ class OpenAIChat(Model):
                 )
                 is not None
         ):
-            return await self.handle_post_tool_call_messages(messages=messages, model_response=model_response)
+            if self._in_agentic_loop:
+                return model_response
+            return await self.agentic_loop(messages=messages, model_response=model_response)
         return model_response
 
     def add_response_usage_to_metrics(self, metrics: Metrics, response_usage: CompletionUsage):
@@ -488,8 +490,9 @@ class OpenAIChat(Model):
                     assistant_message=assistant_message, messages=messages, tool_role=tool_role
             ):
                 yield tool_call_response
-            async for post_tool_call_response in self.handle_post_tool_call_messages_stream(messages=messages):
-                yield post_tool_call_response
+            if not self._in_agentic_loop:
+                async for post_tool_call_response in self.agentic_loop_stream(messages=messages):
+                    yield post_tool_call_response
 
     def build_tool_calls(self, tool_calls_data: List[ChoiceDeltaToolCall]) -> List[Dict[str, Any]]:
         """Build tool calls from streaming tool call data."""

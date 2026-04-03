@@ -639,16 +639,16 @@ class Claude(Model):
         metrics.log()
 
         # -*- Handle tool calls
-        # Expose stop_reason so handle_post_tool_call_messages can detect
+        # Expose stop_reason so agentic_loop can detect
         # max_tokens truncation (stop_reason == "max_tokens") for recovery.
         model_response._finish_reason = (  # type: ignore[attr-defined]
             "length" if response.stop_reason == "max_tokens" else response.stop_reason
         )
 
         if await self.handle_tool_calls(assistant_message, messages, model_response, response_content, tool_ids):
-            # Use handle_post_tool_call_messages instead of direct self.response()
-            # to get: safety valve, max_tokens recovery, retry, reactive compact.
-            return await self.handle_post_tool_call_messages(messages=messages, model_response=model_response)
+            if self._in_agentic_loop:
+                return model_response
+            return await self.agentic_loop(messages=messages, model_response=model_response)
 
         # -*- Update model response
         if assistant_message.content is not None:
@@ -763,9 +763,10 @@ class Claude(Model):
             async for _resp in self.handle_stream_tool_calls(assistant_message, messages, message_data.tool_ids):
 
                 yield _resp
-            async for _resp in self.response_stream(messages=messages):
+            if not self._in_agentic_loop:
+                async for _resp in self.agentic_loop_stream(messages=messages):
 
-                yield _resp
+                    yield _resp
 
     def get_tool_call_prompt(self) -> Optional[str]:
         if self.functions is not None and len(self.functions) > 0:
