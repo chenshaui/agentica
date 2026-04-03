@@ -135,6 +135,18 @@ class PromptsMixin:
         """Return the system message for the Agent."""
         pc = self.prompt_config
 
+        # 0. Minimal mode: one-line system prompt, skip all section assembly.
+        # Mirrors CC's CLAUDE_CODE_SIMPLE for minimum token consumption.
+        # Activated by PromptConfig(minimal=True) or env AGENTICA_SIMPLE=1.
+        if pc.minimal or os.environ.get("AGENTICA_SIMPLE"):
+            name = self.name or "Agent"
+            content = (
+                f"You are {name}, an AI assistant."
+                f"\n\nCWD: {os.getcwd()}"
+                f"\nDate: {datetime.now().strftime('%Y-%m-%d')}"
+            )
+            return Message(role=pc.system_message_role, content=content)
+
         # 1. Custom system_prompt
         if pc.system_prompt is not None:
             sys_message = ""

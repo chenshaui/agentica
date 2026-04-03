@@ -352,12 +352,22 @@ You are a helpful AI assistant.
         Reads AGENT.md, PERSONA.md, TOOLS.md file contents (globally shared),
         and user-specific USER.md file content.
 
+        Also discovers AGENT.md files along the directory chain from CWD up to
+        the filesystem root (mirrors CC's multi-level CLAUDE.md merge).
+        The merge order is: global ~/.agentica/AGENT.md -> ancestor dirs
+        (root first) -> CWD AGENT.md -> workspace AGENT.md.
+
         Returns:
             Merged context string
         """
         contents = []
 
-        # Read globally shared files
+        # 1. Multi-level AGENT.md chain (CWD upward)
+        chain_contents = self._load_agent_md_chain()
+        if chain_contents:
+            contents.append(f"<!-- Project AGENT.md chain -->\n{chain_contents}")
+
+        # 2. Workspace-level files (AGENT.md, PERSONA.md, TOOLS.md)
         global_files = [
             self.config.agent_md,
             self.config.persona_md,
@@ -368,7 +378,7 @@ You are a helpful AI assistant.
             if content:
                 contents.append(f"<!-- {f} -->\n{content}")
 
-        # Read user-specific USER.md (always from users/{user_id}/)
+        # 3. User-specific USER.md
         user_md_path = self._get_user_md()
         if user_md_path.exists():
             content = (await _async_read_text(user_md_path)).strip()
@@ -376,6 +386,75 @@ You are a helpful AI assistant.
                 contents.append(f"<!-- USER.md (user: {self._user_id}) -->\n{content}")
 
         return "\n\n---\n\n".join(contents) if contents else ""
+
+    def _load_agent_md_chain(self) -> str:
+        """Load AGENT.md files from CWD upward to root, plus global ~/.agentica/AGENT.md.
+
+        Mirrors CC's multi-level CLAUDE.md merge: knowledge files at higher
+        directories provide broad context, while those closer to CWD provide
+        project-specific instructions.
+
+        Merge order (earlier = lower priority, later = higher priority):
+            1. ~/.agentica/AGENT.md  (user global preferences)
+            2. /repo-root/AGENT.md   (project-level, checked into git)
+            3. /repo-root/src/AGENT.md  (subdir-specific, if CWD is deeper)
+
+        Returns:
+            Merged content string, or empty string if no files found.
+        """
+        import os
+        from pathlib import Path
+
+        cwd = Path(os.getcwd())
+        found: list[str] = []
+
+        # Walk from CWD upward, collecting AGENT.md files
+        visited = set()
+        for dir_path in [cwd] + list(cwd.parents):
+            resolved = dir_path.resolve()
+            if resolved in visited:
+                break
+            visited.add(resolved)
+
+            agent_md = resolved / "AGENT.md"
+            if agent_md.is_file():
+                try:
+                    text = agent_md.read_text(encoding="utf-8").strip()
+                    if text:
+                        found.append(text)
+                except Exception:
+                    pass
+
+            # Stop at git root (project boundary) to avoid scanning
+            # unrelated parent directories
+            if (resolved / ".git").exists():
+                break
+
+        # Reverse so root-level comes first (lower priority)
+        found.reverse()
+
+        # Prepend user global AGENT.md (~/.agentica/AGENT.md)
+        from agentica.config import AGENTICA_HOME
+        global_agent_md = Path(AGENTICA_HOME) / "AGENT.md"
+        if global_agent_md.is_file():
+            try:
+                text = global_agent_md.read_text(encoding="utf-8").strip()
+                if text:
+                    found.insert(0, text)
+            except Exception:
+                pass
+
+        # Deduplicate: if workspace AGENT.md is the same as a chain file, skip
+        workspace_agent_md = self.path / self.config.agent_md
+        workspace_path_resolved = workspace_agent_md.resolve() if workspace_agent_md.exists() else None
+        if workspace_path_resolved:
+            found = [
+                f for f in found
+                if not (self.path.resolve() / self.config.agent_md).is_file()
+                or f != (self.path.resolve() / self.config.agent_md).read_text(encoding="utf-8").strip()
+            ]
+
+        return "\n\n---\n\n".join(found) if found else ""
 
     def get_git_context(self, max_status_lines: int = 30) -> Optional[str]:
         """Get git status context for system prompt injection.

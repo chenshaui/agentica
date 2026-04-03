@@ -7,7 +7,7 @@ and the context message is replaced with a short preview + file path.
 This prevents large bash outputs / web fetches from bloating the context.
 
 Path structure (mirrors CC's toolResultStorage.ts):
-    ~/.agentica/projects/<project-hash>/<session-id>/tool-results/<tool-use-id>.txt
+    ~/.agentica/projects/<sanitized-cwd>/<session-id>/tool-results/<tool-use-id>.txt
 
 Two-layer budget:
     1. Per-tool: single result > DEFAULT_MAX_RESULT_SIZE_CHARS -> persist
@@ -23,6 +23,7 @@ Usage (automatic - called from Model.run_function_calls):
 """
 import hashlib
 import os
+import re
 from pathlib import Path
 from typing import List, Optional, TYPE_CHECKING
 
@@ -52,15 +53,25 @@ MAX_TOOL_RESULTS_PER_MESSAGE_CHARS = 200_000
 # Path helpers
 # ---------------------------------------------------------------------------
 
-def _hash_path(raw: str) -> str:
-    """Hash a filesystem path into a short, safe directory name."""
-    return hashlib.md5(raw.encode()).hexdigest()[:12]
+_MAX_SANITIZED_LENGTH = 200
+
+
+def _sanitize_path(raw: str) -> str:
+    """Convert a filesystem path into a readable, safe directory name (mirrors CC's sanitizePath).
+
+    Long paths (>200 chars): truncate + md5 hash suffix for uniqueness.
+    """
+    sanitized = re.sub(r'[^a-zA-Z0-9]', '-', raw)
+    if len(sanitized) <= _MAX_SANITIZED_LENGTH:
+        return sanitized
+    hash_suffix = hashlib.md5(raw.encode()).hexdigest()[:8]
+    return f"{sanitized[:_MAX_SANITIZED_LENGTH]}-{hash_suffix}"
 
 
 def get_project_dir(cwd: Optional[str] = None) -> str:
-    """Return <AGENTICA_PROJECTS_DIR>/<project-hash>/ for the given working directory."""
+    """Return <AGENTICA_PROJECTS_DIR>/<sanitized-cwd>/ for the given working directory."""
     cwd = cwd or os.getcwd()
-    return os.path.join(AGENTICA_PROJECTS_DIR, _hash_path(cwd))
+    return os.path.join(AGENTICA_PROJECTS_DIR, _sanitize_path(cwd))
 
 
 def get_tool_results_dir(cwd: Optional[str] = None, session_id: str = "default") -> str:
@@ -223,7 +234,7 @@ def enforce_tool_result_budget(
             )
 
     if persisted_count:
-        logger.info(
+        logger.debug(
             f"Budget enforcement: persisted {persisted_count} tool results, "
             f"total now {total:,} chars (budget={budget:,})"
         )

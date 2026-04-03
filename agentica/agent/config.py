@@ -52,6 +52,10 @@ class PromptConfig:
     prevent_prompt_leakage: bool = False
     limit_tool_access: bool = False
     enable_agentic_prompt: bool = False
+    # Minimal mode: skip all section assembly, use a one-line system prompt.
+    # Mirrors CC's CLAUDE_CODE_SIMPLE for minimum token consumption.
+    # Useful for testing, lightweight tasks, or cost-sensitive scenarios.
+    minimal: bool = False
 
     # Output formatting
     output_language: Optional[str] = None

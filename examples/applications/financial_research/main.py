@@ -31,7 +31,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
 
 from pydantic import BaseModel, Field
 
-from agentica import Agent, OpenAIChat, BaiduSearchTool
+from agentica import Agent, OpenAIChat
 from agentica.tools.search_bocha_tool import SearchBochaTool
 
 
@@ -93,7 +93,6 @@ planner_agent = Agent(
         "Output 5-15 search items."
     ),
     response_model=SearchPlan,
-    debug=True,
 )
 
 # 2. Search Agent
@@ -105,7 +104,6 @@ search_agent = Agent(
         "Focus on financial data, metrics, and facts. 2-3 paragraphs, 300 words max."
     ),
     tools=[SearchBochaTool()],
-    debug=True,
 )
 
 # 3. Fundamentals Analysis Agent (will be used as tool)
@@ -117,7 +115,6 @@ fundamentals_agent = Agent(
         "revenue, profit margins, growth rates, P/E ratio, debt levels, and competitive position."
     ),
     response_model=AnalysisSummary,
-    debug=True,
 )
 
 # 4. Risk Analysis Agent (will be used as tool)
@@ -129,7 +126,6 @@ risk_agent = Agent(
         "competition, supply chain vulnerabilities, and macro-economic threats."
     ),
     response_model=AnalysisSummary,
-    debug=True,
 )
 
 # 5. Writer Agent (tools will be injected at runtime)
@@ -154,7 +150,6 @@ writer_agent = Agent(
         "Use these tools when you need deeper analysis for specific sections."
     ),
     response_model=FinancialReportData,
-    debug=True,
 )
 
 # 6. Verifier Agent
@@ -170,7 +165,6 @@ verifier_agent = Agent(
         "Output whether the report is verified and list any issues found."
     ),
     response_model=VerificationResult,
-    debug=True,
 )
 
 

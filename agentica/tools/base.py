@@ -229,6 +229,8 @@ class Function(BaseModel):
                 concurrency_safe=metadata.get("concurrency_safe", False),
                 is_read_only=metadata.get("is_read_only", False),
                 is_destructive=metadata.get("is_destructive", False),
+                deferred=metadata.get("deferred", False),
+                interrupt_behavior=metadata.get("interrupt_behavior", "cancel"),
             )
 
         return cls(

@@ -76,7 +76,7 @@ def demo_compression_manager():
     compression_manager = CompressionManager(
         model=OpenAIChat(id="gpt-4o-mini"),
         compress_tool_results=True,
-        compress_tool_results_limit=2,
+        compress_token_limit=500,  # low threshold for demo
     )
 
     messages = [
@@ -145,7 +145,6 @@ def demo_agent_with_compression():
     custom_compression = CompressionManager(
         model=OpenAIChat(id="gpt-4o-mini"),
         compress_token_limit=5000,
-        compress_tool_results_limit=3,
     )
 
     agent2 = Agent(
@@ -158,7 +157,6 @@ def demo_agent_with_compression():
     )
     print("\n2. Agent with custom CompressionManager:")
     print(f"   Token limit: {custom_compression.compress_token_limit}")
-    print(f"   Tool results limit: {custom_compression.compress_tool_results_limit}")
 
 
 if __name__ == "__main__":

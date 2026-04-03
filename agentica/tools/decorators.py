@@ -25,6 +25,8 @@ def tool(
     concurrency_safe: bool = False,
     is_read_only: bool = False,
     is_destructive: bool = False,
+    deferred: bool = False,
+    interrupt_behavior: str = "cancel",
 ):
     """Decorator: attach tool metadata to a function for Agent auto-detection.
 
@@ -43,6 +45,10 @@ def tool(
         is_read_only: If True, the tool only reads data and never modifies state.
         is_destructive: If True, the tool performs irreversible operations
             (delete, overwrite, send, execute).
+        deferred: If True, tool description is not sent to LLM by default.
+            The tool can be discovered via tool_search and loaded on demand.
+        interrupt_behavior: "cancel" (tool can be terminated mid-execution)
+            or "block" (tool must complete before honoring cancellation).
 
     Returns:
         Decorated function with _tool_metadata attribute.
@@ -57,6 +63,8 @@ def tool(
             "concurrency_safe": concurrency_safe,
             "is_read_only": is_read_only,
             "is_destructive": is_destructive,
+            "deferred": deferred,
+            "interrupt_behavior": interrupt_behavior,
         }
 
         @wraps(func)

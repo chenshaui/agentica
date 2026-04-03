@@ -227,8 +227,8 @@ class ConversationArchiveHooks(RunHooks):
 
         try:
             session_id = agent.run_id
-            await workspace.archive_conversation(messages_to_archive, session_id=session_id)
-            logger.debug(f"Archived conversation for agent {agent_id}")
+            filepath = await workspace.archive_conversation(messages_to_archive, session_id=session_id)
+            logger.debug(f"Conversation saved to {filepath}")
         except Exception as e:
             logger.warning(f"Failed to archive conversation: {e}")
 

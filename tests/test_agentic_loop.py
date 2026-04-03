@@ -33,9 +33,6 @@ class _MockModel:
         self._cost_tracker = None
         self._max_cost_usd = None
         self._in_agentic_loop = False
-        self._death_spiral_threshold = 5
-        self._max_tokens_recovery = 3
-        self._max_api_retry = 3
 
         # Bind real methods from Model
         self._check_death_spiral = Model._check_death_spiral.__get__(self, type(self))
@@ -183,13 +180,14 @@ class TestAgenticLoop:
     @pytest.mark.asyncio
     async def test_death_spiral_stops_loop(self):
         model = _MockModel()
-        model._death_spiral_threshold = 1
 
         messages = [
             Message(role="assistant", content=""),
             Message(role="tool", content="fail", tool_call_error=True),
         ]
-        result = await model.agentic_loop(messages=messages, model_response=ModelResponse())
+        _OrigLoopState = LoopState
+        with patch("agentica.model.loop_state.LoopState", lambda **kw: _OrigLoopState(death_spiral_threshold=1, **kw)):
+            result = await model.agentic_loop(messages=messages, model_response=ModelResponse())
         assert result.content is not None
         assert "error" in result.content.lower()
 
@@ -259,11 +257,11 @@ class TestAgenticLoop:
             call_count += 1
             resp = ModelResponse(content=f"part{call_count}")
             if call_count == 1:
-                resp._finish_reason = "length"
+                resp.finish_reason = "length"
                 # First call: add assistant with no tool_calls (truncated output)
                 messages.append(Message(role="assistant", content=f"part{call_count}"))
             else:
-                resp._finish_reason = "stop"
+                resp.finish_reason = "stop"
                 # Second call: final answer
                 messages.append(Message(role="assistant", content=f"part{call_count}"))
             return resp
@@ -288,15 +286,22 @@ class TestAgenticLoopStream:
     @pytest.mark.asyncio
     async def test_death_spiral_in_stream(self):
         model = _MockModel()
-        model._death_spiral_threshold = 1
+
+        # response_stream must be an async generator, not AsyncMock
+        async def _fake_stream(messages):
+            yield ModelResponse(content="chunk")
+
+        model.response_stream = _fake_stream
 
         messages = [
             Message(role="assistant", content=""),
             Message(role="tool", content="fail", tool_call_error=True),
         ]
         chunks = []
-        async for chunk in model.agentic_loop_stream(messages=messages):
-            chunks.append(chunk)
+        _OrigLoopState = LoopState
+        with patch("agentica.model.loop_state.LoopState", lambda **kw: _OrigLoopState(death_spiral_threshold=1, **kw)):
+            async for chunk in model.agentic_loop_stream(messages=messages):
+                chunks.append(chunk)
         assert any("Error" in (c.content or "") for c in chunks)
 
     @pytest.mark.asyncio

@@ -639,7 +639,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         if self.model is None:
             logger.debug("Model not set, Using OpenAIChat as default")
             self.model = OpenAIChat()
-        logger.debug(f"Agent, using model: {self.model}")
+        logger.debug(f"Agent '{self.name}' using {self.model.name or self.model.__class__.__name__}(id={self.model.id})")
 
         # Clear previously registered tools/functions to prevent accumulation
         # across multiple run() calls on the same Agent instance.

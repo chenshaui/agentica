@@ -182,10 +182,10 @@ async def demo_compression_with_agent():
         await asyncio.sleep(0.02)
         return file_contents.get(filename, f"# {filename} not found")
 
-    # 配置 CompressionManager：低阈值便于演示触发
+    # CompressionManager: low token threshold for demo
     cm = CompressionManager(
-        compress_tool_results_limit=3,  # 3 个工具调用后触发截断
-        truncate_head_chars=50,         # 每个结果最多保留 50 字符
+        compress_token_limit=2000,      # low threshold to trigger compression in demo
+        truncate_head_chars=50,         # keep max 50 chars per old tool result
     )
 
     agent = Agent(

@@ -135,8 +135,9 @@ class CompressionManager:
             self.compress_token_limit = int(context_window * 0.8)
             self.compress_target_token_limit = int(context_window * 0.5)
             logger.debug(
-                f"Auto-set compress limits from context_window={context_window}: "
-                f"trigger={self.compress_token_limit}, target={self.compress_target_token_limit}"
+                f"Compression: model context_window={context_window:,} tokens, "
+                f"will compress when history exceeds {self.compress_token_limit:,} tokens (80%), "
+                f"target after compression: {self.compress_target_token_limit:,} tokens (50%)"
             )
 
     def should_compress(
@@ -160,7 +161,10 @@ class CompressionManager:
                 model_id = model.id if model else 'gpt-4o'
                 tokens = count_tokens(messages, tools, model_id, response_format)
                 if tokens >= self.compress_token_limit:
-                    logger.debug(f"Token limit hit: {tokens} >= {self.compress_token_limit}")
+                    logger.debug(
+                        f"Compression triggered: history is {tokens:,} tokens, "
+                        f"exceeds threshold {self.compress_token_limit:,} tokens"
+                    )
                     return True
             except Exception as e:
                 logger.warning(f"Error counting tokens: {e}")
