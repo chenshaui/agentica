@@ -4,7 +4,6 @@
 
 When a tool result exceeds a threshold, the full content is saved to disk
 and the context message is replaced with a short preview + file path.
-This prevents large bash outputs / web fetches from bloating the context.
 
 Path structure (mirrors CC's toolResultStorage.ts):
     ~/.agentica/projects/<sanitized-cwd>/<session-id>/tool-results/<tool-use-id>.txt
