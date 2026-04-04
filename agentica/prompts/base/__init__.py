@@ -4,9 +4,9 @@
 @description: Base prompt modules
 
 Core prompt components:
-- heartbeat: Forced iteration mechanism (must iterate until solved)
+- soul: Behavioral guidelines + tone and style
 - tools: Tool usage strategy (parallel, file ops, execution)
-- soul: Professional objectivity and tone guidelines
+- heartbeat: Forced iteration mechanism (must iterate until solved)
 - self_verification: Code validation after changes (lint/test/typecheck)
 """
 
@@ -36,7 +36,6 @@ __all__ = [
     "get_tools_prompt",
     "SOUL_PROMPT",
     "get_soul_prompt",
-    # Self Verification prompts
     "SELF_VERIFICATION_PROMPT",
     "get_self_verification_prompt",
 ]

@@ -3,7 +3,7 @@
 @author:XuMing(xuming624@qq.com)
 @description: 
 """
-from typing import Any, Dict, Union, get_args, get_origin, Optional
+from typing import Any, Dict, Union, get_args, get_origin, Optional, Literal
 
 from agentica.utils.log import logger
 
@@ -40,6 +40,16 @@ def get_json_schema_for_arg(t: Any) -> Optional[Dict[str, Any]]:
     # log_info(f"Type origin: {type_origin}")
 
     if type_origin is not None:
+        if type_origin is Literal:
+            # Literal["a", "b", "c"] → {"type": "string", "enum": ["a", "b", "c"]}
+            enum_values = list(type_args)
+            py_types = {type(v).__name__ for v in enum_values}
+            json_type = "string"
+            if py_types == {"int"}:
+                json_type = "number"
+            elif py_types == {"bool"}:
+                json_type = "boolean"
+            return {"type": json_type, "enum": enum_values}
         if type_origin in (list, tuple, set, frozenset):
             json_schema_for_items = get_json_schema_for_arg(type_args[0]) if type_args else {"type": "string"}
             return {"type": "array", "items": json_schema_for_items}

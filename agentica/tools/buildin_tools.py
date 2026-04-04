@@ -246,7 +246,7 @@ class BuiltinFileTool(Tool):
         - Only omit limit (read full file) when necessary for editing
         - Specify offset and limit: read_file(path, offset=0, limit=100) reads first 100 lines
         - Any lines longer than 2000 characters will be truncated
-        - Results are returned using cat -n format, with line numbers starting at 1
+        - Results are returned in numbered-line format (line_number + content), starting at line 1
         - You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.
         - If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
         - You should ALWAYS make sure a file has been read before editing it.
@@ -340,15 +340,15 @@ class BuiltinFileTool(Tool):
         """Writes content to a file in the filesystem.
 
         Usage:
-        - The file_path can be relative (e.g., "tmp/script.py", "./outputs/data.txt") or absolute path
-        - Relative paths are resolved relative to the base working directory
-        - The tool returns the actual absolute path of the created file - ALWAYS use this returned path for subsequent operations (read_file, execute, etc.)
-        - The content parameter must be a string
-        - The write_file tool will create a new file or overwrite existing file
-        - Parent directories will be created automatically if they don't exist
-        - Prefer to edit existing files over creating new ones when possible
-
-        IMPORTANT: After calling write_file, use the absolute path returned in the result for any follow-up operations like execute or read_file. Do NOT guess or construct the path yourself.
+        - If this is an existing file, you MUST use read_file first to read the file's contents.
+          This tool will create a new file or OVERWRITE the existing file entirely.
+        - Prefer edit_file for modifying existing files — it only sends the diff.
+          Only use write_file to create NEW files or for complete rewrites.
+        - The file_path can be relative (e.g., "tmp/script.py", "./outputs/data.txt") or absolute path.
+          Relative paths are resolved relative to the base working directory.
+        - The tool returns the actual absolute path of the created file — ALWAYS use this returned
+          path for subsequent operations (read_file, execute, etc.). Do NOT guess or construct paths.
+        - Parent directories will be created automatically if they don't exist.
 
         Args:
             file_path: File path (relative or absolute). Examples: "tmp/script.py", "outputs/result.txt", "./tmp/main.py", use './tmp/' prefix file path for temporary files
@@ -405,8 +405,19 @@ class BuiltinFileTool(Tool):
     ) -> str:
         """Replace a specific string in a file.
 
+        You MUST use read_file at least once before editing a file.
+        This tool will error if the file has been modified externally since your last read.
+
         Uses literal string matching (NOT regex). Multi-line strings are supported.
         Prefer this tool over write_file or shell `sed` for targeted changes.
+
+        When editing text from read_file output, ensure you preserve the exact indentation
+        (tabs/spaces) as it appears in the file. The line number prefix in read_file output
+        is metadata only — never include it in old_string or new_string.
+
+        The edit will FAIL if old_string is not unique in the file. Either provide a
+        larger string with more surrounding context to make it unique, or use
+        replace_all=True to change every instance.
 
         For multiple edits to the SAME file, prefer `multi_edit_file` to apply them
         atomically in one call. If you call `edit_file` multiple times on the same file
@@ -783,17 +794,19 @@ class BuiltinFileTool(Tool):
         - Use fixed_strings=True to treat pattern as literal text (no regex interpretation)
         - The path parameter specifies the search directory (default: current working directory)
         - The include parameter filters files by glob (e.g., "*.py", "*.{ts,tsx}")
-        - The output_mode parameter controls output format:
+        - The output_mode parameter is a plain string, one of: "files_with_matches", "content", "count"
           - "files_with_matches": List only file paths (default)
-          - "content": Show matching lines with file path, line numbers, and optional context
+          - "content": Show matching lines with file path and line numbers
           - "count": Show match count per file
+        - To add context lines in "content" mode, use the separate context_lines / before_context / after_context parameters
+          e.g.: grep(pattern="foo", output_mode="content", context_lines=3)
         - Automatically falls back to pure Python search if ripgrep is not installed
 
         Args:
             pattern: Text/regex to search for
             path: Starting directory for search (default: ".")
             include: File glob filter, e.g., "*.py", "*.{js,ts}" (maps to rg --glob)
-            output_mode: Output format — "files_with_matches", "content", or "count"
+            output_mode: Plain string, one of "files_with_matches" (default), "content", or "count". Do NOT pass a dict.
             case_insensitive: Ignore case when matching (default: False)
             multiline: Enable multiline matching where . matches newlines (default: False)
             context_lines: Show N lines before and after each match (default: 0, content mode only)
@@ -804,6 +817,13 @@ class BuiltinFileTool(Tool):
 
         Returns:
             Search results as formatted string
+
+        Examples:
+            grep(pattern="TODO", path="/project")
+            grep(pattern="class \\w+", include="*.py", output_mode="content")
+            grep(pattern="enable_agentic_prompt", output_mode="content", context_lines=3)
+            grep(pattern="import", include="*.py", output_mode="count")
+            grep(pattern="exact phrase", fixed_strings=True, output_mode="content")
         """
         # Resolve and validate path
         self._validate_path(path)
@@ -1058,6 +1078,14 @@ class BuiltinExecuteTool(Tool):
         - Use '&&' to chain dependent commands; use ';' for independent commands
         - DO NOT use newlines in commands (newlines ok inside quoted strings)
         - For Python code, the tool auto-converts `python3 -c "..."` to heredoc format
+        - When issuing multiple independent commands, make multiple execute calls in parallel
+
+        Git safety:
+        - Prefer creating new commits over amending existing ones
+        - Before destructive operations (git reset --hard, git push --force),
+          consider safer alternatives and check with the user first
+        - Never skip hooks (--no-verify) or bypass signing (--no-gpg-sign)
+          unless the user explicitly requests it
 
         Good examples:
             - execute(command="python3 /path/to/script.py")
@@ -1271,20 +1299,15 @@ class BuiltinTodoTool(Tool):
     # System prompt for todo tool usage guidance
     WRITE_TODOS_SYSTEM_PROMPT = dedent("""## `write_todos`
 
-    You have access to the `write_todos` tool to help you manage and plan complex objectives.
-    Use this tool for complex objectives to ensure that you are tracking each necessary step and giving the user visibility into your progress.
-    This tool is very helpful for planning complex objectives, and for breaking down these larger complex objectives into smaller steps.
+    Use this tool for complex objectives to track each necessary step and give the user visibility into your progress.
+    Writing todos takes time and tokens — only use it for complex many-step problems (3+ distinct steps), not for simple few-step requests.
 
-    It is critical that you mark todos as completed as soon as you are done with a step. Do not batch up multiple steps before marking them as completed.
-    For simple objectives that only require a few steps, it is better to just complete the objective directly and NOT use this tool.
-    Writing todos takes time and tokens, use it when it is helpful for managing complex many-step problems! But not for simple few-step requests.
-
-    The todo list will be shown in your tool results when you update it.
-    If you haven't updated it in a while, you may receive a reminder with the current state.
-
-    ## Important To-Do List Usage Notes to Remember
-    - The `write_todos` tool should never be called multiple times in parallel.
-    - Don't be afraid to revise the To-Do list as you go. New information may reveal new tasks that need to be done, or old tasks that are irrelevant.""")
+    Critical rules:
+    - Mark todos as completed as soon as each step is done. Do not batch completions.
+    - The `write_todos` tool should NEVER be called multiple times in parallel.
+    - Revise the todo list as you go — new information may reveal new tasks or make old tasks irrelevant.
+    - The todo list will be shown in your tool results when you update it.
+    - If you haven't updated it in a while, you may receive a reminder with the current state.""")
 
     # Verification nudge message (mirrors CC's mapToolResultToToolResultBlockParam)
     _VERIFICATION_NUDGE = (
@@ -1500,48 +1523,53 @@ class BuiltinTaskTool(Tool):
     # Base system prompt template for task tool usage guidance
     TASK_SYSTEM_PROMPT_TEMPLATE = dedent("""## task Tool (Subagent Spawner)
 
-    You have access to a `task` function to launch short-lived subagents that handle isolated tasks.
-
-    ### How to Call
-
-    Use your standard function calling mechanism to invoke `task(description="...", subagent_type="...")`.
+    Launch a subagent to handle complex, multi-step tasks autonomously.
+    Each subagent runs in its own isolated context window and returns a single result.
 
     ### Available Subagent Types
 
     {subagent_table}
 
-    ### Parallel Execution (IMPORTANT)
+    ### Writing the Description (IMPORTANT)
 
-    When you have **multiple independent tasks**, launch them **in parallel** for maximum efficiency:
+    Brief the subagent like a smart colleague who just walked into the room — it hasn't seen
+    this conversation, doesn't know what you've tried, doesn't understand why this task matters.
 
-    ```python
-    # Launch multiple subagents in a single response - they run simultaneously
-    task(description="Task A description", subagent_type="explore")
-    task(description="Task B description", subagent_type="research")
-    task(description="Task C description", subagent_type="code")
-    ```
+    - Explain what you're trying to accomplish and why
+    - Describe what you've already learned or ruled out
+    - Give enough context about the surrounding problem
+    - If you need a short response, say so ("report in under 200 words")
 
-    **Benefits:**
-    - Tasks execute simultaneously, not sequentially
-    - Total time = max(task_times), not sum(task_times)
-    - Ideal for: exploring multiple directories, researching multiple topics, running multiple code experiments
+    **Never delegate understanding.** Don't write "based on your findings, fix the bug" or
+    "based on the research, implement it." Those phrases push synthesis onto the subagent
+    instead of doing it yourself. You should synthesize the subagent's result yourself.
 
-    ### Usage Guidelines
+    ### Don't Peek, Don't Race
 
-    1. **Parallel for Independent Tasks**: Use parallel execution when tasks don't depend on each other
-    2. **Clear Instructions**: Provide detailed task descriptions and expected output format
-    3. **Right Tool for Job**: Choose the most appropriate subagent type:
-       - `explore`: Fast codebase exploration, read-only
-       - `research`: Web search and document analysis
-       - `code`: Full code generation and execution capabilities
-    4. **Isolated Context**: Each subagent has its own context window - include all necessary info
+    After launching a subagent, you know nothing about what it found until it returns.
+    - Do NOT fabricate or predict subagent results
+    - Trust the returned output — the subagent's results should generally be trusted
+    - Do NOT re-read files the subagent already examined unless you need to verify something specific
+
+    ### Parallel Execution
+
+    When you have **multiple independent tasks**, launch them in parallel:
+    - Tasks execute simultaneously — total time = max(task_times), not sum(task_times)
+    - Ideal for: exploring multiple directories, researching multiple topics, running multiple experiments
+
+    ### When to Use
+
+    - Research: open-ended exploration across many files or directories
+    - Implementation: work that requires more than a couple of edits
+    - Multi-part tasks: independent subtasks that can run in parallel
 
     ### When NOT to Use
 
-    - Task is trivial (1-3 tool calls)
+    - Task is trivial (1-3 tool calls) — just do it directly
     - You need to see intermediate steps
-    - Task depends on main conversation context
-    - Simple questions that don't need delegation""")
+    - Task depends heavily on the main conversation context
+    - Reading a specific known file — use read_file instead
+    - Searching for a specific definition — use grep/glob instead""")
 
     def __init__(
             self,
@@ -2020,37 +2048,44 @@ class BuiltinMemoryTool(Tool):
     important information, but provides a dedicated interface for clarity.
     """
 
-    MEMORY_SYSTEM_PROMPT = dedent("""\
-    ## Long-term Memory
-
-    You have access to `save_memory` and `search_memory` tools for persistent memory across sessions.
-
-    ### When to save memory
-    - User shares personal info, preferences, role, or constraints
-    - User corrects your approach OR confirms a non-obvious approach worked
-    - You discover important project context not derivable from code alone
-    - User explicitly asks you to remember something
-
-    ### How to save
-    Call `save_memory` with:
-    - `title`: short, searchable name (e.g. "user_role", "prefer_pytest")
-    - `content`: what to remember and how to apply it
-    - `memory_type`: one of "user", "feedback", "project", "reference"
-
-    ### Memory types
-    - **user**: role, background, preferences (e.g. "Senior Python developer")
-    - **feedback**: corrections, confirmed approaches (e.g. "User prefers pytest over unittest")
-    - **project**: non-code project context (e.g. "Deploy target is AWS Lambda")
-    - **reference**: external system pointers (e.g. "API docs at https://...")
-
-    ### When NOT to save
-    - Information already in code or config files (derivable from codebase)
-    - Transient conversation details (e.g. "user asked about X")
-    - Duplicate of existing memory (search first)""")
+    # Uses shared MEMORY_TYPE_SPEC / MEMORY_EXCLUSION_SPEC from hooks.py
+    # to keep type definitions in sync with MemoryExtractHooks._EXTRACT_PROMPT.
+    MEMORY_SYSTEM_PROMPT: str = ""  # Built in __init__ from shared constants
 
     def __init__(self):
         super().__init__(name="builtin_memory_tool")
         self._workspace = None
+
+        # Build system prompt from shared constants (avoids duplicating type defs)
+        from agentica.hooks import MEMORY_TYPE_SPEC, MEMORY_EXCLUSION_SPEC
+        self.MEMORY_SYSTEM_PROMPT = dedent("""\
+        ## Long-term Memory
+
+        You have access to `save_memory` and `search_memory` tools for persistent memory across sessions.
+
+        Memories capture context NOT derivable from the current project state.
+        Code patterns, architecture, git history, and file structure are derivable
+        (via grep/git/AGENT.md) and must NOT be saved as memories.
+
+        If the user explicitly asks you to remember something, save it immediately
+        as whichever type fits best. If they ask you to forget, tell them to delete
+        the relevant memory file.
+
+        ### Memory types
+
+        """) + MEMORY_TYPE_SPEC + dedent("""
+        ### How to save
+        Call `save_memory` with:
+        - `title`: short, searchable name (e.g. "user_role", "prefer_pytest")
+        - `content`: what to remember and how to apply it (include Why + How to apply for feedback type)
+        - `memory_type`: one of "user", "feedback", "project", "reference"
+
+        ### What NOT to save
+
+        """) + MEMORY_EXCLUSION_SPEC + (
+            "\n- Duplicate of existing memory (search first before saving)."
+        )
+
         self.register(self.save_memory, is_destructive=True)
         self.register(self.search_memory, concurrency_safe=True, is_read_only=True)
 
@@ -2138,10 +2173,12 @@ def get_builtin_tools(
         include_todos: bool = True,
         include_task: bool = True,
         include_skills: bool = False,
+        include_user_input: bool = False,
         include_memory: bool = False,
         task_model: Optional["Model"] = None,
         task_tools: Optional[List[Any]] = None,
         custom_skill_dirs: Optional[List[str]] = None,
+        user_input_callback=None,
         workspace=None,
         sandbox_config=None,
     ) -> List[Tool]:
@@ -2157,10 +2194,12 @@ def get_builtin_tools(
         include_todos: Whether to include task management tools
         include_task: Whether to include subagent task tool
         include_skills: Whether to include skill tool for executing skills (default: False)
+        include_user_input: Whether to include user input tool for human-in-the-loop (default: False)
         include_memory: Whether to include memory tool for LLM to save/search memory (default: False)
         task_model: Model for subagent tasks (optional, will use parent agent's model if not set)
         task_tools: Tools for subagent tasks (optional)
         custom_skill_dirs: Custom skill directories to load (optional)
+        user_input_callback: Custom callback for user input tool (optional)
         workspace: Workspace instance for memory tool (optional)
         sandbox_config: SandboxConfig instance for security isolation (optional)
 
@@ -2191,12 +2230,18 @@ def get_builtin_tools(
         from agentica.tools.skill_tool import SkillTool
         tools.append(SkillTool(custom_skill_dirs=custom_skill_dirs))
 
+    if include_user_input:
+        from agentica.tools.user_input_tool import UserInputTool
+        tools.append(UserInputTool(input_callback=user_input_callback))
+
     if include_memory and workspace is not None:
         memory_tool = BuiltinMemoryTool()
         memory_tool.set_workspace(workspace)
         tools.append(memory_tool)
 
     return tools
+
+
 if __name__ == '__main__':
     # Test file tool
     file_tool = BuiltinFileTool()

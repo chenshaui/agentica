@@ -3,12 +3,13 @@
 @author:XuMing(xuming624@qq.com)
 @description: PromptBuilder - Modular system prompt assembler
 
-This module provides the PromptBuilder class for assembling system prompts
-from modular components:
-1. Soul (behavioral guidelines)
-2. Tools (tool usage strategy + dynamic tool list)
-3. Heartbeat (forced iteration)
-4. Self verification (lint/test/typecheck)
+Section ordering:
+1. Identity (intro)
+2. Soul (behavioral guidelines + tone)
+3. Tools (tool usage strategy + dynamic tool list)
+4. Heartbeat (iteration control)
+5. Self verification (lint/test/typecheck)
+6. Workspace context (dynamic)
 """
 
 from typing import Optional, List, Dict
@@ -20,23 +21,7 @@ from agentica.prompts.base.self_verification import get_self_verification_prompt
 
 
 class PromptBuilder:
-    """System Prompt modular assembler.
-
-    Assembles system prompts from modular components based on:
-    - Agent configuration (identity, workspace context)
-    - Enabled features (heartbeat, tools guide, self verification)
-    - Active tools (dynamic tool list generation)
-
-    Example:
-        >>> from agentica.prompts.builder import PromptBuilder
-        >>>
-        >>> # Build a full system prompt
-        >>> prompt = PromptBuilder.build_system_prompt(
-        ...     identity="You are a helpful coding assistant",
-        ...     enable_heartbeat=True,
-        ...     active_tools=["read_file", "edit_file", "execute"],
-        ... )
-    """
+    """System Prompt modular assembler."""
 
     @classmethod
     def build_system_prompt(
@@ -71,7 +56,7 @@ class PromptBuilder:
         if identity:
             sections.append(f"# Identity\n\n{identity}")
 
-        # 2. Soul (core behavioral guidelines)
+        # 2. Soul (core behavioral guidelines + tone)
         if enable_soul:
             sections.append(get_soul_prompt())
 
@@ -90,9 +75,8 @@ class PromptBuilder:
         if enable_self_verification:
             sections.append(get_self_verification_prompt())
 
-        # 6. Workspace context (injected from workspace files)
+        # 6. Workspace context (dynamic zone)
         if workspace_context:
             sections.append(f"# Workspace Context\n\n{workspace_context}")
 
-        # Join all sections with separators
         return "\n\n---\n\n".join(sections)
