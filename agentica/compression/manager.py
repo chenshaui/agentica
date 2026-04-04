@@ -12,6 +12,7 @@ Supports two compression strategies (applied in order):
 """
 import asyncio
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -435,6 +436,9 @@ class CompressionManager:
         if not self.compress_tool_results:
             return
 
+        # Save raw transcript before any mutation
+        self._save_transcript(messages)
+
         # Count tokens before compression
         _model_id = model.id if model else 'gpt-4o'
         _before_tokens = count_tokens(messages, tools, _model_id, response_format)
@@ -507,10 +511,8 @@ class CompressionManager:
 
     def _save_transcript(self, messages: List["Message"]) -> None:
         """Persist current conversation to transcripts dir before compaction."""
-        if self.workspace is not None and self.workspace.exists():
-            transcript_dir = Path(self.workspace.path) / ".transcripts"
-        else:
-            transcript_dir = Path.home() / ".agentica" / "transcripts"
+        from agentica.compression.tool_result_storage import get_project_dir
+        transcript_dir = Path(get_project_dir(os.getcwd())) / ".transcripts"
         transcript_dir.mkdir(parents=True, exist_ok=True)
         transcript_path = transcript_dir / f"transcript_{int(time.time())}.jsonl"
         try:
@@ -628,8 +630,9 @@ class CompressionManager:
 
         logger.debug("Auto-compact triggered: summarising conversation")
 
-        # Save transcript before mutating
-        self._save_transcript(messages)
+        # When called standalone (force=True), compress() hasn't run yet, save transcript here
+        if force:
+            self._save_transcript(messages)
 
         # SM-compact optimization: reuse existing WorkingMemory session summary
         # when available (avoids LLM call, faster + cheaper).
