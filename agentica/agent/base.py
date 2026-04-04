@@ -729,11 +729,6 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         if self.name is not None:
             self.model.agent_name = self.name
 
-        # Inject Model-layer hooks based on ToolConfig settings.
-        # These hooks fire inside Model.run_function_calls() around each tool batch.
-        self.model._pre_tool_hook = self._build_pre_tool_hook()
-        self.model._post_tool_hook = self._build_post_tool_hook()
-
     def _build_pre_tool_hook(self):
         """Build the pre-tool hook function based on ToolConfig settings.
 

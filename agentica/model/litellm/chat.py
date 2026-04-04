@@ -382,6 +382,11 @@ class LiteLLMChat(Model):
             except Exception as e:
                 logger.warning(f"Error parsing structured output from LiteLLM: {e}")
 
+        # Expose finish_reason so Runner's agentic loop can detect truncation
+        finish_reason = response.choices[0].finish_reason if response.choices else None
+        model_response.finish_reason = finish_reason
+        self.last_finish_reason = finish_reason
+
         tool_role = "tool"
         if await self.handle_tool_calls(
                 assistant_message=assistant_message,
@@ -389,10 +394,8 @@ class LiteLLMChat(Model):
                 model_response=model_response,
                 tool_role=tool_role,
         ) is not None:
-            if self._in_agentic_loop:
-                return model_response
-            return await self.agentic_loop(messages=messages, model_response=model_response)
-        
+            return model_response
+
         return model_response
     
     async def response_stream(self, messages: List[Message]) -> AsyncIterator[ModelResponse]:
@@ -402,14 +405,19 @@ class LiteLLMChat(Model):
         
         stream_data = StreamData()
         metrics = Metrics()
-        
+        stream_finish_reason = None
+
         metrics.response_timer.start()
         async for chunk in self.invoke_stream(messages):
             if chunk.choices and len(chunk.choices) > 0:
                 if metrics.completion_tokens == 0:
                     metrics.time_to_first_token = metrics.response_timer.elapsed
                 metrics.completion_tokens += 1
-                
+
+                # Capture finish_reason from the final chunk
+                if chunk.choices[0].finish_reason is not None:
+                    stream_finish_reason = chunk.choices[0].finish_reason
+
                 delta = chunk.choices[0].delta
                 
                 # Handle reasoning content
@@ -446,7 +454,10 @@ class LiteLLMChat(Model):
             assistant_message.tool_calls = self._merge_tool_call_deltas(stream_data.response_tool_calls)
         
         self.update_stream_metrics(assistant_message=assistant_message, metrics=metrics)
-        
+
+        # Expose finish_reason so Runner's agentic loop can detect truncated output
+        self.last_finish_reason = stream_finish_reason
+
         messages.append(assistant_message)
         assistant_message.log()
         metrics.log()
@@ -460,6 +471,3 @@ class LiteLLMChat(Model):
                 tool_role=tool_role
             ):
                 yield tool_call_response
-            if not self._in_agentic_loop:
-                async for post_tool_call_response in self.agentic_loop_stream(messages=messages):
-                    yield post_tool_call_response

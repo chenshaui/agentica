@@ -639,16 +639,15 @@ class Claude(Model):
         metrics.log()
 
         # -*- Handle tool calls
-        # Expose stop_reason so agentic_loop can detect
+        # Expose stop_reason so Runner's agentic loop can detect
         # max_tokens truncation (stop_reason == "max_tokens") for recovery.
         model_response.finish_reason = (
             "length" if response.stop_reason == "max_tokens" else response.stop_reason
         )
+        self.last_finish_reason = model_response.finish_reason
 
         if await self.handle_tool_calls(assistant_message, messages, model_response, response_content, tool_ids):
-            if self._in_agentic_loop:
-                return model_response
-            return await self.agentic_loop(messages=messages, model_response=model_response)
+            return model_response
 
         # -*- Update model response
         if assistant_message.content is not None:
@@ -734,7 +733,7 @@ class Claude(Model):
                     message_data.response_usage = delta.message.usage
                     # Capture stop_reason: "max_tokens" → "length" for consistency with OpenAI
                     _stop = delta.message.stop_reason
-                    self._last_stream_finish_reason = (
+                    self.last_finish_reason = (
                         "length" if _stop == "max_tokens" else _stop
                     )
         yield ModelResponse(content="\n\n")
@@ -768,10 +767,6 @@ class Claude(Model):
             async for _resp in self.handle_stream_tool_calls(assistant_message, messages, message_data.tool_ids):
 
                 yield _resp
-            if not self._in_agentic_loop:
-                async for _resp in self.agentic_loop_stream(messages=messages):
-
-                    yield _resp
 
     def get_tool_call_prompt(self) -> Optional[str]:
         if self.functions is not None and len(self.functions) > 0:

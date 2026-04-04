@@ -300,12 +300,7 @@ class OllamaTools(Ollama):
         # -*- Handle tool calls
         if assistant_message.tool_calls is not None and len(assistant_message.tool_calls) > 0 and self.run_tools:
             async for _resp in self.handle_stream_tool_calls(assistant_message, messages):
-
                 yield _resp
-            if not self._in_agentic_loop:
-                async for _resp in self.agentic_loop_stream(messages=messages):
-
-                    yield _resp
 
     def get_instructions_to_generate_tool_calls(self) -> List[str]:
         if self.functions is not None:

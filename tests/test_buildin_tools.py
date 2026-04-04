@@ -854,7 +854,7 @@ class TestOpenAIStreamFinishReason:
                 collected.append(resp)
 
         asyncio.run(run())
-        assert model._last_stream_finish_reason == "stop"
+        assert model.last_finish_reason == "stop"
 
     def test_finish_reason_length_captured(self):
         """When output is truncated, finish_reason should be 'length'."""
@@ -882,7 +882,7 @@ class TestOpenAIStreamFinishReason:
                 pass
 
         asyncio.run(run())
-        assert model._last_stream_finish_reason == "length"
+        assert model.last_finish_reason == "length"
 
     def test_finish_reason_none_when_no_choices(self):
         """When stream has no choices, finish_reason should remain None."""
@@ -904,7 +904,7 @@ class TestOpenAIStreamFinishReason:
                 pass
 
         asyncio.run(run())
-        assert model._last_stream_finish_reason is None
+        assert model.last_finish_reason is None
 
 
 # ===========================================================================

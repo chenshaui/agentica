@@ -305,6 +305,11 @@ class Ollama(Model):
         assistant_message.log()
         metrics.log()
 
+        # Expose finish_reason so Runner's agentic loop can detect truncation.
+        # Ollama uses "done_reason" field: "stop" (normal), "length" (truncated).
+        _done_reason = response.get("done_reason")
+        self.last_finish_reason = _done_reason if _done_reason else None
+
         if assistant_message.content is not None:
             model_response.content = assistant_message.get_content_string()
         if assistant_message.audio is not None:
@@ -316,9 +321,7 @@ class Ollama(Model):
             )
             is not None
         ):
-            if self._in_agentic_loop:
-                return model_response
-            return await self.agentic_loop(messages=messages, model_response=model_response)
+            return model_response
         return model_response
 
     async def handle_stream_tool_calls(
@@ -374,6 +377,9 @@ class Ollama(Model):
 
             if response.get("done"):
                 message_data.response_usage = response
+                # Capture done_reason for max-tokens recovery
+                _done_reason = response.get("done_reason")
+                self.last_finish_reason = _done_reason if _done_reason else None
         metrics.response_timer.stop()
 
         assistant_message = Message(role="assistant", content=message_data.response_content)
@@ -393,6 +399,3 @@ class Ollama(Model):
         if assistant_message.tool_calls is not None and len(assistant_message.tool_calls) > 0 and self.run_tools:
             async for tool_call_response in self.handle_stream_tool_calls(assistant_message, messages):
                 yield tool_call_response
-            if not self._in_agentic_loop:
-                async for post_tool_call_response in self.agentic_loop_stream(messages=messages):
-                    yield post_tool_call_response

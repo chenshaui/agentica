@@ -53,11 +53,12 @@ export DEEPSEEK_API_KEY="your-api-key"      # DeepSeek
 ## 功能特性
 
 - **Async-First** — 原生 async API，`asyncio.gather()` 并行工具执行，同步适配器兼容
+- **Runner Agentic Loop** — LLM ↔ 工具调用自动循环，多轮链式推理、死循环检测、成本预算、压缩 pipeline、API 重试
 - **20+ 模型** — OpenAI / DeepSeek / Claude / 智谱 / Qwen / Moonshot / Ollama / LiteLLM 等
 - **40+ 内置工具** — 搜索、代码执行、文件操作、浏览器、OCR、图像生成
 - **RAG** — 知识库管理、混合检索、Rerank，集成 LangChain / LlamaIndex
-- **多智能体** — Team（动态委派）和 Workflow（确定性编排）
-- **安全守卫** — 输入/输出/工具级 Guardrails
+- **多智能体** — Team（动态委派）、Swarm（并行/自治）和 Workflow（确定性编排）
+- **安全守卫** — 输入/输出/工具级 Guardrails，流式实时检测
 - **MCP / ACP** — Model Context Protocol 和 Agent Communication Protocol 支持
 - **Skill 系统** — 基于 Markdown 的技能注入，模型无关
 - **多模态** — 文本、图像、音频、视频理解
@@ -117,13 +118,16 @@ agentica --model_provider zhipuai --model_name glm-4.7-flash
 
 | 类别 | 内容 |
 |------|------|
-| **基础用法** | Hello World、流式输出、结构化输出、多轮对话、多模态 |
-| **工具** | 自定义工具、Async 工具、搜索、代码执行、文件操作 |
-| **Agent 模式** | Agent 作为工具、并行执行、团队协作、辩论 |
+| **基础用法** | Hello World、流式输出、结构化输出、多轮对话、多模态、**Agentic Loop 对比** |
+| **工具** | 自定义工具、Async 工具、搜索、代码执行、并行工具、并发安全、成本追踪、沙箱隔离、压缩 |
+| **Agent 模式** | Agent 作为工具、并行执行、团队协作、辩论、路由分发、Swarm、子 Agent、模型层钩子、会话恢复 |
+| **安全护栏** | 输入/输出/工具级 Guardrails、流式护栏 |
+| **记忆** | 会话历史、WorkingMemory、上下文压缩、Workspace 记忆、LLM 自动记忆 |
 | **RAG** | PDF 问答、高级 RAG、LangChain / LlamaIndex 集成 |
 | **工作流** | 数据管道、投资研究、新闻报道、代码审查 |
 | **MCP** | Stdio / SSE / HTTP 传输、JSON 配置 |
-| **应用** | LLM OS、深度研究、客服系统 |
+| **可观测性** | Langfuse、Token 追踪、Usage 聚合 |
+| **应用** | LLM OS、深度研究、客服系统、**金融研究（6-Agent 流水线）** |
 
 [→ 查看完整示例目录](https://github.com/shibing624/agentica/blob/main/examples/README.md)
 

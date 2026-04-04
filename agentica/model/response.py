@@ -25,7 +25,7 @@ class ModelResponse:
     event: str = ModelResponseEvent.assistant_response.value
     reasoning_content: Optional[str] = None
     # Finish reason from the LLM API (e.g. "stop", "length", "tool_calls").
-    # Set by provider response() methods; used by agentic_loop for max_tokens recovery.
+    # Set by provider response() methods; used by Runner's agentic loop for max_tokens recovery.
     finish_reason: Optional[str] = None
     created_at: int = int(time())
 

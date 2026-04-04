@@ -12,7 +12,6 @@ This module implements a subagent system that allows main agents to:
 Based on the subagent design pattern from modern AI coding assistants.
 """
 
-import uuid
 from dataclasses import dataclass
 from enum import Enum
 from typing import (

@@ -65,7 +65,7 @@ def demo_repetition_detection():
     )
     agent.update_model()
 
-    hook = agent.model._pre_tool_hook
+    hook = agent._build_pre_tool_hook()
     if hook is None:
         print("  [SKIP] Hook is None — max_repeated_tool_calls=0 (disabled)")
         return
@@ -124,7 +124,7 @@ def demo_context_overflow():
     # Use a tiny window so the demo is easy to trigger
     agent.model.context_window = 200
 
-    hook = agent.model._pre_tool_hook
+    hook = agent._build_pre_tool_hook()
     if hook is None:
         print("  [SKIP] Hook is None — context_overflow_threshold=0.0 (disabled)")
         return

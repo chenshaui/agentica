@@ -7,7 +7,7 @@ Core API (eager imports):
     from agentica import Agent, OpenAIChat, RunResponse
 
 Sub-module imports:
-    from agentica.model import Claude, OllamaChat
+    from agentica.model import Claude, Ollama
     from agentica.model.providers import create_provider
     from agentica.tools import ShellTool, CodeTool
     from agentica.db import SqliteDb

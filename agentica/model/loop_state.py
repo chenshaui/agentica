@@ -7,7 +7,7 @@ Replaces scattered per-run counters (_loop_turn_count, _max_tokens_recovery_coun
 _reactive_compact_done, _consecutive_all_error_turns) that were stored as mutable
 attributes on the Model instance.
 
-Created fresh at the start of each agentic_loop() / agentic_loop_stream() call.
+Created fresh at the start of each agentic loop in Runner._run_impl().
 """
 from dataclasses import dataclass, field
 
@@ -17,7 +17,7 @@ class LoopState:
     """Centralized state for one agentic loop invocation.
 
     All counters are per-loop (not per-run). A fresh LoopState is created
-    each time agentic_loop() or agentic_loop_stream() is entered.
+    each time Runner._run_impl() enters its agentic loop.
     """
 
     # Turn tracking (no hard limit -- mirrors original behaviour)

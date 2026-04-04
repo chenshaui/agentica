@@ -10,17 +10,7 @@ else:
 
 import httpx
 from enum import Enum, EnumMeta
-from pydantic import BaseModel, Field
-
-from agentica.model.base import Model
-from agentica.model.message import Message
-from agentica.model.metrics import Metrics, StreamData
-from agentica.model.response import ModelResponse, ModelResponseEvent
-from agentica.model.usage import RequestUsage, TokenDetails
-from agentica.tools.base import FunctionCall, get_function_call_for_tool_call
-from agentica.utils.log import logger
-from agentica.utils.timer import Timer
-from agentica.utils.langfuse_integration import is_langfuse_available, build_langfuse_metadata, get_langfuse_openai_client
+from pydantic import BaseModel
 
 from openai import AsyncOpenAI as AsyncOpenAIClient
 from openai.types.completion_usage import CompletionUsage
@@ -32,6 +22,13 @@ from openai.types.chat.chat_completion_chunk import (
     ChoiceDeltaToolCall,
 )
 from openai.types.chat.chat_completion_message import ChatCompletionMessage
+
+from agentica.model.base import Model
+from agentica.model.message import Message
+from agentica.model.metrics import Metrics, StreamData
+from agentica.model.response import ModelResponse
+from agentica.utils.log import logger
+from agentica.utils.langfuse_integration import is_langfuse_available, build_langfuse_metadata, get_langfuse_openai_client
 
 
 class OpenAIImageTypeMeta(EnumMeta):
@@ -383,9 +380,10 @@ class OpenAIChat(Model):
         if assistant_message.audio is not None:
             model_response.audio = assistant_message.audio
 
-        # Expose finish_reason so agentic_loop can detect
+        # Expose finish_reason so Runner's agentic loop can detect
         # truncated output (finish_reason == "length") for max_tokens recovery.
         model_response.finish_reason = response.choices[0].finish_reason
+        self.last_finish_reason = model_response.finish_reason
 
         tool_role = "tool"
         if (
@@ -397,9 +395,7 @@ class OpenAIChat(Model):
                 )
                 is not None
         ):
-            if self._in_agentic_loop:
-                return model_response
-            return await self.agentic_loop(messages=messages, model_response=model_response)
+            return model_response
         return model_response
 
     def add_response_usage_to_metrics(self, metrics: Metrics, response_usage: CompletionUsage):
@@ -485,8 +481,8 @@ class OpenAIChat(Model):
 
         self.update_stream_metrics(assistant_message=assistant_message, metrics=metrics)
 
-        # Expose finish_reason so agentic_loop_stream can detect truncated output
-        self._last_stream_finish_reason = stream_finish_reason
+        # Expose finish_reason so Runner's agentic loop can detect truncated output
+        self.last_finish_reason = stream_finish_reason
 
         messages.append(assistant_message)
         assistant_message.log()
@@ -498,9 +494,6 @@ class OpenAIChat(Model):
                     assistant_message=assistant_message, messages=messages, tool_role=tool_role
             ):
                 yield tool_call_response
-            if not self._in_agentic_loop:
-                async for post_tool_call_response in self.agentic_loop_stream(messages=messages):
-                    yield post_tool_call_response
 
     def build_tool_calls(self, tool_calls_data: List[ChoiceDeltaToolCall]) -> List[Dict[str, Any]]:
         """Build tool calls from streaming tool call data."""
