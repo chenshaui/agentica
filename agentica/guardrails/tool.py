@@ -97,17 +97,17 @@ class ToolGuardrailFunctionOutput:
         return cls(output_info=output_info, behavior=RaiseExceptionBehavior(type="raise_exception"))
 
     def is_allow(self) -> bool:
-        return self.behavior.get("type") == "allow"
+        return self.behavior["type"] == "allow"
 
     def is_reject_content(self) -> bool:
-        return self.behavior.get("type") == "reject_content"
+        return self.behavior["type"] == "reject_content"
 
     def is_raise_exception(self) -> bool:
-        return self.behavior.get("type") == "raise_exception"
+        return self.behavior["type"] == "raise_exception"
 
     def get_reject_message(self) -> Optional[str]:
         if self.is_reject_content():
-            return self.behavior.get("message")
+            return self.behavior["message"]
         return None
 
 

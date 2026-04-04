@@ -3,14 +3,18 @@
 @author:XuMing(xuming624@qq.com)
 @description: DeepAgent — Full-featured Agent with all capabilities enabled.
 
-A pre-configured Agent with:
-- 40+ built-in tools (file ops, web search, execute, task, memory, etc.)
-- JSONL SessionLog (CC-style append-only with compact boundary resume)
-- Conversation archive (auto_archive for search_conversations)
-- Workspace memory (AGENT.md, MEMORY.md, daily memory, git context)
-- 3-layer context compression (micro + auto + reactive compact)
+A pre-configured Agent that enables every Runner agentic-loop feature:
+- 40+ built-in tools (file ops, web search, execute, subagent task, todos)
+- Runner agentic loop: LLM ↔ tool-call auto-loop with multi-turn reasoning
+- 5-stage compression pipeline (tool-result budget → micro-compact →
+  rule-based → auto-compact → reactive compact)
 - Death spiral detection + cost tracking + cost budget
-- Agentic prompt (heartbeat, soul, tools guide, self-verification)
+- Context overflow handling (FIFO message truncation at 80%)
+- Repeated tool-call detection (inject "change strategy" at 3 repeats)
+- Workspace memory (AGENT.md, MEMORY.md, daily memory, relevance recall)
+- Conversation archive (auto_archive for search_conversations)
+- Agentic prompt (heartbeat, tools guide, self-verification)
+- Sandbox isolation (optional, off by default)
 - Multi-turn history
 
 Usage:
@@ -20,7 +24,11 @@ Usage:
     agent = DeepAgent()
     response = agent.run_sync("Research the latest advances in RAG")
     print(response.content)
-    print(response.cost_summary)
+
+    # With cost budget
+    from agentica import RunConfig
+    response = await agent.run("Analyze X", config=RunConfig(max_cost_usd=1.0))
+    print(response.cost_tracker.total_cost_usd)
 
     # With custom model
     from agentica import OpenAIChat
@@ -28,6 +36,10 @@ Usage:
 
     # Resume previous session
     agent = DeepAgent(session_id="my-previous-session")
+
+    # With sandbox isolation
+    from agentica import SandboxConfig
+    agent = DeepAgent(sandbox_config=SandboxConfig(enabled=True, writable_dirs=["./output"]))
 
     # Any Agent parameter works via **kwargs
     agent = DeepAgent(debug=True, tracing=True, response_model=MyModel)
@@ -38,6 +50,7 @@ from typing import Any, Callable, Dict, List, Optional, Union
 from agentica.agent.base import Agent
 from agentica.agent.config import (
     PromptConfig,
+    SandboxConfig,
     ToolConfig,
     WorkspaceMemoryConfig,
 )
@@ -49,8 +62,15 @@ from agentica.workspace import Workspace
 class DeepAgent(Agent):
     """Full-featured Agent — batteries included.
 
-    DeepAgent = Agent + builtin tools + compression + auto_archive +
-    workspace memory + agentic prompt + history + cost tracking.
+    DeepAgent = Agent + builtin tools + Runner agentic loop features.
+
+    Enabled by default:
+    - 5-stage compression pipeline (compress_tool_results=True)
+    - Context overflow handling at 80% (context_overflow_threshold=0.8)
+    - Repeated tool-call detection at 3 (max_repeated_tool_calls=3)
+    - Workspace memory with relevance recall (max_memory_entries=10)
+    - Conversation auto-archive (auto_archive=True)
+    - Agentic prompt with datetime and agent name
 
     All parameters are optional — sensible defaults are applied.
     Any Agent parameter can be overridden via **kwargs.
@@ -59,8 +79,6 @@ class DeepAgent(Agent):
     def __init__(
         self,
         *,
-        # Only parameters with changed defaults are listed explicitly.
-        # Everything else is forwarded to Agent via **kwargs.
         model: Optional[Model] = None,
         name: str = "DeepAgent",
         tools: Optional[List[Union[ModelTool, Tool, Callable, Dict, Function]]] = None,
@@ -72,6 +90,7 @@ class DeepAgent(Agent):
         prompt_config: Optional[PromptConfig] = None,
         tool_config: Optional[ToolConfig] = None,
         long_term_memory_config: Optional[WorkspaceMemoryConfig] = None,
+        sandbox_config: Optional[SandboxConfig] = None,
         **kwargs,
     ):
         # Default model
@@ -131,5 +150,6 @@ class DeepAgent(Agent):
             prompt_config=prompt_config,
             tool_config=tool_config,
             long_term_memory_config=long_term_memory_config,
+            sandbox_config=sandbox_config,
             **kwargs,
         )

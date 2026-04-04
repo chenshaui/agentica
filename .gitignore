@@ -200,3 +200,5 @@ docs/config_tech_v2.md
 docs/refactor_v3.md
 docs/tests.md
 .sessions/
+examples/builtin_tools/tmp_demo.py
+.claude/

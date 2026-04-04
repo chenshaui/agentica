@@ -34,7 +34,6 @@ async def main():
     agent = Agent(
         model=OpenAIChat(id="gpt-4o-mini"),
         context=user_context,
-        add_context=True,  # This adds context to user messages automatically
         instructions="你是一个个性化助手。请用中文回复，并根据上下文中的用户信息提供个性化服务。",
     )
     
@@ -50,7 +49,6 @@ async def main():
         name="Information Collector",
         model=OpenAIChat(id="gpt-4o-mini"),
         context=user_context,
-        add_context=True,
         instructions="你是一个信息收集助手。请用中文回复。",
     )
     
@@ -59,7 +57,6 @@ async def main():
         name="Information Processor",
         model=OpenAIChat(id="gpt-4o-mini"),
         context=user_context,
-        add_context=True,
         instructions="你是一个信息处理助手。请用中文回复，并根据用户偏好给出建议。",
     )
     

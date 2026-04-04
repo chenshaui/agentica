@@ -7,12 +7,16 @@ Inspired by OpenClaw's workspace concept.
 """
 import asyncio
 import functools
+import os
+import re
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Optional, Dict, List
 from dataclasses import dataclass
 from datetime import date, datetime
 
-from agentica.config import AGENTICA_WORKSPACE_DIR
+from agentica.config import AGENTICA_WORKSPACE_DIR, AGENTICA_HOME
 
 
 async def _async_read_text(path: Path, encoding: str = "utf-8") -> str:
@@ -402,9 +406,6 @@ You are a helpful AI assistant.
         Returns:
             Merged content string, or empty string if no files found.
         """
-        import os
-        from pathlib import Path
-
         cwd = Path(os.getcwd())
         found: list[str] = []
 
@@ -434,7 +435,6 @@ You are a helpful AI assistant.
         found.reverse()
 
         # Prepend user global AGENT.md (~/.agentica/AGENT.md)
-        from agentica.config import AGENTICA_HOME
         global_agent_md = Path(AGENTICA_HOME) / "AGENT.md"
         if global_agent_md.is_file():
             try:
@@ -462,8 +462,6 @@ You are a helpful AI assistant.
         Returns branch, uncommitted changes, and recent commits.
         Returns None if not in a git repo or git is unavailable.
         """
-        import subprocess
-
         cwd = str(self.path)
         try:
             subprocess.run(
@@ -634,13 +632,12 @@ You are a helpful AI assistant.
         Returns:
             Absolute path to the written memory file.
         """
-        import re as _re
         self._initialize_user_dir()
         memory_dir = self._get_user_memory_dir()
         memory_dir.mkdir(parents=True, exist_ok=True)
 
         # Sanitize title to a safe filename
-        safe_title = _re.sub(r"[^\w\-]", "_", title.lower())[:50].strip("_")
+        safe_title = re.sub(r"[^\w\-]", "_", title.lower())[:50].strip("_")
         filename = f"{memory_type}_{safe_title}.md"
         filepath = memory_dir / filename
 
@@ -704,10 +701,9 @@ You are a helpful AI assistant.
 
         Expected format: `- [Title](memory/filename.md) — one-line hook`
         """
-        import re as _re
         entries = []
         for line in index_content.splitlines():
-            m = _re.match(r"-\s+\[(.+?)\]\(memory/(.+?)\)\s*[—\-]\s*(.+)", line)
+            m = re.match(r"-\s+\[(.+?)\]\(memory/(.+?)\)\s*[—\-]\s*(.+)", line)
             if m:
                 entries.append({
                     "title": m.group(1).strip(),
@@ -758,8 +754,7 @@ You are a helpful AI assistant.
     @staticmethod
     def _strip_frontmatter(content: str) -> str:
         """Remove YAML frontmatter block (---...---) from memory file content."""
-        import re as _re
-        stripped = _re.sub(r"^---[\s\S]*?---\s*", "", content, flags=_re.MULTILINE).strip()
+        stripped = re.sub(r"^---[\s\S]*?---\s*", "", content, flags=re.MULTILINE).strip()
         return stripped if stripped else content
 
     async def write_memory(self, content: str, to_daily: bool = True):
@@ -852,21 +847,36 @@ You are a helpful AI assistant.
         self,
         query: str,
         limit: int = 5,
-        min_score: float = 0.3,
+        min_score: float = 0.1,
     ) -> List[Dict]:
-        """Search memory (simple keyword search).
+        """Search memory with hybrid word + character n-gram matching.
+
+        Uses a combination of word-level matching (for English and space-delimited
+        languages) and character bigram matching (for CJK languages like Chinese)
+        to support multilingual queries.
 
         Args:
-            query: Search query
+            query: Search query (supports English, Chinese, and mixed)
             limit: Maximum number of results
-            min_score: Minimum match score
+            min_score: Minimum match score threshold
 
         Returns:
             List of matching memories, each containing content, file_path, score
         """
         results = []
         query_lower = query.lower()
-        query_words = query_lower.split()
+
+        # Word tokens (English / space-delimited)
+        word_tokens = set(query_lower.split())
+        # Character bigrams (CJK / fuzzy fallback)
+        char_bigrams = set()
+        for i in range(len(query_lower) - 1):
+            bigram = query_lower[i:i + 2].strip()
+            if bigram:
+                char_bigrams.add(bigram)
+
+        if not word_tokens and not char_bigrams:
+            return []
 
         for file_path in self.get_all_memory_files():
             content = file_path.read_text(encoding="utf-8").strip()
@@ -875,20 +885,23 @@ You are a helpful AI assistant.
 
             content_lower = content.lower()
 
-            # Calculate simple match score
             score = 0.0
-            for word in query_words:
-                if word in content_lower:
-                    score += 1.0 / len(query_words)
+            # Word overlap (exact substring match per word)
+            if word_tokens:
+                word_hits = sum(1.0 for w in word_tokens if w in content_lower)
+                score += word_hits / len(word_tokens)
+            # Character bigram overlap (boosts CJK and partial matches)
+            if char_bigrams:
+                ngram_hits = sum(1.0 for ng in char_bigrams if ng in content_lower)
+                score += 0.5 * ngram_hits / len(char_bigrams)
 
             if score >= min_score:
                 results.append({
                     "content": content,
                     "file_path": str(file_path.relative_to(self.path)),
-                    "score": score,
+                    "score": round(score, 4),
                 })
 
-        # Sort by score
         results.sort(key=lambda x: -x["score"])
         return results[:limit]
 
@@ -1042,62 +1055,6 @@ You are a helpful AI assistant.
             files = files[:max_files]
         return files
 
-    def create_memory_search(self):
-        """Create workspace memory search instance.
-
-        Returns:
-            WorkspaceMemorySearch instance for vector and keyword search
-
-        Example:
-            >>> workspace = Workspace()
-            >>> search = workspace.create_memory_search()
-            >>> search.index()
-            >>> results = search.search("Python programming")
-        """
-        from agentica.memory import WorkspaceMemorySearch
-        return WorkspaceMemorySearch(workspace_path=str(self.path))
-
-    def search_memory_hybrid(
-        self,
-        query: str,
-        limit: int = 5,
-        embedding=None,
-    ) -> List[Dict]:
-        """Hybrid memory search (vector + keyword).
-
-        Uses combination of vector similarity and keyword matching to search memories.
-
-        Args:
-            query: Search query
-            limit: Maximum number of results
-            embedding: Optional embedding model instance, uses OpenAIEmbedding if not provided
-
-        Returns:
-            List of matching memories
-
-        Example:
-            >>> workspace = Workspace()
-            >>> workspace.initialize()
-            >>> workspace.write_memory("Python is great for AI")
-            >>> results = workspace.search_memory_hybrid("artificial intelligence")
-        """
-        from agentica.memory import WorkspaceMemorySearch
-
-        search = WorkspaceMemorySearch(workspace_path=str(self.path))
-        search.index()
-
-        results = search.search_hybrid(query, limit=limit, embedding=embedding)
-
-        # Convert MemoryChunk to dict for consistency with search_memory
-        return [
-            {
-                "content": r.content,
-                "file_path": r.file_path,
-                "score": r.score,
-            }
-            for r in results
-        ]
-
     def __repr__(self) -> str:
         return f"Workspace(path={self.path}, exists={self.exists()}, user_id={self._user_id})"
 
@@ -1143,9 +1100,8 @@ You are a helpful AI assistant.
                 # Get modification time of latest memory file
                 latest_file = memory_files[0]
                 if latest_file.exists():
-                    import datetime
                     mtime = latest_file.stat().st_mtime
-                    last_activity = datetime.datetime.fromtimestamp(mtime).isoformat()
+                    last_activity = datetime.fromtimestamp(mtime).isoformat()
 
             return {
                 "user_id": target_user,
@@ -1178,6 +1134,5 @@ You are a helpful AI assistant.
         if not user_path.exists():
             return False
 
-        import shutil
         shutil.rmtree(user_path)
         return True

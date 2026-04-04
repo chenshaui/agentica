@@ -53,11 +53,12 @@ export DEEPSEEK_API_KEY="your-api-key"      # DeepSeek
 ## Features
 
 - **Async-First** — Native async API, `asyncio.gather()` parallel tool execution, sync adapter included
+- **Runner Agentic Loop** — LLM ↔ tool-call auto-loop, multi-turn chain-of-thought, infinite-loop detection, cost budgeting, compression pipeline, API retry
 - **20+ Models** — OpenAI / DeepSeek / Claude / ZhipuAI / Qwen / Moonshot / Ollama / LiteLLM and more
 - **40+ Built-in Tools** — Search, code execution, file operations, browser, OCR, image generation
 - **RAG** — Knowledge base management, hybrid retrieval, Rerank, LangChain / LlamaIndex integration
-- **Multi-Agent** — Team (dynamic delegation) and Workflow (deterministic orchestration)
-- **Guardrails** — Input / output / tool-level guardrails
+- **Multi-Agent** — Team (dynamic delegation), Swarm (parallel / autonomous), and Workflow (deterministic orchestration)
+- **Guardrails** — Input / output / tool-level guardrails, streaming real-time detection
 - **MCP / ACP** — Model Context Protocol and Agent Communication Protocol support
 - **Skill System** — Markdown-based skill injection, model-agnostic
 - **Multi-Modal** — Text, image, audio, video understanding
@@ -117,13 +118,16 @@ See [examples/](https://github.com/shibing624/agentica/tree/main/examples) for f
 
 | Category | Content |
 |----------|---------|
-| **Basics** | Hello World, streaming, structured output, multi-turn, multi-modal |
-| **Tools** | Custom tools, async tools, search, code execution, file operations |
-| **Agent Patterns** | Agent-as-tool, parallel execution, team collaboration, debate |
+| **Basics** | Hello World, streaming, structured output, multi-turn, multi-modal, **Agentic Loop comparison** |
+| **Tools** | Custom tools, async tools, search, code execution, parallel tools, concurrency safety, cost tracking, sandbox isolation, compression |
+| **Agent Patterns** | Agent-as-tool, parallel execution, team collaboration, debate, routing, Swarm, sub-agent, model-layer hooks, session resume |
+| **Guardrails** | Input / output / tool-level guardrails, streaming guardrails |
+| **Memory** | Session history, WorkingMemory, context compression, Workspace memory, LLM auto-memory |
 | **RAG** | PDF Q&A, advanced RAG, LangChain / LlamaIndex integration |
 | **Workflows** | Data pipeline, investment research, news reporting, code review |
 | **MCP** | Stdio / SSE / HTTP transport, JSON config |
-| **Applications** | LLM OS, deep research, customer service |
+| **Observability** | Langfuse, token tracking, usage aggregation |
+| **Applications** | LLM OS, deep research, customer service, **financial research (6-Agent pipeline)** |
 
 [→ View full examples directory](https://github.com/shibing624/agentica/blob/main/examples/README.md)
 

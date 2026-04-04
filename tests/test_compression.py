@@ -262,14 +262,14 @@ class TestCompressionManagerShouldCompress(unittest.TestCase):
         from agentica.compression.manager import CompressionManager
         cm = CompressionManager(compress_token_limit=100_000)
         msgs = [Message(role="user", content="hi")]
-        with patch("agentica.utils.tokens.count_tokens", return_value=1000):
+        with patch("agentica.compression.manager.count_tokens", return_value=1000):
             self.assertFalse(cm.should_compress(msgs))
 
     def test_over_threshold_returns_true(self):
         from agentica.compression.manager import CompressionManager
         cm = CompressionManager(compress_token_limit=1000)
         msgs = [Message(role="user", content="hi")]
-        with patch("agentica.utils.tokens.count_tokens", return_value=2000):
+        with patch("agentica.compression.manager.count_tokens", return_value=2000):
             self.assertTrue(cm.should_compress(msgs))
 
 
@@ -405,7 +405,7 @@ class TestCompressionManagerCompress(unittest.TestCase):
             Message(role="assistant", content="recent", tool_calls=[{"id": "2"}]),
             Message(role="tool", content="y" * 100, tool_call_id="2"),
         ]
-        with patch("agentica.utils.tokens.count_tokens", return_value=10):
+        with patch("agentica.compression.manager.count_tokens", return_value=10):
             asyncio.run(cm.compress(msgs))
         # The old tool result (index 3) should have been truncated/persisted
         old_tool = msgs[3]

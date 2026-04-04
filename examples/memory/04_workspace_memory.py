@@ -75,12 +75,12 @@ async def demo_multi_user_memory():
 
     # Read memories for each user — they are isolated
     workspace.set_user("alice@example.com")
-    alice_memory = await workspace.get_memory_prompt()
+    alice_memory = await workspace.get_context_prompt()
     print(f"\n--- Alice's Memory ---")
     print(alice_memory[:300] if alice_memory else "(empty)")
 
     workspace.set_user("bob@example.com")
-    bob_memory = await workspace.get_memory_prompt()
+    bob_memory = await workspace.get_context_prompt()
     print(f"\n--- Bob's Memory ---")
     print(bob_memory[:300] if bob_memory else "(empty)")
 

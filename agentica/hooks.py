@@ -9,8 +9,10 @@ Two levels of hooks:
   on_llm_end, on_tool_start, on_tool_end, on_agent_transfer), passed to run()
 - ConversationArchiveHooks: auto-archives conversations to workspace after each run
 """
+import json
 from typing import Any, Optional, List, Dict
 
+from agentica.model.message import Message
 from agentica.utils.log import logger
 
 
@@ -231,6 +233,132 @@ class ConversationArchiveHooks(RunHooks):
             logger.debug(f"Conversation saved to {filepath}")
         except Exception as e:
             logger.warning(f"Failed to archive conversation: {e}")
+
+
+class MemoryExtractHooks(RunHooks):
+    """RunHooks that auto-extracts memories from conversations after each agent run.
+
+    After each run, checks if the LLM already called save_memory during the conversation.
+    If not, uses the LLM to extract key information worth remembering and saves it
+    to the workspace memory directory.
+
+    This mirrors Claude Code's extractMemories service: a background process that
+    fires after each conversation to capture important information the main agent
+    didn't explicitly save.
+
+    Usage::
+
+        from agentica.hooks import MemoryExtractHooks
+
+        hooks = MemoryExtractHooks()
+        response = await agent.run("Hello", config=RunConfig(hooks=hooks))
+    """
+
+    # Prompt for the memory extraction sub-call
+    _EXTRACT_PROMPT = (
+        "You are a memory extraction assistant. Review the conversation below and "
+        "extract key information worth remembering for future sessions.\n\n"
+        "Extract ONLY:\n"
+        "- User's personal info, role, or preferences\n"
+        "- Corrections or confirmed approaches\n"
+        "- Important project context not derivable from code\n"
+        "- External references (URLs, system names)\n\n"
+        "For each memory, output a JSON object with fields:\n"
+        '  {"title": "short_name", "content": "what to remember", "type": "user|feedback|project|reference"}\n\n'
+        "Output a JSON array of memories. If nothing worth remembering, output: []\n\n"
+        "Conversation:\n"
+    )
+
+    def __init__(self):
+        self._run_inputs: Dict[str, Optional[str]] = {}
+        self._tool_calls: Dict[str, List[str]] = {}  # agent_id -> list of tool names called
+
+    async def on_agent_start(self, agent: Any, **kwargs) -> None:
+        agent_id = agent.agent_id
+        self._run_inputs[agent_id] = agent.run_input if isinstance(agent.run_input, str) else None
+        self._tool_calls[agent_id] = []
+
+    async def on_tool_end(self, agent: Any, tool_name: str = "", **kwargs) -> None:
+        """Track tool calls to detect if save_memory was already used."""
+        agent_id = agent.agent_id
+        if agent_id not in self._tool_calls:
+            self._tool_calls[agent_id] = []
+        self._tool_calls[agent_id].append(tool_name)
+
+    async def on_agent_end(self, agent: Any, output: Any, **kwargs) -> None:
+        """Extract and save memories if LLM didn't use save_memory during this run."""
+        workspace = agent.workspace
+        if workspace is None:
+            return
+
+        agent_id = agent.agent_id
+        run_input = self._run_inputs.pop(agent_id, None)
+        tool_calls = self._tool_calls.pop(agent_id, [])
+
+        # If LLM already called save_memory, skip extraction (CC's hasMemoryWritesSince)
+        if "save_memory" in tool_calls:
+            logger.debug("Skipping memory extraction: save_memory was called during this run")
+            return
+
+        # Build conversation text for extraction
+        if not run_input and not output:
+            return
+
+        conversation_text = ""
+        if run_input:
+            conversation_text += f"User: {run_input}\n\n"
+        if output and isinstance(output, str):
+            conversation_text += f"Assistant: {output}\n"
+
+        # Skip very short conversations (nothing to extract)
+        if len(conversation_text) < 50:
+            return
+
+        # Use the agent's model to extract memories
+        model = agent.model
+        if model is None:
+            return
+
+        extract_messages = [
+            Message(role="user", content=self._EXTRACT_PROMPT + conversation_text),
+        ]
+
+        try:
+            response = await model.ainvoke(messages=[m.to_dict() for m in extract_messages])
+            if not response or not response.content:
+                return
+
+            # Parse JSON array from response
+            text = response.content.strip()
+            # Handle markdown code blocks
+            if text.startswith("```"):
+                text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+            memories = json.loads(text)
+            if not isinstance(memories, list) or not memories:
+                return
+
+            for mem in memories:
+                if not isinstance(mem, dict):
+                    continue
+                title = mem.get("title", "").strip()
+                content = mem.get("content", "").strip()
+                mem_type = mem.get("type", "project").strip()
+                if not title or not content:
+                    continue
+                if mem_type not in ("user", "feedback", "project", "reference"):
+                    mem_type = "project"
+
+                await workspace.write_memory_entry(
+                    title=title,
+                    content=content,
+                    memory_type=mem_type,
+                    description=title,
+                )
+                logger.debug(f"Auto-extracted memory: {title} (type: {mem_type})")
+
+        except (json.JSONDecodeError, Exception) as e:
+            logger.debug(f"Memory extraction failed (non-critical): {e}")
 
 
 class _CompositeRunHooks(RunHooks):

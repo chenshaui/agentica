@@ -37,8 +37,8 @@ def _get_provider_classes():
     except ImportError:
         pass
     try:
-        from agentica.model.ollama.chat import OllamaChat
-        providers.append(("OllamaChat", OllamaChat))
+        from agentica.model.ollama.chat import Ollama
+        providers.append(("Ollama", Ollama))
     except ImportError:
         pass
     return providers

@@ -80,7 +80,7 @@ class TestCLIImports(unittest.TestCase):
     def test_can_import_cli_module(self):
         """Test CLI module can be imported."""
         try:
-            from agentica import cli
+            import agentica.cli
             self.assertTrue(True)
         except ImportError as e:
             self.fail(f"Failed to import cli module: {e}")

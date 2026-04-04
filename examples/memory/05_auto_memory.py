@@ -5,10 +5,11 @@
 
 This example shows how Agentica handles long-term memory **automatically**:
 
-1. **Session 1** — Agent with `BuiltinMemoryTool`:
+1. **Session 1** — Agent with workspace (BuiltinMemoryTool auto-registered):
    - LLM autonomously decides what to remember (user preferences, personal info, etc.)
    - Memories are persisted as Markdown files in the Workspace
-   - No manual `agent.save_memory()` calls needed
+   - No manual `workspace.save_memory()` calls needed
+   - If LLM doesn't call save_memory, MemoryExtractHooks auto-extracts memories
 
 2. **Session 2** — A fresh Agent loads the same Workspace:
    - Long-term memories are automatically injected into the system prompt
@@ -27,18 +28,23 @@ from pathlib import Path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from agentica import Agent, OpenAIChat
+from agentica.agent.config import WorkspaceMemoryConfig
 from agentica.memory import WorkingMemory
 from agentica.workspace import Workspace
-from agentica.tools.buildin_tools import BuiltinMemoryTool
 
 
 def _create_agent(workspace: Workspace, **kwargs) -> Agent:
-    """Helper: create an Agent with BuiltinMemoryTool (LLM can auto-save memory)."""
-    memory_tool = BuiltinMemoryTool(workspace=workspace)
+    """Helper: create an Agent with workspace for auto-memory.
+
+    When workspace is set:
+    - BuiltinMemoryTool (save_memory, search_memory) is auto-registered
+    - auto_archive enables ConversationArchiveHooks + MemoryExtractHooks
+    - Workspace context + memory are auto-injected into system prompt
+    """
     return Agent(
         model=OpenAIChat(id="gpt-4o-mini"),
         workspace=workspace,
-        tools=[memory_tool],
+        long_term_memory_config=WorkspaceMemoryConfig(auto_archive=True),
         add_history_to_messages=True,
         history_window=5,
         **kwargs,
@@ -48,7 +54,7 @@ def _create_agent(workspace: Workspace, **kwargs) -> Agent:
 async def demo_auto_memory():
     """Demo 1: LLM automatically saves & loads long-term memory (core demo)"""
     print("=" * 60)
-    print("Demo 1: LLM Auto-Save Memory → New Agent Auto-Load")
+    print("Demo 1: LLM Auto-Save Memory -> New Agent Auto-Load")
     print("=" * 60)
 
     workspace_path = Path("outputs") / "auto_memory_workspace"
@@ -56,7 +62,7 @@ async def demo_auto_memory():
     if workspace_path.exists():
         shutil.rmtree(workspace_path)
 
-    # ── Session 1: Tell the agent about yourself ──
+    # -- Session 1: Tell the agent about yourself --
     print("\n--- Session 1: First conversation (LLM auto-saves memory) ---")
     ws1 = Workspace(str(workspace_path), user_id="alice")
     ws1.initialize()
@@ -83,7 +89,7 @@ async def demo_auto_memory():
 
     print(f"\nMemory files location: {workspace_path}/users/alice/")
 
-    # ── Session 2: A brand new Agent loads the same workspace ──
+    # -- Session 2: A brand new Agent loads the same workspace --
     print("\n\n--- Session 2: Fresh Agent auto-loads memory ---")
     ws2 = Workspace(str(workspace_path), user_id="alice")
     agent2 = _create_agent(ws2)
@@ -158,11 +164,11 @@ async def demo_session_summary():
         print(f"Summary: {summary.summary}")
         print(f"Topics: {summary.topics}")
     else:
-        print("(Summary not yet generated — run more turns)")
+        print("(Summary not yet generated -- run more turns)")
 
 
 async def demo_combined():
-    """Demo 4: Best practice — Workspace + BuiltinMemoryTool + Session Summary"""
+    """Demo 4: Best practice -- Workspace + Session Summary"""
     print("\n" + "=" * 60)
     print("Demo 4: Best Practice (Workspace + Auto Memory + Summary)")
     print("=" * 60)
@@ -174,16 +180,15 @@ async def demo_combined():
     workspace = Workspace(str(workspace_path), user_id="demo_user")
     workspace.initialize()
 
-    memory_tool = BuiltinMemoryTool(workspace=workspace)
     agent = Agent(
         model=OpenAIChat(id="gpt-4o-mini"),
         workspace=workspace,
-        tools=[memory_tool],
+        long_term_memory_config=WorkspaceMemoryConfig(auto_archive=True),
         working_memory=WorkingMemory.with_summary(),
         add_history_to_messages=True,
     )
 
-    print("Config: Workspace (persistent) + BuiltinMemoryTool (LLM auto-save) + SessionSummary")
+    print("Config: Workspace (persistent) + SessionSummary + auto memory")
 
     await agent.print_response(
         "I'm a senior engineer building a RAG system with LangChain and Qdrant. "
@@ -193,7 +198,8 @@ async def demo_combined():
     await agent.print_response("What are the best practices for chunking strategies?")
 
     print("\n--- Workspace memory ---")
-    print(await workspace.get_memory_prompt(days=7) or "(empty)")
+    memory = await workspace.get_relevant_memories()
+    print(memory or "(empty)")
 
     print(f"\n--- Session stats ---")
     print(f"  Messages: {len(agent.working_memory.messages)}")
@@ -204,16 +210,18 @@ async def demo_combined():
 
 async def main():
     print("""
-╔═══════════════════════════════════════════════════════════════╗
-║         Agentica: Automatic Long-Term Memory                  ║
-╠═══════════════════════════════════════════════════════════════╣
-║  BuiltinMemoryTool → LLM decides when to save memory         ║
-║  Workspace         → Persistent Markdown files (Git-friendly) ║
-║  WorkingMemory       → Session history & auto-summary           ║
-║                                                               ║
-║  Key: No manual save_memory() calls needed!                   ║
-║  The LLM autonomously saves important info as a tool call.    ║
-╚═══════════════════════════════════════════════════════════════╝
+=================================================================
+         Agentica: Automatic Long-Term Memory
+=================================================================
+  BuiltinMemoryTool -> LLM decides when to save memory
+  MemoryExtractHooks -> auto-extracts if LLM didn't save
+  Workspace          -> Persistent Markdown files (Git-friendly)
+  WorkingMemory      -> Session history & auto-summary
+
+  Key: No manual save_memory() calls needed!
+  The LLM autonomously saves important info as a tool call.
+  If it doesn't, MemoryExtractHooks catches it as a fallback.
+=================================================================
 """)
 
     await demo_auto_memory()
@@ -225,23 +233,25 @@ async def main():
     print("How It Works")
     print("=" * 60)
     print("""
-┌───────────────────────────────────────────────────────────────┐
-│  1. Agent receives BuiltinMemoryTool + system prompt          │
-│  2. LLM detects important info → calls save_memory() tool     │
-│  3. Memory persisted to workspace/users/{user}/MEMORY.md      │
-│  4. Next session: Workspace memory auto-injected into prompt  │
-│  5. Agent "remembers" without any manual code                 │
-└───────────────────────────────────────────────────────────────┘
+  1. Agent with workspace -> BuiltinMemoryTool auto-registered
+  2. LLM detects important info -> calls save_memory() tool
+  3. Memory persisted to workspace/users/{user}/memory/*.md
+  4. If LLM didn't save -> MemoryExtractHooks auto-extracts
+  5. Next session: Workspace memory auto-injected into prompt
+  6. Agent "remembers" without any manual code
 
 Memory Architecture:
   workspace/
-  ├── AGENT.md            # Agent instructions
-  ├── users/
-  │   └── {user_id}/
-  │       ├── USER.md     # User profile
-  │       ├── MEMORY.md   # Long-term memory (permanent)
-  │       └── memory/
-  │           └── {date}.md  # Daily memory (7-day TTL)
+  +-- AGENT.md            # Agent instructions
+  +-- users/
+  |   +-- {user_id}/
+  |       +-- USER.md     # User profile
+  |       +-- MEMORY.md   # Memory index (links to files)
+  |       +-- memory/
+  |       |   +-- user_alice_role.md
+  |       |   +-- project_deploy_target.md
+  |       +-- conversations/
+  |           +-- 2025-01-01.md  # Conversation archive
 """)
 
 

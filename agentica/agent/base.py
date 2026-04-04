@@ -27,6 +27,10 @@ from typing import (
     Type,
     Union,
 )
+import copy
+import os
+import weakref
+from inspect import signature
 from uuid import uuid4
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -38,11 +42,14 @@ from agentica.model.base import Model
 from agentica.run_response import RunResponse, AgentCancelledError
 from agentica.run_config import RunConfig
 from agentica.memory import WorkingMemory
+from agentica.memory.session_log import SessionLog
+from agentica.compression import CompressionManager
+from agentica.config import LANGFUSE_SECRET_KEY, LANGFUSE_PUBLIC_KEY
 from agentica.agent.config import (
     PromptConfig, ToolConfig, WorkspaceMemoryConfig, TeamConfig, SandboxConfig,
     ToolRuntimeConfig, SkillRuntimeConfig,
 )
-from agentica.hooks import AgentHooks, RunHooks, ConversationArchiveHooks
+from agentica.hooks import AgentHooks, RunHooks, ConversationArchiveHooks, MemoryExtractHooks, _CompositeRunHooks
 from agentica.runner import Runner
 
 # Import mixin classes — pure method containers, no state, no __init__
@@ -228,7 +235,6 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         # JSONL session log: auto-created when session_id is set
         self._session_log = None
         if session_id is not None:
-            from agentica.memory.session_log import SessionLog
             self._session_log = SessionLog(session_id=session_id)
 
         # Packed config (use defaults if not provided)
@@ -284,19 +290,37 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
 
         # Wire builtin tools that need agent reference
         if self.tools:
-            from agentica.tools.buildin_tools import BuiltinTodoTool, BuiltinTaskTool
+            from agentica.tools.buildin_tools import BuiltinTodoTool, BuiltinTaskTool, BuiltinMemoryTool
             for tool in self.tools:
                 if isinstance(tool, BuiltinTodoTool):
                     tool.set_agent(self)
                 elif isinstance(tool, BuiltinTaskTool):
                     tool.set_parent_agent(self)
+                elif isinstance(tool, BuiltinMemoryTool):
+                    tool.set_workspace(self.workspace)
+
+        # Auto-register BuiltinMemoryTool when workspace exists and no memory tool is present
+        if self.workspace is not None:
+            from agentica.tools.buildin_tools import BuiltinMemoryTool
+            has_memory_tool = False
+            if self.tools:
+                for tool in self.tools:
+                    if isinstance(tool, BuiltinMemoryTool):
+                        has_memory_tool = True
+                        break
+            if not has_memory_tool:
+                memory_tool = BuiltinMemoryTool()
+                memory_tool.set_workspace(self.workspace)
+                if self.tools is None:
+                    self.tools = [memory_tool]
+                else:
+                    self.tools = list(self.tools) + [memory_tool]
 
         # Load runtime config from workspace YAML
         self._load_runtime_config()
 
         # Initialize compression manager
         if self.tool_config.compress_tool_results and self.tool_config.compression_manager is None:
-            from agentica.compression import CompressionManager
             self.tool_config.compression_manager = CompressionManager(
                 model=self.model,
                 compress_tool_results=True,
@@ -305,7 +329,6 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
 
         # Tracing: check Langfuse config when enabled
         if self.tracing:
-            from agentica.config import LANGFUSE_SECRET_KEY, LANGFUSE_PUBLIC_KEY
             if not LANGFUSE_SECRET_KEY or not LANGFUSE_PUBLIC_KEY:
                 logger.warning(
                     "tracing=True but Langfuse is not configured. "
@@ -316,9 +339,11 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
                     "Install: pip install langfuse"
                 )
 
-        # Auto-archive: inject ConversationArchiveHooks when auto_archive=True
+        # Auto-archive: inject ConversationArchiveHooks + MemoryExtractHooks when auto_archive=True
         if self.workspace is not None and self.long_term_memory_config.auto_archive:
-            self._default_run_hooks = ConversationArchiveHooks()
+            archive_hooks = ConversationArchiveHooks()
+            extract_hooks = MemoryExtractHooks()
+            self._default_run_hooks = _CompositeRunHooks([archive_hooks, extract_hooks])
 
     async def get_workspace_context_prompt(self) -> Optional[str]:
         """Dynamically load workspace context for system prompt."""
@@ -554,7 +579,6 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
               iwiki-doc:
                 enabled: false
         """
-        import os
         config_name = ".agentica/runtime_config.yaml"
         config_path = None
 
@@ -611,7 +635,6 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         but resets all mutable runtime state (run_id, run_response, _running, etc.)
         and creates a fresh Runner. Safe for parallel asyncio.gather() calls.
         """
-        import copy
         clone = copy.copy(self)
         # Reset mutable runtime state
         clone.agent_id = str(uuid4())
@@ -641,7 +664,6 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
 
     def add_introduction(self, introduction: str) -> None:
         """Add an introduction message to memory."""
-        from agentica.model.message import Message
         if introduction is None:
             return
         for message in self.working_memory.messages:
@@ -650,8 +672,6 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         self.working_memory.add_message(Message(role="assistant", content=introduction))
 
     def _resolve_context(self) -> None:
-        from inspect import signature
-
         logger.debug("Resolving context")
         if self.context is not None:
             for ctx_key, ctx_value in self.context.items():
@@ -689,7 +709,6 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         self.model.tool_choice = None
 
         # Set agent reference on model (for lifecycle hooks in tool execution)
-        import weakref
         self.model._agent_ref = weakref.ref(self)
 
         # Set response_format
@@ -831,8 +850,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
                             "Injecting strategy-change message."
                         )
                         # Inject a user message to break the loop
-                        from agentica.model.message import Message as _Msg
-                        messages.append(_Msg(
+                        messages.append(Message(
                             role="user",
                             content=(
                                 f"[System notice] You have called '{tool_name}' {max_repeat} times "

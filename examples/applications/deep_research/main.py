@@ -3,19 +3,22 @@
 @author:XuMing(xuming624@qq.com)
 @description: Deep Research Agent — DeepAgent with 40+ built-in tools demo.
 
-Demonstrates DeepAgent capabilities:
-- 40+ built-in tools (file ops, web search, execute code, task, memory)
-- Context compression (micro + auto + reactive compact)
-- Workspace memory (AGENT.md, MEMORY.md, daily memory)
-- Cost tracking (per-model USD)
-- Cost budget control (max_cost_usd)
+Demonstrates DeepAgent capabilities powered by the Runner agentic loop:
+- 40+ built-in tools (file ops, web search, execute code, subagent task, todos)
+- Runner agentic loop: LLM ↔ tool-call auto-loop with multi-turn reasoning
+- 5-stage compression pipeline (tool-result budget → micro-compact →
+  rule-based → auto-compact → reactive compact)
+- Death spiral detection (stops on consecutive all-error tool turns)
+- Cost tracking + cost budget control (max_cost_usd)
+- Context overflow handling (FIFO message truncation)
+- Repeated tool-call detection (inject "change strategy" message)
+- Workspace memory (AGENT.md, MEMORY.md, daily memory, relevance recall)
 - Agentic prompt (enhanced system prompt with self-verification)
 
 Usage:
     python main.py
 """
 import asyncio
-from doctest import debug
 import sys
 import os
 
@@ -43,13 +46,13 @@ async def main():
 
     # Sample queries demonstrating different capabilities
     queries = [
-        # Query 1: Web search + analysis
+        # Query 1: Web search + analysis (triggers agentic loop: search → fetch → analyze)
         "Search the web for the latest advances in RAG (Retrieval-Augmented Generation) in 2025, "
         "summarize the top 3 techniques and their pros/cons in a structured table.",
 
-        # Query 2: Code generation + file writing
+        # Query 2: Code generation + file writing (triggers: write_file → execute → verify)
         "Write a Python script that implements a simple in-memory vector search using cosine similarity, "
-        "save it to tmp/vector_search.py, then explain how it works.",
+        "save it to tmp/vector_search.py, then run it to verify it works.",
     ]
 
     for i, query in enumerate(queries, 1):
@@ -57,11 +60,11 @@ async def main():
         print(f"Query {i}: {query}")
         print(f"{'=' * 60}\n")
 
-        # Use cost budget to prevent runaway spending
+        # Use cost budget to prevent runaway spending (Runner checks per loop iteration)
         response = await agent.run(query, config=RunConfig(max_cost_usd=1.0))
         print(f"\nResponse:\n{response.content}")
 
-        # Show cost summary
+        # Show cost summary (CostTracker is always active in Runner)
         if response.cost_tracker and response.cost_tracker.total_cost_usd > 0:
             print(f"\n--- Cost: ${response.cost_tracker.total_cost_usd:.4f} "
                   f"({response.cost_tracker.total_input_tokens} in + "

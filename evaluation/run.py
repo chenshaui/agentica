@@ -233,13 +233,7 @@ async def evaluate_instance(
             messages = [msg.to_dict() for msg in agent.working_memory.messages]
         
         # Get tool call history
-        tool_calls = []
-        tool_calls_str = agent.get_tool_call_history(100)
-        if tool_calls_str:
-            try:
-                tool_calls = json.loads(tool_calls_str)
-            except json.JSONDecodeError:
-                tool_calls = [{"raw": tool_calls_str}]
+        tool_calls = agent.working_memory.get_tool_calls(num_calls=100)
         logger.info(f"tool_calls: {tool_calls}")
         return {
             'question': question,

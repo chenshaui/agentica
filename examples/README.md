@@ -142,8 +142,7 @@ asyncio.run(Agent().run('一句话介绍北京').then(print))
 |---|------|------|----------|
 | 01 | [data_pipeline.py](workflow/01_data_pipeline.py) | ETL 数据管道（提取 -> 验证 -> 分析） | `Workflow`, 混合 LLM + Python 步骤 |
 | 02 | [investment.py](workflow/02_investment.py) | 投资研究工作流 | 多 Agent 协作工作流 |
-| 03 | [news_report.py](workflow/03_news_report.py) | 新闻报道生成 | 搜索 -> 分析 -> 写作 |
-| 04 | [code_review.py](workflow/04_code_review.py) | 代码审查工作流 | 多步骤审查 |
+| 03 | [code_review.py](workflow/03_code_review.py) | 代码审查工作流 | 多步骤审查 |
 
 ### 9. MCP 协议 (`mcp/`)
 

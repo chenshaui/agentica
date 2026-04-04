@@ -52,7 +52,7 @@ No `a`-prefixed methods (`arun`, `aresponse`). Sync tools use `loop.run_in_execu
 | `runner.py` | `Runner` - independent execution engine, delegated from Agent |
 | `subagent.py` | Subagent system for spawning isolated ephemeral agent tasks |
 | `workspace.py` | `Workspace` - file-based storage (AGENT.md, PERSONA.md, MEMORY.md) |
-| `memory/` | `WorkingMemory` (`working.py`), `MemorySummarizer`, `WorkspaceMemorySearch` |
+| `memory/` | `WorkingMemory` (`working.py`), `MemorySummarizer`, `SessionLog` |
 | `guardrails/` | Three-layer: `core.py` (base), `agent.py` (input/output), `tool.py` (tool-level) |
 | `workflow.py` | Deterministic multi-agent pipeline |
 | `search/` | Search enhancement: `orchestrator.py`, `query_decomposer.py`, `evidence_store.py`, `answer_verifier.py` |

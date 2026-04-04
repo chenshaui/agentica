@@ -2008,6 +2008,127 @@ class BuiltinTaskTool(Tool):
         return ""
 
 
+class BuiltinMemoryTool(Tool):
+    """
+    Built-in memory tool for LLM to autonomously save and search long-term memories.
+
+    When an Agent has a Workspace, this tool lets the LLM decide what information
+    is worth remembering across sessions. Memories are stored as individual Markdown
+    files under the workspace's memory directory and indexed in MEMORY.md.
+
+    This mirrors Claude Code's design where the LLM uses Write/Edit tools to persist
+    important information, but provides a dedicated interface for clarity.
+    """
+
+    MEMORY_SYSTEM_PROMPT = dedent("""\
+    ## Long-term Memory
+
+    You have access to `save_memory` and `search_memory` tools for persistent memory across sessions.
+
+    ### When to save memory
+    - User shares personal info, preferences, role, or constraints
+    - User corrects your approach OR confirms a non-obvious approach worked
+    - You discover important project context not derivable from code alone
+    - User explicitly asks you to remember something
+
+    ### How to save
+    Call `save_memory` with:
+    - `title`: short, searchable name (e.g. "user_role", "prefer_pytest")
+    - `content`: what to remember and how to apply it
+    - `memory_type`: one of "user", "feedback", "project", "reference"
+
+    ### Memory types
+    - **user**: role, background, preferences (e.g. "Senior Python developer")
+    - **feedback**: corrections, confirmed approaches (e.g. "User prefers pytest over unittest")
+    - **project**: non-code project context (e.g. "Deploy target is AWS Lambda")
+    - **reference**: external system pointers (e.g. "API docs at https://...")
+
+    ### When NOT to save
+    - Information already in code or config files (derivable from codebase)
+    - Transient conversation details (e.g. "user asked about X")
+    - Duplicate of existing memory (search first)""")
+
+    def __init__(self):
+        super().__init__(name="builtin_memory_tool")
+        self._workspace = None
+        self.register(self.save_memory, is_destructive=True)
+        self.register(self.search_memory, concurrency_safe=True, is_read_only=True)
+
+    def set_workspace(self, workspace) -> None:
+        """Set the workspace reference for memory persistence."""
+        self._workspace = workspace
+
+    def get_system_prompt(self) -> Optional[str]:
+        return self.MEMORY_SYSTEM_PROMPT
+
+    async def save_memory(
+        self,
+        title: str,
+        content: str,
+        memory_type: str = "project",
+    ) -> str:
+        """Save important information to long-term memory for future sessions.
+
+        Use this tool when you detect information worth remembering across sessions:
+        user preferences, corrections, project context, or external references.
+
+        Before saving, consider: is this already in an existing memory? Use search_memory to check.
+
+        Args:
+            title: Short, searchable name for this memory (e.g. "user_role", "prefer_pytest", "deploy_target")
+            content: What to remember and how to apply it. Be specific and actionable.
+            memory_type: Category — "user" (preferences/role), "feedback" (corrections),
+                        "project" (non-code context), or "reference" (external pointers)
+
+        Returns:
+            Confirmation message with the saved memory file path
+        """
+        if self._workspace is None:
+            return "Error: No workspace configured. Memory cannot be saved."
+
+        valid_types = {"user", "feedback", "project", "reference"}
+        if memory_type not in valid_types:
+            return f"Error: Invalid memory_type '{memory_type}'. Must be one of: {valid_types}"
+
+        if not title.strip():
+            return "Error: title cannot be empty."
+        if not content.strip():
+            return "Error: content cannot be empty."
+
+        filepath = await self._workspace.write_memory_entry(
+            title=title.strip(),
+            content=content.strip(),
+            memory_type=memory_type,
+            description=title.strip(),
+        )
+
+        logger.debug(f"Memory saved: {title} -> {filepath}")
+        return f"Memory saved: '{title}' (type: {memory_type}) -> {filepath}"
+
+    def search_memory(self, query: str, limit: int = 5) -> str:
+        """Search existing long-term memories by keyword.
+
+        Use this before saving a new memory to avoid duplicates,
+        or to recall previously saved information.
+
+        Args:
+            query: Search keywords (e.g. "user preferences", "deploy", "testing framework")
+            limit: Maximum number of results to return (default: 5)
+
+        Returns:
+            JSON formatted search results with matching memories
+        """
+        if self._workspace is None:
+            return "Error: No workspace configured."
+
+        results = self._workspace.search_memory(query=query, limit=limit)
+
+        if not results:
+            return f"No memories found matching '{query}'"
+
+        return json.dumps(results, ensure_ascii=False, indent=2)
+
+
 def get_builtin_tools(
         work_dir: Optional[str] = None,
         include_file_tools: bool = True,
@@ -2017,6 +2138,7 @@ def get_builtin_tools(
         include_todos: bool = True,
         include_task: bool = True,
         include_skills: bool = False,
+        include_memory: bool = False,
         task_model: Optional["Model"] = None,
         task_tools: Optional[List[Any]] = None,
         custom_skill_dirs: Optional[List[str]] = None,
@@ -2035,10 +2157,11 @@ def get_builtin_tools(
         include_todos: Whether to include task management tools
         include_task: Whether to include subagent task tool
         include_skills: Whether to include skill tool for executing skills (default: False)
+        include_memory: Whether to include memory tool for LLM to save/search memory (default: False)
         task_model: Model for subagent tasks (optional, will use parent agent's model if not set)
         task_tools: Tools for subagent tasks (optional)
         custom_skill_dirs: Custom skill directories to load (optional)
-        workspace: Unused, kept for backward compatibility
+        workspace: Workspace instance for memory tool (optional)
         sandbox_config: SandboxConfig instance for security isolation (optional)
 
     Returns:
@@ -2067,6 +2190,11 @@ def get_builtin_tools(
     if include_skills:
         from agentica.tools.skill_tool import SkillTool
         tools.append(SkillTool(custom_skill_dirs=custom_skill_dirs))
+
+    if include_memory and workspace is not None:
+        memory_tool = BuiltinMemoryTool()
+        memory_tool.set_workspace(workspace)
+        tools.append(memory_tool)
 
     return tools
 if __name__ == '__main__':

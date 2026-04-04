@@ -90,7 +90,7 @@ ZhipuAI = ZhipuAIChat
 from agentica.memory import (
     AgentRun, SessionSummary, MemorySummarizer, WorkingMemory,
     MemoryType, MemoryEntry,
-    WorkflowRun, WorkflowMemory, MemoryChunk, WorkspaceMemorySearch,
+    WorkflowRun, WorkflowMemory,
 )
 
 # ── Database (base types only) ──
@@ -117,7 +117,7 @@ from agentica.agent.deep import DeepAgent
 from agentica.agent.config import PromptConfig, ToolConfig, WorkspaceMemoryConfig, TeamConfig, SandboxConfig, ToolRuntimeConfig, SkillRuntimeConfig
 from agentica.run_config import RunConfig
 from agentica.workflow import Workflow, WorkflowSession
-from agentica.hooks import AgentHooks, RunHooks, ConversationArchiveHooks
+from agentica.hooks import AgentHooks, RunHooks, ConversationArchiveHooks, MemoryExtractHooks
 
 # ── Workspace ──
 from agentica.workspace import Workspace, WorkspaceConfig
@@ -140,7 +140,7 @@ _LAZY_IMPORTS = {
     "LiteLLM": "agentica.model.litellm.chat",
     "KimiChat": "agentica.model.kimi.chat",
     "Claude": "agentica.model.anthropic.claude",
-    "OllamaChat": "agentica.model.ollama.chat",
+    "Ollama": "agentica.model.ollama.chat",
 
     # knowledge
     "Knowledge": "agentica.knowledge.base",
@@ -234,6 +234,7 @@ _LAZY_IMPORTS = {
     "BuiltinFetchUrlTool": "agentica.tools.buildin_tools",
     "BuiltinTodoTool": "agentica.tools.buildin_tools",
     "BuiltinTaskTool": "agentica.tools.buildin_tools",
+    "BuiltinMemoryTool": "agentica.tools.buildin_tools",
     "get_builtin_tools": "agentica.tools.buildin_tools",
 
     # subagent system
@@ -309,7 +310,7 @@ if TYPE_CHECKING:
     from agentica.model.litellm.chat import LiteLLMChat as LiteLLM  # noqa: F401
     from agentica.model.kimi.chat import KimiChat  # noqa: F401
     from agentica.model.anthropic.claude import Claude  # noqa: F401
-    from agentica.model.ollama.chat import OllamaChat  # noqa: F401
+    from agentica.model.ollama.chat import Ollama  # noqa: F401
     from agentica.knowledge.base import Knowledge  # noqa: F401
     from agentica.knowledge.llamaindex_knowledge import LlamaIndexKnowledge  # noqa: F401
     from agentica.knowledge.langchain_knowledge import LangChainKnowledge  # noqa: F401
@@ -374,7 +375,7 @@ __all__ = [
     # memory
     "AgentRun", "SessionSummary", "MemorySummarizer", "WorkingMemory",
     "MemoryType", "MemoryEntry",
-    "WorkflowRun", "WorkflowMemory", "MemoryChunk", "WorkspaceMemorySearch",
+    "WorkflowRun", "WorkflowMemory",
     # database
     "BaseDb", "SessionRow", "MemoryRow", "MetricsRow",
     # run response
@@ -392,7 +393,8 @@ __all__ = [
     "Agent", "AgentCancelledError",
     "PromptConfig", "ToolConfig", "WorkspaceMemoryConfig", "TeamConfig", "SandboxConfig",
     "ToolRuntimeConfig", "SkillRuntimeConfig",
-    "RunConfig", "Workflow", "WorkflowSession", "AgentHooks", "RunHooks", "ConversationArchiveHooks",
+    "RunConfig", "Workflow", "WorkflowSession", "AgentHooks", "RunHooks",
+    "ConversationArchiveHooks", "MemoryExtractHooks",
     # workspace
     "Workspace", "WorkspaceConfig",
     # lazy imports

@@ -55,6 +55,7 @@ from agentica.run_response import RunEvent, RunResponse
 from agentica.run_config import RunConfig
 from agentica.memory import AgentRun
 from agentica.utils.string import parse_structured_output
+from agentica.utils.tokens import count_tokens
 from agentica.utils.langfuse_integration import langfuse_trace_context
 
 if TYPE_CHECKING:
@@ -673,18 +674,16 @@ class Runner:
                         break
 
                 # --- Context window usage warning ---
-                _used_tokens = agent.model.metrics.get('total_tokens', [])
                 _window = agent.model.context_window
-                if _window and _used_tokens:
-                    _total = sum(_used_tokens) if isinstance(_used_tokens, list) else _used_tokens
-                    _pct = _total / _window
+                if _window:
+                    _ctx_tokens = count_tokens(messages_for_model, None, agent.model.id, None)
+                    _pct = _ctx_tokens / _window
                     agent.run_response.metrics = agent.run_response.metrics or {}
                     agent.run_response.metrics['context_window_pct'] = round(_pct, 3)
                     if _pct >= 0.8:
                         logger.warning(
-                            f"Agent '{agent.identifier}': context window usage is "
-                            f"{_pct:.0%} ({_total}/{_window} tokens). "
-                            "Consider summarizing or truncating conversation history."
+                            f"Agent '{agent.identifier}': context usage "
+                            f"{_ctx_tokens:,}/{_window:,} tokens ({_pct:.0%})"
                         )
                 if agent.response_model is not None and agent.structured_outputs and model_response.parsed is not None:
                     agent.run_response.content = model_response.parsed

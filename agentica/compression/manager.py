@@ -11,13 +11,19 @@ Supports two compression strategies (applied in order):
    - Use a lightweight LLM to intelligently summarize tool results
 """
 import asyncio
+import json
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from textwrap import dedent
 from typing import Any, Dict, List, Optional, TYPE_CHECKING, Type, Union
 
 from pydantic import BaseModel
 
 from agentica.utils.log import logger
+from agentica.utils.tokens import count_tokens
+from agentica.compression.tool_result_storage import maybe_persist_result
+from agentica.model.message import Message
 
 if TYPE_CHECKING:
     from agentica.workspace import Workspace
@@ -134,11 +140,6 @@ class CompressionManager:
         if context_window:
             self.compress_token_limit = int(context_window * 0.8)
             self.compress_target_token_limit = int(context_window * 0.5)
-            logger.debug(
-                f"Compression: model context_window={context_window:,} tokens, "
-                f"will compress when history exceeds {self.compress_token_limit:,} tokens (80%), "
-                f"target after compression: {self.compress_target_token_limit:,} tokens (50%)"
-            )
 
     def should_compress(
         self,
@@ -156,18 +157,16 @@ class CompressionManager:
 
         # Token-based threshold only
         if self.compress_token_limit is not None:
-            try:
-                from agentica.utils.tokens import count_tokens
-                model_id = model.id if model else 'gpt-4o'
-                tokens = count_tokens(messages, tools, model_id, response_format)
-                if tokens >= self.compress_token_limit:
-                    logger.debug(
-                        f"Compression triggered: history is {tokens:,} tokens, "
-                        f"exceeds threshold {self.compress_token_limit:,} tokens"
-                    )
-                    return True
-            except Exception as e:
-                logger.warning(f"Error counting tokens: {e}")
+            model_id = model.id if model else 'gpt-4o'
+            tokens = count_tokens(messages, tools, model_id, response_format)
+            if tokens >= self.compress_token_limit:
+                _window = model.context_window if model is not None else None
+                _window_str = f"{_window:,}" if _window else "?"
+                logger.debug(
+                    f"Compression triggered: {tokens:,}/{_window_str} tokens "
+                    f"(threshold={self.compress_token_limit:,})"
+                )
+                return True
 
         return False
 
@@ -189,8 +188,6 @@ class CompressionManager:
         Returns:
             Number of messages truncated/persisted.
         """
-        from agentica.compression.tool_result_storage import maybe_persist_result
-
         # Identify tool result indices (oldest first)
         tool_indices = [i for i, m in enumerate(messages) if m.role == "tool" and not m.compressed_content]
         if not tool_indices:
@@ -362,7 +359,6 @@ class CompressionManager:
         compression_prompt = self.compress_tool_call_instructions or DEFAULT_COMPRESSION_PROMPT
 
         try:
-            from agentica.model.message import Message
             response = await self.model.response(
                 messages=[
                     Message(role="system", content=compression_prompt),
@@ -439,6 +435,10 @@ class CompressionManager:
         if not self.compress_tool_results:
             return
 
+        # Count tokens before compression
+        _model_id = model.id if model else 'gpt-4o'
+        _before_tokens = count_tokens(messages, tools, _model_id, response_format)
+
         # Stage 1a: Truncate oldest tool results
         truncated = self._truncate_oldest_tool_results(messages)
         if truncated:
@@ -457,6 +457,16 @@ class CompressionManager:
             if llm_count:
                 logger.debug(f"Stage 2: LLM compressed {llm_count} tool results")
 
+        # Log compression result
+        _after_tokens = count_tokens(messages, tools, _model_id, response_format)
+        _window = model.context_window if model is not None else None
+        if _after_tokens < _before_tokens:
+            _window_str = f"{_window:,}" if _window else "?"
+            logger.debug(
+                f"Compression: {_before_tokens:,} → {_after_tokens:,} tokens "
+                f"(context_window={_window_str})"
+            )
+
     def _still_over_limit(
         self,
         messages: List["Message"],
@@ -468,17 +478,12 @@ class CompressionManager:
         target = self.compress_target_token_limit or self.compress_token_limit
         if target is None:
             return False
-        try:
-            from agentica.utils.tokens import count_tokens
-            model_id = model.id if model else 'gpt-4o'
-            tokens = count_tokens(messages, tools, model_id, response_format)
-            over = tokens >= target
-            if over:
-                logger.debug(f"Still over target: {tokens} >= {target}")
-            return over
-        except Exception as e:
-            logger.warning(f"Error counting tokens in limit check: {e}")
-            return False
+        model_id = model.id if model else 'gpt-4o'
+        tokens = count_tokens(messages, tools, model_id, response_format)
+        over = tokens >= target
+        if over:
+            logger.debug(f"Still over target: {tokens} >= {target}")
+        return over
 
     # -------------------------------------------------------------------------
     # Layer 2: auto_compact — LLM-summarise when context approaches the limit
@@ -490,39 +495,31 @@ class CompressionManager:
         if context_window is None:
             return False
         threshold = context_window - self._auto_compact_buffer_tokens
-        try:
-            from agentica.utils.tokens import count_tokens
-            model_id = model.id if model else 'gpt-4o'
-            tokens = count_tokens(messages, None, model_id, None)
-            over = tokens >= threshold
-            if over:
-                logger.debug(
-                    f"Auto-compact threshold hit: {tokens:,} tokens "
-                    f">= {threshold:,} (window={context_window:,})"
-                )
-            return over
-        except Exception as _e:
-            logger.debug(f"Token count error in _should_auto_compact: {_e}")
-            return False
+        model_id = model.id if model else 'gpt-4o'
+        tokens = count_tokens(messages, None, model_id, None)
+        over = tokens >= threshold
+        if over:
+            logger.debug(
+                f"Auto-compact threshold hit: {tokens:,} tokens "
+                f">= {threshold:,} (window={context_window:,})"
+            )
+        return over
 
     def _save_transcript(self, messages: List["Message"]) -> None:
         """Persist current conversation to .transcripts/ before compaction."""
-        import json as _json
-        import time as _time
-        from pathlib import Path as _Path
-        _dir = _Path(".transcripts")
-        _dir.mkdir(exist_ok=True)
-        _path = _dir / f"transcript_{int(_time.time())}.jsonl"
+        transcript_dir = Path(".transcripts")
+        transcript_dir.mkdir(exist_ok=True)
+        transcript_path = transcript_dir / f"transcript_{int(time.time())}.jsonl"
         try:
-            with open(_path, "w", encoding="utf-8") as _fh:
-                for _m in messages:
-                    _fh.write(_json.dumps(
-                        {"role": _m.role, "content": str(_m.content or "")},
+            with open(transcript_path, "w", encoding="utf-8") as fh:
+                for m in messages:
+                    fh.write(json.dumps(
+                        {"role": m.role, "content": str(m.content or "")},
                         ensure_ascii=False,
                     ) + "\n")
-            logger.debug(f"Transcript saved: {_path}")
-        except Exception as _e:
-            logger.warning(f"Failed to save transcript: {_e}")
+            logger.debug(f"Transcript saved: {transcript_path}")
+        except Exception as e:
+            logger.warning(f"Failed to save transcript: {e}")
 
     async def _summarise_conversation(
         self,
@@ -530,35 +527,33 @@ class CompressionManager:
         model: Optional[Any] = None,
     ) -> Optional[str]:
         """Use an LLM to summarise the conversation for continuity."""
-        import json as _json
-        _model = model or self.model
-        if _model is None:
+        active_model = model or self.model
+        if active_model is None:
             return None
         try:
-            from agentica.model.message import Message as _Msg
-            _text = _json.dumps(
+            text = json.dumps(
                 [{"role": m.role, "content": str(m.content or "")[:2000]} for m in messages],
                 ensure_ascii=False,
             )[:80_000]
-            _resp = await _model.invoke([
-                _Msg(
+            resp = await active_model.invoke([
+                Message(
                     role="user",
                     content=(
                         "Summarise this agent conversation for continuity.\n"
                         "Include: main task, key findings, completed steps, "
                         "pending work, and any important facts discovered.\n\n"
-                        + _text
+                        + text
                     ),
                 )
             ])
             # Extract text from common response shapes
-            if hasattr(_resp, "choices"):
-                return _resp.choices[0].message.content
-            if hasattr(_resp, "content"):
-                return _resp.content
-            return str(_resp)
-        except Exception as _e:
-            logger.error(f"LLM summarisation failed: {_e}")
+            if hasattr(resp, "choices"):
+                return resp.choices[0].message.content
+            if hasattr(resp, "content"):
+                return resp.content
+            return str(resp)
+        except Exception as e:
+            logger.error(f"LLM summarisation failed: {e}")
             return None
 
     async def auto_compact(
@@ -627,11 +622,10 @@ class CompressionManager:
 
         # Replace message list in-place
         messages.clear()
-        from agentica.model.message import Message as _Msg
-        messages.append(_Msg(role="user",
-                             content=f"[Context compressed]\n\n{summary}"))
-        messages.append(_Msg(role="assistant",
-                             content="Understood. I have the conversation context. Continuing."))
+        messages.append(Message(role="user",
+                                content=f"[Context compressed]\n\n{summary}"))
+        messages.append(Message(role="assistant",
+                                content="Understood. I have the conversation context. Continuing."))
 
         self._consecutive_auto_compact_failures = 0
         self.stats["auto_compact_count"] = self.stats.get("auto_compact_count", 0) + 1
