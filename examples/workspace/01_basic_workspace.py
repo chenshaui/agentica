@@ -7,7 +7,7 @@ This example shows how to:
 1. Create and initialize a workspace
 2. Agent auto-registers BuiltinMemoryTool when workspace is set
 3. LLM autonomously saves important info via save_memory tool call
-4. auto_archive enables both conversation archiving AND memory extraction
+4. auto_archive (zero cost) + auto_extract_memory (LLM cost) are separate configs
 5. New agent from same workspace auto-loads context + memory
 """
 import os
@@ -56,21 +56,23 @@ You are a helpful AI assistant specialized in Python programming.
 3. Use Chinese for explanations
 """)
 
-    # Create agent with workspace and auto_archive=True
+    # Create agent with workspace
     #
     # What happens automatically:
     # 1. BuiltinMemoryTool (save_memory, search_memory) is auto-registered
-    #    because workspace is set — LLM can save important info as tool calls
-    # 2. auto_archive=True enables:
-    #    - ConversationArchiveHooks: saves conversation to conversations/ dir
-    #    - MemoryExtractHooks: if LLM didn't call save_memory, auto-extracts
-    #      memories from the conversation using a sub-LLM call
-    # 3. Workspace context (AGENT.md, USER.md) is injected into system prompt
-    # 4. Workspace memories are auto-loaded into system prompt on next run
+    #    because workspace is set -- LLM can save important info as tool calls
+    # 2. auto_archive=True: saves raw conversation to conversations/ (zero cost)
+    # 3. auto_extract_memory=True: if LLM didn't call save_memory, uses a
+    #    sub-LLM call to extract memories (costs one extra LLM request)
+    # 4. Workspace context (AGENT.md, USER.md) is injected into system prompt
+    # 5. Workspace memories are auto-loaded into system prompt on next run
     agent = Agent(
         model=ZhipuAIChat(model="glm-4-flash"),
         workspace=workspace,
-        long_term_memory_config=WorkspaceMemoryConfig(auto_archive=True),
+        long_term_memory_config=WorkspaceMemoryConfig(
+            auto_archive=True,
+            auto_extract_memory=True,
+        ),
     )
 
     # Run 1: Tell the agent something memorable
@@ -97,7 +99,10 @@ You are a helpful AI assistant specialized in Python programming.
     agent2 = Agent.from_workspace(
         workspace_path=str(workspace_path),
         model=ZhipuAIChat(model="glm-4-flash"),
-        long_term_memory_config=WorkspaceMemoryConfig(auto_archive=True),
+        long_term_memory_config=WorkspaceMemoryConfig(
+            auto_archive=True,
+            auto_extract_memory=True,
+        ),
     )
     response2 = await agent2.run("What do you know about me? What are my preferences?")
     print(response2.content)

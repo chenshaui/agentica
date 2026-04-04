@@ -277,44 +277,89 @@ def _cmd_model(cmd_args="", agent_config=None, extra_tools=None,
         console.print("Examples: /model openai/gpt-5, /model deepseek/deepseek-chat", style="dim")
 
 
-def _cmd_compact(current_agent=None, **kwargs):
-    if hasattr(current_agent, 'working_memory') and current_agent.working_memory:
-        messages = current_agent.working_memory.messages if hasattr(current_agent.working_memory, 'messages') else []
-        msg_count = len(messages)
-        
-        if msg_count > 0:
-            console.print(f"[dim]Compacting {msg_count} messages...[/dim]")
-            
-            summary_parts = []
-            for msg in messages[-10:]:
-                role = msg.role
-                content = msg.content or ''
-                if isinstance(content, str) and content:
-                    preview = content[:200] + "..." if len(content) > 200 else content
-                    summary_parts.append(f"- {role}: {preview}")
-                elif isinstance(content, list) and content:
-                    preview = str(content)[:200] + "..."
-                    summary_parts.append(f"- {role}: {preview}")
-            
-            if summary_parts:
-                summary = "Previous conversation summary:\n" + "\n".join(summary_parts)
-                
-                from agentica.model.message import Message
-                current_agent.working_memory.messages = []
-                summary_msg = Message(
-                    role="system",
-                    content=f"[Context Summary]\n{summary}\n\n[Note: Previous detailed messages were compacted to save context space.]"
-                )
-                current_agent.working_memory.messages.append(summary_msg)
-                console.print(f"[green]Context compacted: {msg_count} messages → 1 summary.[/green]")
-            else:
-                current_agent.working_memory.messages = []
-                console.print(f"[green]Context cleared ({msg_count} messages).[/green]")
-        else:
-            console.print("[yellow]No messages to compact.[/yellow]")
-        console.print("[dim]Workspace memory preserved.[/dim]")
-    else:
+def _cmd_compact(current_agent=None, cmd_args="", **kwargs):
+    if not (hasattr(current_agent, 'working_memory') and current_agent.working_memory):
         console.print("[yellow]No conversation history to compact.[/yellow]")
+        return
+
+    messages = current_agent.working_memory.messages if hasattr(current_agent.working_memory, 'messages') else []
+    msg_count = len(messages)
+    if msg_count == 0:
+        console.print("[yellow]No messages to compact.[/yellow]")
+        return
+
+    custom_instructions = cmd_args.strip() if cmd_args else None
+    cm = current_agent.tool_config.compression_manager if hasattr(current_agent, 'tool_config') else None
+
+    if cm is not None:
+        # Use CompressionManager.auto_compact with LLM summary
+        console.print(f"[dim]Compacting {msg_count} messages with LLM summary...[/dim]")
+        model = current_agent.model if hasattr(current_agent, 'model') else None
+        wm = current_agent.working_memory
+
+        import asyncio
+        compacted = asyncio.run(cm.auto_compact(
+            messages,
+            model=model,
+            force=True,
+            working_memory=wm,
+            custom_instructions=custom_instructions,
+        ))
+        if compacted:
+            console.print(f"[green]Context compacted: {msg_count} messages -> {len(messages)} summary.[/green]")
+        else:
+            console.print("[yellow]Compaction failed (LLM summary unavailable). Falling back to rule-based.[/yellow]")
+            _rule_based_compact(current_agent, messages, msg_count)
+    else:
+        # Fallback: rule-based compact (no LLM)
+        console.print(f"[dim]Compacting {msg_count} messages (rule-based)...[/dim]")
+        _rule_based_compact(current_agent, messages, msg_count)
+
+    console.print("[dim]Workspace memory preserved.[/dim]")
+
+
+def _rule_based_compact(current_agent, messages, msg_count):
+    """Fallback compact: keep recent messages, summarise old ones by truncation."""
+    from agentica.model.message import Message
+
+    # Keep last 6 messages as-is, summarise everything before
+    keep_recent = 6
+    if msg_count <= keep_recent:
+        console.print("[yellow]Too few messages to compact.[/yellow]")
+        return
+
+    old_messages = messages[:-keep_recent]
+    recent_messages = messages[-keep_recent:]
+
+    summary_parts = []
+    for msg in old_messages:
+        role = msg.role
+        content = msg.content or ''
+        if isinstance(content, str) and content:
+            preview = content[:300] + "..." if len(content) > 300 else content
+            summary_parts.append(f"[{role}] {preview}")
+        elif isinstance(content, list) and content:
+            preview = str(content)[:300] + "..."
+            summary_parts.append(f"[{role}] {preview}")
+
+    if summary_parts:
+        summary = "Previous conversation summary:\n" + "\n".join(summary_parts)
+        summary_msg = Message(
+            role="user",
+            content=f"[Context compressed]\n\n{summary}"
+        )
+        confirm_msg = Message(
+            role="assistant",
+            content="Understood. I have the conversation context. Continuing."
+        )
+        messages.clear()
+        messages.append(summary_msg)
+        messages.append(confirm_msg)
+        messages.extend(recent_messages)
+        console.print(f"[green]Context compacted: {msg_count} messages -> {len(messages)} messages.[/green]")
+    else:
+        messages.clear()
+        console.print(f"[green]Context cleared ({msg_count} messages).[/green]")
 
 
 def _cmd_debug(agent_config=None, current_agent=None, shell_mode=False,
@@ -372,7 +417,7 @@ COMMAND_REGISTRY = {
     "/clear":         (_cmd_clear,         "Clear screen and reset"),
     "/reset":         (_cmd_clear,         "Clear screen and reset"),
     "/model":         (_cmd_model,         "View or switch model"),
-    "/compact":       (_cmd_compact,       "Compress context"),
+    "/compact":       (_cmd_compact,       "Compact context with summary. Usage: /compact [custom instructions]"),
     "/debug":         (_cmd_debug,         "Show debug info"),
     "/reload-skills": (_cmd_reload_skills, "Reload skills from disk"),
 }

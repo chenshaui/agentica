@@ -11,10 +11,10 @@ This module provides prompts for guiding tool usage:
 """
 
 from typing import Optional, List, Dict
-from agentica.prompts.base.utils import load_prompt as _load_prompt
+from agentica.prompts.base.utils import load_prompt
 
 # Load prompt from MD file (strategy + context management, no tool table)
-TOOLS_PRIORITY_PROMPT = _load_prompt("tools.md")
+TOOLS_PRIORITY_PROMPT = load_prompt("tools.md")
 
 
 def get_tools_prompt(

@@ -239,11 +239,17 @@ def create_agent(agent_config: dict, extra_tools: Optional[List] = None,
     # Build extra tools list
     work_dir = agent_config.get("work_dir")
 
+    # CLI is interactive — add user_input tool for human-in-the-loop
+    from agentica.tools.user_input_tool import UserInputTool
+    cli_tools = [UserInputTool()]
+    if extra_tools:
+        cli_tools.extend(extra_tools)
+
     # Use DeepAgent for full-featured CLI experience
     from agentica.agent.deep import DeepAgent
     new_agent = DeepAgent(
         model=model,
-        tools=extra_tools,  # DeepAgent auto-includes builtin tools, extra_tools are merged
+        tools=cli_tools,  # DeepAgent auto-includes builtin tools, cli_tools are merged
         work_dir=work_dir,
         workspace=workspace,
         session_id=agent_config.get("session_id") or _generate_session_id(),

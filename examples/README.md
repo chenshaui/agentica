@@ -118,9 +118,8 @@ asyncio.run(Agent().run('一句话介绍北京').then(print))
 
 | # | 示例 | 描述 | 关键概念 |
 |---|------|------|----------|
-| 01 | [basic_workspace.py](workspace/01_basic_workspace.py) | 工作区基础 | `Workspace`, `AGENT.md`, `MEMORY.md` |
+| 01 | [basic_workspace.py](workspace/01_basic_workspace.py) | 工作区基础、记忆提取 | `Workspace`, `AGENT.md`, `MEMORY.md` |
 | 02 | [skills_usage.py](workspace/02_skills_usage.py) | 技能加载与使用 | `SkillTool`, `SKILL.md` |
-| 03 | [memory_search.py](workspace/03_memory_search.py) | 记忆搜索 | `search_memory()` |
 
 ### 7. RAG 检索增强 (`rag/`)
 

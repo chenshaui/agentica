@@ -109,7 +109,11 @@ class DeepAgent(Agent):
         # Builtin tools + user-provided tools
         from agentica.tools.buildin_tools import get_builtin_tools
         all_tools: List[Union[ModelTool, Tool, Callable, Dict, Function]] = list(
-            get_builtin_tools(work_dir=work_dir, workspace=workspace)
+            get_builtin_tools(
+                work_dir=work_dir,
+                workspace=workspace,
+                include_skills=True,
+            )
         )
         if tools:
             all_tools.extend(tools)

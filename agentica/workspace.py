@@ -80,16 +80,16 @@ class Workspace:
     Default user mode:
         >>> workspace = Workspace("~/.agentica/workspace")  # user_id='default'
         >>> workspace.initialize()
-        >>> workspace.save_memory("User prefers concise responses")  # Stored in users/default/
+        >>> await workspace.write_memory_entry("pref", "User prefers concise responses", "user")
 
     Custom user mode:
         >>> workspace = Workspace("~/.agentica/workspace", user_id="alice@example.com")
         >>> workspace.initialize()
-        >>> workspace.save_memory("Alice likes Python")  # Stored in users/alice@example.com/
+        >>> await workspace.write_memory_entry("lang", "Alice likes Python", "user")
 
     Switch user:
         >>> workspace.set_user("bob@example.com")
-        >>> workspace.save_memory("Bob prefers detailed explanations")
+        >>> await workspace.write_memory_entry("style", "Bob prefers detailed explanations", "user")
     """
 
     # Global config files (shared across all users)
@@ -712,40 +712,49 @@ You are a helpful AI assistant.
                 })
         return entries
 
+    @staticmethod
+    def _compute_relevance_score(query_lower: str, text_lower: str) -> float:
+        """Compute relevance score using hybrid word + character bigram matching.
+
+        Supports both English (word-level) and CJK (character bigram) queries.
+
+        Args:
+            query_lower: Lowercased query string
+            text_lower: Lowercased text to match against
+
+        Returns:
+            Relevance score (0.0 = no match, higher = better match)
+        """
+        word_tokens = set(query_lower.split())
+        char_bigrams: set = set()
+        for i in range(len(query_lower) - 1):
+            bigram = query_lower[i:i + 2].strip()
+            if bigram:
+                char_bigrams.add(bigram)
+
+        if not word_tokens and not char_bigrams:
+            return 0.0
+
+        score = 0.0
+        if word_tokens:
+            word_hits = sum(1.0 for w in word_tokens if w in text_lower)
+            score += word_hits / len(word_tokens)
+        if char_bigrams:
+            ngram_hits = sum(1.0 for ng in char_bigrams if ng in text_lower)
+            score += 0.5 * ngram_hits / len(char_bigrams)
+        return score
+
     def _score_memory_entries(self, query: str, entries: List[Dict]) -> List[Dict]:
         """Score memory entries by token overlap with query.
-
-        Uses a hybrid of word-level and character n-gram matching so that
-        both English (space-delimited) and CJK (no spaces) queries work.
 
         Returns entries sorted by score descending. Entries with score=0 are
         included at the end (ensures fallback when no token matches).
         """
         query_lower = query.lower()
-        # Word tokens (works for English / space-delimited languages)
-        word_tokens = set(query_lower.split())
-        # Character 2-grams (works for CJK and as a fuzzy fallback)
-        char_ngrams = set()
-        for i in range(len(query_lower) - 1):
-            bigram = query_lower[i:i + 2].strip()
-            if bigram:
-                char_ngrams.add(bigram)
-
-        if not word_tokens and not char_ngrams:
-            return entries
-
         scored = []
         for entry in entries:
             text = f"{entry['title']} {entry['hook']}".lower()
-            score = 0.0
-            # Word overlap (exact word-boundary match via substring; quick and good enough)
-            if word_tokens:
-                word_hits = sum(1.0 for w in word_tokens if w in text)
-                score += word_hits / len(word_tokens)
-            # Character n-gram overlap (boosts CJK and partial matches)
-            if char_ngrams:
-                ngram_hits = sum(1.0 for ng in char_ngrams if ng in text)
-                score += 0.5 * ngram_hits / len(char_ngrams)
+            score = self._compute_relevance_score(query_lower, text)
             scored.append({**entry, "_score": score})
 
         scored.sort(key=lambda x: -x["_score"])
@@ -758,47 +767,33 @@ You are a helpful AI assistant.
         return stripped if stripped else content
 
     async def write_memory(self, content: str, to_daily: bool = True):
-        """Write memory to a daily or long-term file.
+        """Write memory content. Delegates to write_memory_entry() for indexed storage.
 
-        For structured, typed memory entries, prefer write_memory_entry() which
-        creates individually-addressable files and updates the MEMORY.md index.
+        For backward compatibility. New code should use write_memory_entry() directly.
 
         Args:
             content: Memory content
-            to_daily: True to append to today's daily memory file,
-                      False to append to the long-term MEMORY.md file
+            to_daily: Ignored (kept for API compatibility). All entries go to memory/ dir.
         """
-        self._initialize_user_dir()
-
-        if to_daily:
-            today = date.today().isoformat()
-            memory_dir = self._get_user_memory_dir()
-            memory_dir.mkdir(parents=True, exist_ok=True)
-            filepath = memory_dir / f"{today}.md"
-
-            existing = ""
-            if filepath.exists():
-                existing = (await _async_read_text(filepath)).strip()
-            new_content = f"{existing}\n\n{content}".strip() if existing else content
-            await _async_write_text(filepath, new_content)
-        else:
-            memory_md = self._get_user_memory_md()
-            memory_md.parent.mkdir(parents=True, exist_ok=True)
-
-            existing = ""
-            if memory_md.exists():
-                existing = (await _async_read_text(memory_md)).strip()
-            new_content = f"{existing}\n\n{content}".strip() if existing else content
-            await _async_write_text(memory_md, new_content)
+        # Derive a title from the first 50 chars of content
+        title = content[:50].strip().replace("\n", " ")
+        if not title:
+            title = "untitled"
+        await self.write_memory_entry(
+            title=title,
+            content=content,
+            memory_type="project",
+            description=title,
+        )
 
     async def save_memory(self, content: str, long_term: bool = False):
-        """Save memory (alias for write_memory with more semantic naming).
+        """Save memory (alias for write_memory, kept for backward compatibility).
 
         Args:
             content: Memory content
-            long_term: True to write to long-term memory, False to write to daily memory (default)
+            long_term: Ignored (kept for API compatibility).
         """
-        await self.write_memory(content, to_daily=not long_term)
+        await self.write_memory(content)
 
     def get_skills_dir(self) -> Path:
         """Get skills directory path.
@@ -863,37 +858,17 @@ You are a helpful AI assistant.
         Returns:
             List of matching memories, each containing content, file_path, score
         """
-        results = []
         query_lower = query.lower()
-
-        # Word tokens (English / space-delimited)
-        word_tokens = set(query_lower.split())
-        # Character bigrams (CJK / fuzzy fallback)
-        char_bigrams = set()
-        for i in range(len(query_lower) - 1):
-            bigram = query_lower[i:i + 2].strip()
-            if bigram:
-                char_bigrams.add(bigram)
-
-        if not word_tokens and not char_bigrams:
+        if not query_lower.strip():
             return []
 
+        results = []
         for file_path in self.get_all_memory_files():
             content = file_path.read_text(encoding="utf-8").strip()
             if not content:
                 continue
 
-            content_lower = content.lower()
-
-            score = 0.0
-            # Word overlap (exact substring match per word)
-            if word_tokens:
-                word_hits = sum(1.0 for w in word_tokens if w in content_lower)
-                score += word_hits / len(word_tokens)
-            # Character bigram overlap (boosts CJK and partial matches)
-            if char_bigrams:
-                ngram_hits = sum(1.0 for ng in char_bigrams if ng in content_lower)
-                score += 0.5 * ngram_hits / len(char_bigrams)
+            score = self._compute_relevance_score(query_lower, content.lower())
 
             if score >= min_score:
                 results.append({
@@ -906,19 +881,24 @@ You are a helpful AI assistant.
         return results[:limit]
 
     def clear_daily_memory(self, keep_days: int = 7):
-        """Clear old daily memories.
+        """Clear old daily memory files (date-pattern only).
 
-        Clears old daily memory files for current user.
+        Only deletes files matching YYYY-MM-DD.md pattern. Typed memory entry
+        files (e.g. user_role.md, project_deploy.md) are never deleted.
 
         Args:
-            keep_days: Number of recent days to keep
+            keep_days: Number of most recent date files to keep
         """
         memory_dir = self._get_user_memory_dir()
         if not memory_dir.exists():
             return
 
-        files = sorted(memory_dir.glob("*.md"), reverse=True)
-        for f in files[keep_days:]:
+        # Only match date-pattern files: YYYY-MM-DD.md
+        date_files = sorted(
+            [f for f in memory_dir.glob("*.md") if re.match(r"\d{4}-\d{2}-\d{2}\.md$", f.name)],
+            reverse=True,
+        )
+        for f in date_files[keep_days:]:
             f.unlink()
 
     # =========================================================================

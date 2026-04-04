@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 @author:XuMing(xuming624@qq.com)
-@description: Tests for BuiltinMemoryTool and MemoryExtractHooks
+@description: Tests for BuiltinMemoryTool, MemoryExtractHooks, and memory config
 """
 import asyncio
 import json
@@ -9,8 +9,7 @@ import os
 import sys
 import tempfile
 import shutil
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -200,7 +199,7 @@ class TestMemoryExtractHooks:
     """Test MemoryExtractHooks auto-extraction logic."""
 
     def test_init(self):
-        """Test MemoryExtractHooks initialization."""
+        """Test  initialization."""
         hooks = MemoryExtractHooks()
         assert isinstance(hooks._run_inputs, dict)
         assert isinstance(hooks._tool_calls, dict)
@@ -214,14 +213,15 @@ class TestMemoryExtractHooks:
         agent.run_input = "test input"
         agent.workspace = MagicMock()
         agent.model = MagicMock()
+        agent.model.response = AsyncMock()
 
         # Simulate: on_agent_start -> on_tool_end(save_memory) -> on_agent_end
         asyncio.run(hooks.on_agent_start(agent=agent))
         asyncio.run(hooks.on_tool_end(agent=agent, tool_name="save_memory"))
         asyncio.run(hooks.on_agent_end(agent=agent, output="test output"))
 
-        # model.ainvoke should NOT be called (extraction skipped)
-        agent.model.ainvoke.assert_not_called()
+        # model.response should NOT be called (extraction skipped)
+        agent.model.response.assert_not_called()
 
     def test_skips_when_no_workspace(self):
         """Test that extraction is skipped when no workspace."""
@@ -249,6 +249,110 @@ class TestMemoryExtractHooks:
         asyncio.run(hooks.on_tool_end(agent=agent, tool_name="save_memory"))
 
         assert "save_memory" in hooks._tool_calls["test_agent"]
+
+    def test_skips_short_conversations(self):
+        """Test that very short conversations are skipped."""
+        hooks = MemoryExtractHooks()
+
+        agent = MagicMock()
+        agent.agent_id = "test_agent"
+        agent.run_input = "hi"
+        agent.workspace = MagicMock()
+        agent.model = MagicMock()
+        agent.model.response = AsyncMock()
+
+        asyncio.run(hooks.on_agent_start(agent=agent))
+        asyncio.run(hooks.on_agent_end(agent=agent, output="hello"))
+
+        # Conversation < 50 chars, should skip extraction
+        agent.model.response.assert_not_called()
+
+
+class TestWorkspaceMemoryConfig:
+    """Test that auto_archive and auto_extract_memory are separate configs."""
+
+    def test_config_defaults(self):
+        """Test default values for workspace memory config."""
+        from agentica.agent.config import WorkspaceMemoryConfig
+        config = WorkspaceMemoryConfig()
+        assert config.auto_archive is False
+        assert config.auto_extract_memory is False
+        assert config.load_workspace_context is True
+        assert config.load_workspace_memory is True
+        assert config.max_memory_entries == 5
+
+    def test_archive_only_no_extract(self):
+        """Test that auto_archive=True without auto_extract_memory only injects archive hooks."""
+        from agentica.agent.base import Agent
+        from agentica.model.openai import OpenAIChat
+        from agentica.agent.config import WorkspaceMemoryConfig
+
+        temp_dir = tempfile.mkdtemp()
+        workspace = Workspace(temp_dir)
+        workspace.initialize()
+
+        agent = Agent(
+            model=OpenAIChat(api_key="fake_openai_key"),
+            workspace=workspace,
+            long_term_memory_config=WorkspaceMemoryConfig(
+                auto_archive=True,
+                auto_extract_memory=False,
+            ),
+        )
+
+        # Should have hooks
+        assert agent._default_run_hooks is not None
+        # Should only have ConversationArchiveHooks, not MemoryExtractHooks
+        hooks_list = agent._default_run_hooks._hooks_list
+        hook_types = [type(h).__name__ for h in hooks_list]
+        assert "ConversationArchiveHooks" in hook_types
+        assert "MemoryExtractHooks" not in hook_types
+
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_both_archive_and_extract(self):
+        """Test that both flags inject both hooks."""
+        from agentica.agent.base import Agent
+        from agentica.model.openai import OpenAIChat
+        from agentica.agent.config import WorkspaceMemoryConfig
+
+        temp_dir = tempfile.mkdtemp()
+        workspace = Workspace(temp_dir)
+        workspace.initialize()
+
+        agent = Agent(
+            model=OpenAIChat(api_key="fake_openai_key"),
+            workspace=workspace,
+            long_term_memory_config=WorkspaceMemoryConfig(
+                auto_archive=True,
+                auto_extract_memory=True,
+            ),
+        )
+
+        hooks_list = agent._default_run_hooks._hooks_list
+        hook_types = [type(h).__name__ for h in hooks_list]
+        assert "ConversationArchiveHooks" in hook_types
+        assert "MemoryExtractHooks" in hook_types
+
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_no_hooks_when_both_false(self):
+        """Test that no hooks are injected when both flags are false."""
+        from agentica.agent.base import Agent
+        from agentica.model.openai import OpenAIChat
+
+        temp_dir = tempfile.mkdtemp()
+        workspace = Workspace(temp_dir)
+        workspace.initialize()
+
+        agent = Agent(
+            model=OpenAIChat(api_key="fake_openai_key"),
+            workspace=workspace,
+        )
+
+        assert agent._default_run_hooks is None
+
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 class TestAgentAutoMemoryRegistration:
@@ -314,3 +418,60 @@ class TestAgentAutoMemoryRegistration:
             for t in (agent.tools or [])
         )
         assert not has_memory_tool, "BuiltinMemoryTool should NOT be registered without workspace"
+
+
+class TestClearDailyMemory:
+    """Test that clear_daily_memory only deletes date-pattern files."""
+
+    def setup_method(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.workspace = Workspace(self.temp_dir)
+        self.workspace.initialize()
+
+    def teardown_method(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_only_deletes_date_files(self):
+        """Test that clear_daily_memory preserves typed entry files."""
+        memory_dir = self.workspace._get_user_memory_dir()
+
+        # Create date-pattern files
+        (memory_dir / "2025-01-01.md").write_text("old memory", encoding="utf-8")
+        (memory_dir / "2025-01-02.md").write_text("older memory", encoding="utf-8")
+        (memory_dir / "2025-12-31.md").write_text("recent memory", encoding="utf-8")
+
+        # Create typed entry files (should NOT be deleted)
+        (memory_dir / "user_role.md").write_text("User is a developer", encoding="utf-8")
+        (memory_dir / "project_deploy.md").write_text("Deploy to AWS", encoding="utf-8")
+
+        # Keep only 1 most recent date file
+        self.workspace.clear_daily_memory(keep_days=1)
+
+        remaining = sorted(f.name for f in memory_dir.glob("*.md"))
+        # Should keep: 2025-12-31.md (most recent date), user_role.md, project_deploy.md
+        assert "2025-12-31.md" in remaining
+        assert "user_role.md" in remaining
+        assert "project_deploy.md" in remaining
+        # Should delete: 2025-01-01.md, 2025-01-02.md
+        assert "2025-01-01.md" not in remaining
+        assert "2025-01-02.md" not in remaining
+
+
+class TestRelevanceScoring:
+    """Test the shared _compute_relevance_score helper."""
+
+    def test_english_word_match(self):
+        score = Workspace._compute_relevance_score("python developer", "python developer at google")
+        assert score > 0.5
+
+    def test_no_match(self):
+        score = Workspace._compute_relevance_score("rust", "python developer at google")
+        assert score == 0.0
+
+    def test_cjk_bigram_match(self):
+        score = Workspace._compute_relevance_score("部署目标", "部署目标是阿里云")
+        assert score > 0.0
+
+    def test_empty_query(self):
+        score = Workspace._compute_relevance_score("", "some content")
+        assert score == 0.0

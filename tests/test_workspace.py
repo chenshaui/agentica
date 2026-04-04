@@ -8,7 +8,6 @@ import pytest
 import tempfile
 import shutil
 from pathlib import Path
-from datetime import date
 import os
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -138,35 +137,46 @@ class TestWorkspace:
         assert len(context) > 0
 
     def test_write_memory_daily(self, temp_workspace_path):
-        """Test writing daily memory."""
+        """Test writing daily memory (now delegates to write_memory_entry)."""
         workspace = Workspace(temp_workspace_path)
         workspace.initialize()
 
-        # Write daily memory (async)
+        # write_memory now delegates to write_memory_entry (indexed storage)
         asyncio.run(workspace.write_memory("Today I learned about Python.", to_daily=True))
 
-        # Check memory file exists under users/default/memory/
-        today = date.today().isoformat()
-        memory_file = temp_workspace_path / "users" / "default" / "memory" / f"{today}.md"
-        assert memory_file.exists()
+        # Check that a memory entry file was created in memory/ dir
+        memory_dir = temp_workspace_path / "users" / "default" / "memory"
+        md_files = list(memory_dir.glob("*.md"))
+        assert len(md_files) >= 1
 
-        content = memory_file.read_text()
-        assert "Today I learned about Python." in content
+        # Check content is in one of the files
+        found = False
+        for f in md_files:
+            if "Today I learned about Python." in f.read_text():
+                found = True
+                break
+        assert found
 
     def test_write_memory_long_term(self, temp_workspace_path):
-        """Test writing long-term memory."""
+        """Test writing long-term memory (now delegates to write_memory_entry)."""
         workspace = Workspace(temp_workspace_path)
         workspace.initialize()
 
-        # Write long-term memory (async)
+        # write_memory now delegates to write_memory_entry (indexed storage)
         asyncio.run(workspace.write_memory("User prefers concise answers.", to_daily=False))
 
-        # Check MEMORY.md file under users/default/
-        memory_file = temp_workspace_path / "users" / "default" / "MEMORY.md"
-        assert memory_file.exists()
+        # Check MEMORY.md index was updated
+        memory_index = temp_workspace_path / "users" / "default" / "MEMORY.md"
+        assert memory_index.exists()
 
-        content = memory_file.read_text()
-        assert "User prefers concise answers." in content
+        # Check that content is in a memory entry file
+        memory_dir = temp_workspace_path / "users" / "default" / "memory"
+        found = False
+        for f in memory_dir.glob("*.md"):
+            if "User prefers concise answers." in f.read_text():
+                found = True
+                break
+        assert found
 
     def test_get_memory_prompt(self, temp_workspace_path):
         """Test getting relevant memories (replaces old get_memory_prompt)."""

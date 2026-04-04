@@ -339,11 +339,16 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
                     "Install: pip install langfuse"
                 )
 
-        # Auto-archive: inject ConversationArchiveHooks + MemoryExtractHooks when auto_archive=True
-        if self.workspace is not None and self.long_term_memory_config.auto_archive:
-            archive_hooks = ConversationArchiveHooks()
-            extract_hooks = MemoryExtractHooks()
-            self._default_run_hooks = _CompositeRunHooks([archive_hooks, extract_hooks])
+        # Auto-archive: inject ConversationArchiveHooks when auto_archive=True (zero cost)
+        # Auto-extract: inject MemoryExtractHooks when auto_extract_memory=True (LLM cost)
+        if self.workspace is not None:
+            auto_hooks: list = []
+            if self.long_term_memory_config.auto_archive:
+                auto_hooks.append(ConversationArchiveHooks())
+            if self.long_term_memory_config.auto_extract_memory:
+                auto_hooks.append(MemoryExtractHooks())
+            if auto_hooks:
+                self._default_run_hooks = _CompositeRunHooks(auto_hooks)
 
     async def get_workspace_context_prompt(self) -> Optional[str]:
         """Dynamically load workspace context for system prompt."""

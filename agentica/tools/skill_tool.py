@@ -252,9 +252,18 @@ Skills provide specialized knowledge and workflows for specific tasks.
 {skills_summary}
 
 ## How to Use Skills:
-1. Use `get_skill_info(skill_name)` to get detailed instructions for a specific skill
+1. Use `get_skill_info(skill_name)` to load detailed instructions for a specific skill
 2. Follow the skill's instructions to complete the task
-3. Skills are NOT callable tools - they provide guidance on HOW to do tasks
+3. Skills are NOT callable tools — they provide guidance on HOW to do tasks
+
+## Important Rules:
+- When a user references a "slash command" or "/<something>" (e.g., "/commit", "/review-pr"),
+  they are referring to a skill. Use `get_skill_info` to load it.
+- BLOCKING REQUIREMENT: When a skill matches the user's request, invoke `get_skill_info`
+  BEFORE generating any other response about the task. Load the skill first, then follow
+  its instructions.
+- NEVER mention a skill without actually loading it via `get_skill_info`.
+- Do not load a skill that is already loaded in the current conversation turn.
 """
 
     def __repr__(self) -> str:

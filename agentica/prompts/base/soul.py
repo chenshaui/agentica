@@ -10,10 +10,9 @@ This module provides prompts for agent behavior:
 4. Avoid over-engineering - only change what's needed
 """
 
-from agentica.prompts.base.utils import load_prompt as _load_prompt
+from agentica.prompts.base.utils import load_prompt
 
-# Load prompt from MD file
-SOUL_PROMPT = _load_prompt("soul.md")
+SOUL_PROMPT = load_prompt("soul.md")
 
 
 def get_soul_prompt() -> str:

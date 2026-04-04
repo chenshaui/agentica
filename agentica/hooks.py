@@ -15,6 +15,47 @@ from typing import Any, Optional, List, Dict
 from agentica.model.message import Message
 from agentica.utils.log import logger
 
+# ─── Shared memory type specification ───────────────────────────────────────
+# Used by both BuiltinMemoryTool (LLM-facing system prompt) and
+# MemoryExtractHooks (extraction sub-call). Keep in sync by importing
+# from this single source.
+
+MEMORY_TYPE_SPEC = (
+    "**user** — User's role, goals, preferences, and knowledge.\n"
+    "  When to save: when you learn details about the user's role, preferences, "
+    "responsibilities, or knowledge.\n"
+    "  Example: 'User is a data scientist focused on observability/logging.'\n\n"
+    "**feedback** — Guidance on how to approach work: what to avoid AND what "
+    "to keep doing.\n"
+    "  When to save: any time the user corrects an approach ('don't do X') OR "
+    "confirms a non-obvious approach worked ('yes exactly', 'perfect'). "
+    "Corrections are easy to notice; confirmations are quieter — watch for them.\n"
+    "  Body structure: lead with the rule, then **Why:** (the reason), then "
+    "**How to apply:** (when/where this kicks in).\n"
+    "  Example: 'Integration tests must use real DB. Why: mock/prod divergence "
+    "masked a broken migration. How to apply: tests/integration/.'\n\n"
+    "**project** — Information about ongoing work, goals, bugs, or incidents "
+    "NOT derivable from code or git history.\n"
+    "  When to save: when you learn who is doing what, why, or by when. "
+    "Convert relative dates to absolute dates.\n\n"
+    "**reference** — Pointers to external resources: issue trackers, dashboards, "
+    "wikis, documentation sites, or internal tools.\n"
+    "  When to save: when you learn about an external system the team uses.\n"
+)
+
+MEMORY_EXCLUSION_SPEC = (
+    "- Code patterns, conventions, architecture, file paths, or project structure "
+    "— derivable by reading the codebase.\n"
+    "- Git history, recent changes, or who-changed-what — `git log`/`git blame` "
+    "are authoritative.\n"
+    "- Debugging solutions or fix recipes — the fix is in the code.\n"
+    "- Anything already documented in AGENT.md files.\n"
+    "- Ephemeral task details: in-progress work, temporary state, current "
+    "conversation context.\n"
+    "- Activity logs, PR lists, or task summaries — only the *surprising* or "
+    "*non-obvious* part is worth keeping.\n"
+)
+
 
 class AgentHooks:
     """Per-agent lifecycle hooks.
@@ -254,17 +295,23 @@ class MemoryExtractHooks(RunHooks):
         response = await agent.run("Hello", config=RunConfig(hooks=hooks))
     """
 
-    # Prompt for the memory extraction sub-call
+    # Prompt for the memory extraction sub-call.
+    # Uses shared MEMORY_TYPE_SPEC / MEMORY_EXCLUSION_SPEC constants
+    # (same source as BuiltinMemoryTool.MEMORY_SYSTEM_PROMPT).
     _EXTRACT_PROMPT = (
         "You are a memory extraction assistant. Review the conversation below and "
         "extract key information worth remembering for future sessions.\n\n"
-        "Extract ONLY:\n"
-        "- User's personal info, role, or preferences\n"
-        "- Corrections or confirmed approaches\n"
-        "- Important project context not derivable from code\n"
-        "- External references (URLs, system names)\n\n"
+        "Memories capture context NOT derivable from the current project state. "
+        "Code patterns, architecture, git history, and file structure are derivable "
+        "(via grep/git/AGENT.md) and must NOT be saved as memories.\n\n"
+        "## Memory types\n\n"
+        + MEMORY_TYPE_SPEC +
+        "\n## What NOT to save\n\n"
+        + MEMORY_EXCLUSION_SPEC +
+        "\n## Output format\n\n"
         "For each memory, output a JSON object with fields:\n"
-        '  {"title": "short_name", "content": "what to remember", "type": "user|feedback|project|reference"}\n\n'
+        '  {"title": "short_name", "content": "what to remember (include Why + '
+        'How to apply for feedback type)", "type": "user|feedback|project|reference"}\n\n'
         "Output a JSON array of memories. If nothing worth remembering, output: []\n\n"
         "Conversation:\n"
     )
@@ -319,17 +366,25 @@ class MemoryExtractHooks(RunHooks):
         if model is None:
             return
 
+        # Await directly — asyncio.create_task() would be silently cancelled
+        # in run_stream_sync()/run_sync() scenarios where the event loop exits
+        # immediately after the stream is consumed. Direct await ensures the
+        # extraction completes before on_agent_end returns.
+        await self._extract_and_save(model, workspace, conversation_text)
+
+    async def _extract_and_save(self, model: Any, workspace: Any, conversation_text: str) -> None:
+        """Run the LLM extraction call and persist results."""
         extract_messages = [
             Message(role="user", content=self._EXTRACT_PROMPT + conversation_text),
         ]
 
         try:
-            response = await model.ainvoke(messages=[m.to_dict() for m in extract_messages])
-            if not response or not response.content:
+            model_response = await model.response(extract_messages)
+            if not model_response or not model_response.content:
                 return
 
             # Parse JSON array from response
-            text = response.content.strip()
+            text = model_response.content.strip()
             # Handle markdown code blocks
             if text.startswith("```"):
                 text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
@@ -357,8 +412,10 @@ class MemoryExtractHooks(RunHooks):
                 )
                 logger.debug(f"Auto-extracted memory: {title} (type: {mem_type})")
 
-        except (json.JSONDecodeError, Exception) as e:
-            logger.debug(f"Memory extraction failed (non-critical): {e}")
+        except json.JSONDecodeError as e:
+            logger.debug(f"Memory extraction: LLM returned invalid JSON: {e}")
+        except Exception as e:
+            logger.warning(f"Memory extraction failed: {e}")
 
 
 class _CompositeRunHooks(RunHooks):

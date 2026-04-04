@@ -104,7 +104,13 @@ class WorkspaceMemoryConfig:
     # Maximum number of memory entries to inject per run (relevance-ranked).
     # Maps to CC's "select up to N memories" in sidequery.
     max_memory_entries: int = 5
-    auto_archive: bool = False  # Auto-archive conversation after each run()
+    # Auto-archive conversation to workspace after each run() (zero LLM cost,
+    # just appends raw messages to conversations/ directory).
+    auto_archive: bool = False
+    # Auto-extract memories from conversation after each run() using an LLM call.
+    # Only fires when the LLM didn't call save_memory during the run.
+    # Costs one extra LLM request per run (mirrors CC's extractMemories service).
+    auto_extract_memory: bool = False
 
 
 @dataclass

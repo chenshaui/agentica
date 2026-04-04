@@ -65,36 +65,25 @@ class UserInputTool(Tool):
 
 You have access to the `user_input` tool to request input or confirmation from the user during execution.
 
-### When to use this tool:
+### When to use:
 1. **Critical Operations**: Before performing irreversible actions (delete files, send emails, make purchases)
 2. **Ambiguous Requests**: When the user's intent is unclear and you need clarification
 3. **Sensitive Information**: When you need passwords, API keys, or personal information
 4. **Decision Points**: When multiple valid approaches exist and user preference matters
-5. **Verification**: To confirm understanding of complex requirements before proceeding
+5. **Offer Choices**: To let the user choose a direction when multiple options are reasonable
 
 ### Interaction Modes:
-- `confirm`: Yes/No questions - use for binary decisions
-- `text`: Free-form input - use when you need detailed information
-- `select`: Multiple choice - use when there are specific options to choose from
+- `confirm`: Yes/No questions — use for binary decisions
+- `text`: Free-form input — use when you need detailed information
+- `select`: Multiple choice — use when there are specific options to choose from
 
 ### Best Practices:
+- If you recommend a specific option, make that the FIRST option in the list
+  and add "(Recommended)" at the end of the label
 - Provide clear, concise prompts that explain what you need and why
-- For confirmations, clearly state what action will be taken
-- For selections, provide meaningful option descriptions
-- Don't overuse - only ask when truly necessary
-- Group related questions when possible to minimize interruptions
-
-### Example Usage:
-```
-# Confirmation before deletion
-user_input(prompt="Delete all files in /tmp/old_data? This cannot be undone.", mode="confirm")
-
-# Get specific information
-user_input(prompt="Please provide your preferred output format:", mode="select", options=["JSON", "CSV", "XML"])
-
-# Free-form input
-user_input(prompt="Describe the specific changes you want to make to the code:", mode="text")
-```"""
+- For confirmations, clearly state what action will be taken if confirmed
+- Don't overuse — only ask when truly necessary to avoid breaking flow
+- Group related questions when possible to minimize interruptions"""
 
     def __init__(
         self,

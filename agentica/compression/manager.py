@@ -12,10 +12,7 @@ Supports two compression strategies (applied in order):
 """
 import asyncio
 import json
-import os
-import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from textwrap import dedent
 from typing import Any, Dict, List, Optional, TYPE_CHECKING, Type, Union
 
@@ -436,9 +433,6 @@ class CompressionManager:
         if not self.compress_tool_results:
             return
 
-        # Save raw transcript before any mutation
-        self._save_transcript(messages)
-
         # Count tokens before compression
         _model_id = model.id if model else 'gpt-4o'
         _before_tokens = count_tokens(messages, tools, _model_id, response_format)
@@ -508,23 +502,6 @@ class CompressionManager:
                 f">= {threshold:,} (window={context_window:,})"
             )
         return over
-
-    def _save_transcript(self, messages: List["Message"]) -> None:
-        """Persist current conversation to transcripts dir before compaction."""
-        from agentica.compression.tool_result_storage import get_project_dir
-        transcript_dir = Path(get_project_dir(os.getcwd())) / ".transcripts"
-        transcript_dir.mkdir(parents=True, exist_ok=True)
-        transcript_path = transcript_dir / f"transcript_{int(time.time())}.jsonl"
-        try:
-            with open(transcript_path, "w", encoding="utf-8") as fh:
-                for m in messages:
-                    fh.write(json.dumps(
-                        {"role": m.role, "content": str(m.content or "")},
-                        ensure_ascii=False,
-                    ) + "\n")
-            logger.debug(f"Transcript saved: {transcript_path}")
-        except Exception as e:
-            logger.warning(f"Failed to save transcript: {e}")
 
     async def _summarise_conversation(
         self,
@@ -630,9 +607,6 @@ class CompressionManager:
 
         logger.debug("Auto-compact triggered: summarising conversation")
 
-        # When called standalone (force=True), compress() hasn't run yet, save transcript here
-        if force:
-            self._save_transcript(messages)
 
         # SM-compact optimization: reuse existing WorkingMemory session summary
         # when available (avoids LLM call, faster + cheaper).

@@ -9,10 +9,10 @@ Core module for task completion. Instructs the model to:
 3. Degrade strategy after persistent failures
 """
 
-from agentica.prompts.base.utils import load_prompt as _load_prompt
+from agentica.prompts.base.utils import load_prompt
 
 # Load prompt from MD file
-HEARTBEAT_PROMPT = _load_prompt("heartbeat.md")
+HEARTBEAT_PROMPT = load_prompt("heartbeat.md")
 
 
 def get_heartbeat_prompt() -> str:

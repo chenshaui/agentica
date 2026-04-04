@@ -174,10 +174,14 @@ class TestWorkspaceMemory(unittest.TestCase):
             ws = Workspace(path=tmpdir)
             ws.initialize()
             asyncio.run(ws.write_memory("User prefers Python", to_daily=False))
-            memory_file = ws._get_user_memory_md()
-            self.assertTrue(memory_file.exists())
-            content = memory_file.read_text(encoding="utf-8")
-            self.assertIn("User prefers Python", content)
+            # write_memory now delegates to write_memory_entry which creates
+            # an indexed entry file, not direct MEMORY.md append
+            memory_dir = ws._get_user_memory_dir()
+            files = list(memory_dir.glob("*.md"))
+            self.assertGreater(len(files), 0)
+            # Content should be in one of the entry files
+            found = any("User prefers Python" in f.read_text(encoding="utf-8") for f in files)
+            self.assertTrue(found)
 
 
 class TestWorkspaceConfig(unittest.TestCase):

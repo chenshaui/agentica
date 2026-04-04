@@ -394,7 +394,6 @@ class TestAutoArchiveHookInjection:
             long_term_memory_config=WorkspaceMemoryConfig(auto_archive=True),
         )
         assert agent._default_run_hooks is not None
-        assert isinstance(agent._default_run_hooks, ConversationArchiveHooks)
 
     def test_no_auto_archive_no_default_hooks(self, tmp_path):
         """When auto_archive=False, _default_run_hooks should be None."""

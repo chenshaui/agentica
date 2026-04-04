@@ -264,13 +264,17 @@ def count_text_tokens(text: str, model_id: str = "gpt-4o") -> int:
 def count_image_tokens(image: "Image") -> int:
     """
     Count tokens for an image based on OpenAI's vision model formula.
-    
+
     Formula:
     1. If max(width, height) > 2000: scale to fit in 2000px on longest side
     2. If min(width, height) > 768: scale so shortest side is 768px
     3. tiles = ceil(width/512) * ceil(height/512)
     4. tokens = 85 + (170 * tiles)
     """
+    # String URLs / base64 strings don't carry dimension info — use low-detail default
+    if isinstance(image, (str, bytes)):
+        return 85
+
     width, height = _get_image_dimensions(image)
     detail = image.detail or "auto"
 

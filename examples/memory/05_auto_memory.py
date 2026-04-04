@@ -38,13 +38,17 @@ def _create_agent(workspace: Workspace, **kwargs) -> Agent:
 
     When workspace is set:
     - BuiltinMemoryTool (save_memory, search_memory) is auto-registered
-    - auto_archive enables ConversationArchiveHooks + MemoryExtractHooks
+    - auto_archive: saves raw conversation (zero cost)
+    - auto_extract_memory: LLM-based memory extraction fallback (one LLM call)
     - Workspace context + memory are auto-injected into system prompt
     """
     return Agent(
         model=OpenAIChat(id="gpt-4o-mini"),
         workspace=workspace,
-        long_term_memory_config=WorkspaceMemoryConfig(auto_archive=True),
+        long_term_memory_config=WorkspaceMemoryConfig(
+            auto_archive=True,
+            auto_extract_memory=True,
+        ),
         add_history_to_messages=True,
         history_window=5,
         **kwargs,
@@ -183,7 +187,10 @@ async def demo_combined():
     agent = Agent(
         model=OpenAIChat(id="gpt-4o-mini"),
         workspace=workspace,
-        long_term_memory_config=WorkspaceMemoryConfig(auto_archive=True),
+        long_term_memory_config=WorkspaceMemoryConfig(
+            auto_archive=True,
+            auto_extract_memory=True,
+        ),
         working_memory=WorkingMemory.with_summary(),
         add_history_to_messages=True,
     )
