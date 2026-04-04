@@ -36,8 +36,7 @@ def get_tools_prompt(
     """
     if active_tools:
         desc_map = tool_descriptions or {}
-        table = "# Available Tools\n\n"
-        table += "| Tool | Purpose |\n|------|----------|\n"
+        table = "# Available Tools\n\n| Tool | Purpose |\n|------|----------|\n"
         for tool_name in active_tools:
             desc = desc_map.get(tool_name, tool_name)
             table += f"| `{tool_name}` | {desc} |\n"

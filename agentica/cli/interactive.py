@@ -31,6 +31,7 @@ from agentica.cli.display import (
     display_user_message,
     get_file_completions,
 )
+from agentica.model.message import Message
 from agentica.run_response import AgentCancelledError
 from agentica.utils.log import suppress_console_logging
 from agentica.workspace import Workspace
@@ -201,11 +202,10 @@ def _cmd_resume(cmd_args=None, agent_config=None, extra_tools=None, workspace=No
 
         # If resume_at specified, reload with truncation
         if resume_at_uuid and current_agent._session_log:
-            from agentica.model.message import Message as _Msg
             current_agent.working_memory.clear()
             for rm in current_agent._session_log.load(resume_at=resume_at_uuid):
                 current_agent.working_memory.add_message(
-                    _Msg(role=rm["role"], content=rm.get("content", ""))
+                    Message(role=rm["role"], content=rm.get("content", ""))
                 )
 
         console.print(f"[green]Resumed session: {chosen['session_id']}"
