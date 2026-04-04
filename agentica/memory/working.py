@@ -114,7 +114,7 @@ def _is_history_message(msg: Message) -> bool:
     return False
 
 
-def _truncate_tool_content(msg: Message, max_chars: int = 4000) -> Message:
+def _truncate_tool_content(msg: Message, max_chars: int = 2000) -> Message:
     """Truncate long content in tool response messages to save token space.
 
     Only truncates tool role messages; user/assistant messages are kept intact.
@@ -294,7 +294,7 @@ class WorkingMemory(BaseModel):
             skip_role: Optional[str] = None,
             max_tokens: Optional[int] = None,
             truncate_tool_results: bool = True,
-            tool_result_max_chars: int = 4000,
+            tool_result_max_chars: int = 2000,
     ) -> List[Message]:
         """Returns the messages from the last_n runs with token budget awareness."""
         if last_n is None:

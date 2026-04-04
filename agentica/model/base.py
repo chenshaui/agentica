@@ -72,34 +72,15 @@ class Model(ABC):
     supports_structured_outputs: bool = False
 
     # --- Private fields (not in __init__ signature, used internally) ---
-    _current_messages: Optional[List[Message]] = field(init=False, repr=False, default=None)
     _agent_ref: Optional[weakref.ref] = field(init=False, repr=False, default=None)
 
     # Cost tracker (v3): accumulates USD cost across all invoke() calls in a run.
     # Reset to a fresh CostTracker at the start of each Agent.run().
     _cost_tracker: Optional[CostTracker] = field(init=False, repr=False, default=None)
 
-    # Sentinel flag for the agentic loop: when True, provider response() methods
-    # should NOT call agentic_loop() — they just execute tools and return, letting
-    # the outer while-loop drive the next iteration.
-    _in_agentic_loop: bool = field(init=False, repr=False, default=False)
-
-    # Finish reason captured from the most recent response_stream() call.
-    # Set by provider response_stream() methods; consumed by agentic_loop_stream()
-    # for max_tokens recovery (finish_reason == "length").
-    _last_stream_finish_reason: Optional[str] = field(init=False, repr=False, default=None)
-
-    # Max cost (USD) for this run.  Set by Runner from agent._run_max_cost_usd.
-    _max_cost_usd: Optional[float] = field(init=False, repr=False, default=None)
-
-    # Model-layer lifecycle hooks (injected by Agent.update_model()).
-    # _pre_tool_hook:  called before each batch of tool calls with (messages, function_calls).
-    #                  May mutate messages (e.g. truncate context, inject reflection).
-    #                  Returns True to proceed, False to skip the tool batch.
-    # _post_tool_hook: called after tool results are appended to messages.
-    #                  May mutate messages (e.g. inject a reflection prompt).
-    _pre_tool_hook: Optional[Callable] = field(init=False, repr=False, default=None)
-    _post_tool_hook: Optional[Callable] = field(init=False, repr=False, default=None)
+    # Finish reason captured from the most recent response / response_stream() call.
+    # Set by provider; consumed by Runner's agentic loop for max_tokens recovery.
+    last_finish_reason: Optional[str] = field(init=False, repr=False, default=None)
 
     def __post_init__(self):
         # Auto-set provider if not provided
@@ -341,14 +322,6 @@ class Model(ABC):
         """
         if self.function_call_stack is None:
             self.function_call_stack = []
-
-        # Phase 0: pre-tool hook (context overflow + repetition detection)
-        if self._pre_tool_hook is not None:
-            messages = self._current_messages or []
-            skip = await self._pre_tool_hook(messages, function_calls)
-            if skip:
-                # Hook requested to skip this tool batch (e.g. injected a strategy-change message)
-                return
 
         # Phase 1: Emit started events for all function calls
         _agent = self._agent_ref() if self._agent_ref is not None else None
@@ -615,11 +588,6 @@ class Model(ABC):
             )
         except Exception as _budget_err:
             logger.warning(f"Tool result budget enforcement failed: {_budget_err}")
-
-        # Phase 4: post-tool hook (optional reflection / summary injection)
-        if self._post_tool_hook is not None:
-            messages = self._current_messages or []
-            await self._post_tool_hook(messages, function_call_results)
 
     async def _maybe_compress_messages(self, messages: List[Message]) -> None:
         """Run the multi-stage compression pipeline before each LLM call.
