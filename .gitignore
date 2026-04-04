@@ -202,3 +202,4 @@ docs/tests.md
 .sessions/
 examples/builtin_tools/tmp_demo.py
 .claude/
+AGENT.md
