@@ -7,7 +7,7 @@ Agent + get_builtin_tools() provides:
 - File tools: ls, read_file, write_file, edit_file, glob, grep
 - Execute: execute shell commands
 - Web tools: web_search, fetch_url
-- Task tools: write_todos, read_todos
+- Task tools: write_todos
 - Subagent: task (launch subagents for parallel execution)
 """
 import sys

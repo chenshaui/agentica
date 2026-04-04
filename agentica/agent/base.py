@@ -152,6 +152,9 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
     _enabled_tools: Optional[List[str]] = field(default=None, init=False, repr=False)
     _enabled_skills: Optional[List[str]] = field(default=None, init=False, repr=False)
 
+    # Task list (populated by BuiltinTodoTool.write_todos)
+    todos: List[Dict[str, Any]] = field(default_factory=list, init=False, repr=False)
+
     # Context for tools and prompt functions (runtime input)
     context: Optional[Dict[str, Any]] = None
     # Reference to parent agent (set by team.get_tools for transfer hooks)
@@ -252,6 +255,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         self._enabled_tools = None
         self._enabled_skills = None
         self._transfer_caller = None
+        self.todos = []
 
         # Session-level set of memory filenames already surfaced (dedup across turns).
         # Prevents the same memory entry from occupying system prompt slots every turn.
@@ -277,6 +281,15 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
 
         # Merge tool system prompts into instructions
         self._merge_tool_system_prompts()
+
+        # Wire builtin tools that need agent reference
+        if self.tools:
+            from agentica.tools.buildin_tools import BuiltinTodoTool, BuiltinTaskTool
+            for tool in self.tools:
+                if isinstance(tool, BuiltinTodoTool):
+                    tool.set_agent(self)
+                elif isinstance(tool, BuiltinTaskTool):
+                    tool.set_parent_agent(self)
 
         # Load runtime config from workspace YAML
         self._load_runtime_config()
@@ -719,7 +732,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         # Inject Model-layer hooks based on ToolConfig settings.
         # These hooks fire inside Model.run_function_calls() around each tool batch.
         self.model._pre_tool_hook = self._build_pre_tool_hook()
-        self.model._post_tool_hook = None  # reserved for future use
+        self.model._post_tool_hook = self._build_post_tool_hook()
 
     def _build_pre_tool_hook(self):
         """Build the pre-tool hook function based on ToolConfig settings.
@@ -840,6 +853,94 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
             return False  # proceed with tool execution
 
         return _pre_tool_hook
+
+    def _build_post_tool_hook(self):
+        """Build the post-tool hook function for todo reminder injection.
+
+        Returns an async callable (messages, function_call_results) -> None, or None
+        if no todo tool is registered.
+
+        Mirrors CC's getTodoReminderAttachments: after each tool batch, count how many
+        assistant turns have passed since the last write_todos call. If the count exceeds
+        todo_reminder_interval and there are active todos, inject a gentle user-role
+        reminder message containing the current todo list state.
+
+        This is ephemeral -- the reminder appears in the in-flight messages only and
+        does not persist to memory, avoiding permanent context pollution.
+        """
+        from agentica.tools.buildin_tools import BuiltinTodoTool
+
+        # Check if agent has a BuiltinTodoTool registered
+        has_todo_tool = False
+        if self.tools:
+            for tool in self.tools:
+                if isinstance(tool, BuiltinTodoTool):
+                    has_todo_tool = True
+                    break
+
+        if not has_todo_tool:
+            return None
+
+        reminder_interval = self.prompt_config.todo_reminder_interval
+        if reminder_interval <= 0:
+            return None
+
+        agent_ref = self  # captured in closure
+
+        async def _post_tool_hook(messages: list, function_call_results: list) -> None:
+            # Count assistant turns since last write_todos call
+            turns_since_write = 0
+            turns_since_reminder = 0
+            found_write = False
+            found_reminder = False
+
+            for m in reversed(messages):
+                if m.role == "assistant":
+                    if not found_write:
+                        turns_since_write += 1
+                    if not found_reminder:
+                        turns_since_reminder += 1
+                elif m.role == "tool" and m.tool_name == "write_todos" and not found_write:
+                    found_write = True
+                elif (
+                    m.role == "user"
+                    and isinstance(m.content, str)
+                    and "[Todo Reminder]" in m.content
+                    and not found_reminder
+                ):
+                    found_reminder = True
+
+                if found_write and found_reminder:
+                    break
+
+            # Only inject if enough turns have passed since both last write and last reminder
+            if turns_since_write < reminder_interval:
+                return
+            if turns_since_reminder < reminder_interval:
+                return
+
+            # Only inject if there are active (non-empty) todos
+            todos = agent_ref.todos
+            if not todos:
+                return
+
+            # Build reminder message (mirrors CC's todo_reminder attachment content)
+            todo_items = "\n".join(
+                f"  {i + 1}. [{t.get('status', 'pending')}] {t.get('content', '')}"
+                for i, t in enumerate(todos)
+            )
+            reminder_content = (
+                "[Todo Reminder] The write_todos tool hasn't been used recently. "
+                "If you're working on tasks that would benefit from tracking progress, "
+                "consider using the write_todos tool to update your progress. "
+                "Also consider cleaning up the todo list if it has become stale. "
+                "Only use it if relevant to the current work.\n\n"
+                f"Current todo list:\n{todo_items}"
+            )
+            messages.append(Message(role="user", content=reminder_content))
+            logger.debug(f"Injected todo reminder ({len(todos)} items, {turns_since_write} turns since write)")
+
+        return _post_tool_hook
 
     def _filter_model_functions(self) -> None:
         """Filter disabled functions from the model.

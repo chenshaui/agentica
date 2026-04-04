@@ -123,17 +123,24 @@ async def handle_customer_message(
     """Handle a customer message."""
     # Step 1: Classify intent
     intent_response = await classifier.run(message)
-    intent: CustomerIntent = intent_response.content
+    intent = intent_response.content
 
-    print(f"\n[Intent: {intent.intent} (confidence: {intent.confidence:.2f})]")
-    print(f"[Summary: {intent.summary}]")
+    if isinstance(intent, CustomerIntent):
+        print(f"\n[Intent: {intent.intent} (confidence: {intent.confidence:.2f})]")
+        print(f"[Summary: {intent.summary}]")
+        intent_text = intent.intent
+        summary_text = intent.summary
+    else:
+        print(f"\n[Intent (raw): {intent}]")
+        intent_text = str(intent)
+        summary_text = str(intent)
 
     # Step 2: Generate response
     prompt = f"""
 Customer Message: {message}
 
-Classified Intent: {intent.intent}
-Summary: {intent.summary}
+Classified Intent: {intent_text}
+Summary: {summary_text}
 
 Please provide a helpful response to this customer.
 """
@@ -165,10 +172,12 @@ async def demo_mode():
 
         response = await handle_customer_message(classifier, service_agent, message)
 
-        print(f"\nBot: {response.answer}")
-
-        if response.requires_escalation:
-            print(f"\n[Escalation needed: {response.escalation_reason}]")
+        if isinstance(response, ServiceResponse):
+            print(f"\nBot: {response.answer}")
+            if response.requires_escalation:
+                print(f"\n[Escalation needed: {response.escalation_reason}]")
+        else:
+            print(f"\nBot: {response}")
 
 
 async def main():

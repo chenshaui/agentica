@@ -30,6 +30,7 @@ from agentica.tools.buildin_tools import (
     BuiltinTaskTool,
     get_builtin_tools,
 )
+from agentica.model.message import Message
 
 
 # ---------------------------------------------------------------------------
@@ -390,24 +391,8 @@ class TestBuiltinTodoTool:
         parsed = json.loads(result)
         assert "2 items" in parsed["message"]
         assert len(parsed["todos"]) == 2
-
-    def test_read_todos_empty(self, todo_tool):
-        result = todo_tool.read_todos()
-        parsed = json.loads(result)
-        assert parsed["summary"]["total"] == 0
-
-    def test_read_todos_after_write(self, todo_tool):
-        todo_tool.write_todos([
-            {"content": "Do X", "status": "completed"},
-            {"content": "Do Y", "status": "pending"},
-            {"content": "Do Z", "status": "in_progress"},
-        ])
-        result = todo_tool.read_todos()
-        parsed = json.loads(result)
-        assert parsed["summary"]["total"] == 3
-        assert parsed["summary"]["completed"] == 1
-        assert parsed["summary"]["pending"] == 1
-        assert parsed["summary"]["in_progress"] == 1
+        assert parsed["all_completed"] is False
+        assert parsed["verification_nudge"] is False
 
     def test_write_todos_invalid_status(self, todo_tool):
         result = todo_tool.write_todos([{"content": "Bad", "status": "unknown"}])
@@ -429,12 +414,172 @@ class TestBuiltinTodoTool:
         """Writing new todos replaces old ones entirely."""
         todo_tool.write_todos([{"content": "Old", "status": "pending"}])
         todo_tool.write_todos([{"content": "New1", "status": "pending"}, {"content": "New2", "status": "pending"}])
-        result = todo_tool.read_todos()
-        parsed = json.loads(result)
-        assert parsed["summary"]["total"] == 2
-        contents = [t["content"] for t in parsed["todos"]]
+        assert len(todo_tool.todos) == 2
+        contents = [t["content"] for t in todo_tool.todos]
         assert "Old" not in contents
         assert "New1" in contents
+
+    def test_set_agent_stores_on_agent(self):
+        """When set_agent is called, todos are stored on agent.todos."""
+        tool = BuiltinTodoTool()
+        mock_agent = MagicMock()
+        mock_agent.todos = []
+        tool.set_agent(mock_agent)
+
+        tool.write_todos([
+            {"content": "Task X", "status": "pending"},
+            {"content": "Task Y", "status": "in_progress"},
+        ])
+        # Todos should be stored on mock_agent.todos
+        assert len(mock_agent.todos) == 2
+        assert mock_agent.todos[0]["content"] == "Task X"
+        assert mock_agent.todos[1]["content"] == "Task Y"
+
+    def test_standalone_mode_uses_local_todos(self):
+        """Without set_agent, todos are stored locally on the tool."""
+        tool = BuiltinTodoTool()
+        tool.write_todos([{"content": "Local task", "status": "pending"}])
+        assert len(tool.todos) == 1
+        assert tool.todos[0]["content"] == "Local task"
+        # _agent should be None
+        assert tool._agent is None
+
+    def test_todos_property_reads_from_agent(self):
+        """The todos property should read from agent when agent is set."""
+        tool = BuiltinTodoTool()
+        mock_agent = MagicMock()
+        mock_agent.todos = [{"id": "1", "content": "Agent task", "status": "completed"}]
+        tool.set_agent(mock_agent)
+        assert tool.todos == mock_agent.todos
+
+    # ---- Auto-clear tests (mirrors CC allDone logic) ----
+
+    def test_auto_clear_when_all_completed(self, todo_tool):
+        """All-completed todos should auto-clear the list."""
+        result = todo_tool.write_todos([
+            {"content": "Task A", "status": "completed"},
+            {"content": "Task B", "status": "completed"},
+        ])
+        parsed = json.loads(result)
+        assert parsed["all_completed"] is True
+        # Internal list should be cleared
+        assert len(todo_tool.todos) == 0
+        # But the returned todos should still show what was submitted
+        assert len(parsed["todos"]) == 2
+
+    def test_no_auto_clear_when_not_all_completed(self, todo_tool):
+        """Partial completion should NOT clear the list."""
+        result = todo_tool.write_todos([
+            {"content": "Task A", "status": "completed"},
+            {"content": "Task B", "status": "in_progress"},
+        ])
+        parsed = json.loads(result)
+        assert parsed["all_completed"] is False
+        assert len(todo_tool.todos) == 2
+
+    # ---- Verification nudge tests (mirrors CC structural nudge) ----
+
+    def test_verification_nudge_3plus_all_completed_no_verify(self, todo_tool):
+        """3+ all-completed tasks with no verification keyword -> nudge fires."""
+        result = todo_tool.write_todos([
+            {"content": "Implement feature A", "status": "completed"},
+            {"content": "Implement feature B", "status": "completed"},
+            {"content": "Implement feature C", "status": "completed"},
+        ])
+        parsed = json.loads(result)
+        assert parsed["verification_nudge"] is True
+        assert "NOTE:" in parsed["message"]
+
+    def test_no_nudge_when_less_than_3_tasks(self, todo_tool):
+        """< 3 tasks all completed -> no nudge."""
+        result = todo_tool.write_todos([
+            {"content": "Task A", "status": "completed"},
+            {"content": "Task B", "status": "completed"},
+        ])
+        parsed = json.loads(result)
+        assert parsed["verification_nudge"] is False
+
+    def test_no_nudge_when_not_all_completed(self, todo_tool):
+        """3+ tasks but not all completed -> no nudge."""
+        result = todo_tool.write_todos([
+            {"content": "Task A", "status": "completed"},
+            {"content": "Task B", "status": "completed"},
+            {"content": "Task C", "status": "in_progress"},
+        ])
+        parsed = json.loads(result)
+        assert parsed["verification_nudge"] is False
+
+    def test_no_nudge_when_verification_keyword_present(self, todo_tool):
+        """3+ all completed but one mentions 'verify' -> no nudge."""
+        result = todo_tool.write_todos([
+            {"content": "Implement feature", "status": "completed"},
+            {"content": "Verify implementation", "status": "completed"},
+            {"content": "Deploy to staging", "status": "completed"},
+        ])
+        parsed = json.loads(result)
+        assert parsed["verification_nudge"] is False
+
+    def test_no_nudge_when_test_keyword_present(self, todo_tool):
+        """3+ all completed but one mentions 'test' -> no nudge."""
+        result = todo_tool.write_todos([
+            {"content": "Implement feature", "status": "completed"},
+            {"content": "Write unit tests", "status": "completed"},
+            {"content": "Update docs", "status": "completed"},
+        ])
+        parsed = json.loads(result)
+        assert parsed["verification_nudge"] is False
+
+    def test_no_nudge_when_lint_keyword_present(self, todo_tool):
+        """3+ all completed but one mentions 'lint' -> no nudge."""
+        result = todo_tool.write_todos([
+            {"content": "Refactor module", "status": "completed"},
+            {"content": "Run linting", "status": "completed"},
+            {"content": "Deploy", "status": "completed"},
+        ])
+        parsed = json.loads(result)
+        assert parsed["verification_nudge"] is False
+
+    # ---- _needs_verification_nudge static method tests ----
+
+    def test_needs_verification_nudge_static(self):
+        """Direct test of the static nudge detection method."""
+        assert BuiltinTodoTool._needs_verification_nudge([
+            {"content": "A", "status": "completed"},
+            {"content": "B", "status": "completed"},
+            {"content": "C", "status": "completed"},
+        ]) is True
+
+        # Has 'check' keyword
+        assert BuiltinTodoTool._needs_verification_nudge([
+            {"content": "A", "status": "completed"},
+            {"content": "Check results", "status": "completed"},
+            {"content": "C", "status": "completed"},
+        ]) is False
+
+        # Has 'review' keyword
+        assert BuiltinTodoTool._needs_verification_nudge([
+            {"content": "A", "status": "completed"},
+            {"content": "Code review", "status": "completed"},
+            {"content": "C", "status": "completed"},
+        ]) is False
+
+        # Has 'validate' keyword
+        assert BuiltinTodoTool._needs_verification_nudge([
+            {"content": "A", "status": "completed"},
+            {"content": "Validate output", "status": "completed"},
+            {"content": "C", "status": "completed"},
+        ]) is False
+
+    # ---- Tool result message format tests ----
+
+    def test_tool_result_contains_guidance_text(self, todo_tool):
+        """Tool result should contain guidance text for the LLM."""
+        result = todo_tool.write_todos([
+            {"content": "Task A", "status": "pending"},
+        ])
+        parsed = json.loads(result)
+        assert "Ensure that you continue" in parsed["message"]
+        assert "proceed with the current tasks" in parsed["message"]
 
 
 # ===========================================================================
@@ -445,7 +590,7 @@ class TestBuiltinTaskTool:
     def test_task_no_model_returns_error(self):
         """If no model is available, task should return an error."""
         tool = BuiltinTaskTool(model=None)
-        # No parent agent set either → model is None
+        # No parent agent set either -> model is None
         result = asyncio.run(tool.task("do something"))
         parsed = json.loads(result)
         assert parsed["success"] is False
@@ -504,7 +649,7 @@ class TestBuiltinTaskTool:
 
         async def mock_run_stream(*args, **kwargs):
             raise RuntimeError("LLM crashed")
-            yield  # noqa: E501 — unreachable, but makes this an async generator
+            yield  # noqa: E501 -- unreachable, but makes this an async generator
 
         mock_agent_instance = MagicMock()
         mock_agent_instance.run_stream = mock_run_stream
@@ -540,6 +685,226 @@ class TestBuiltinTaskTool:
         tool.set_parent_agent(mock_agent)
         assert tool._parent_agent is mock_agent
         assert tool._work_dir == "/some/path"
+
+    def test_task_model_copy_fallback_for_dataclass(self):
+        """When model is a @dataclass (no model_copy), task should fallback to copy.copy."""
+        from dataclasses import dataclass, field
+
+        @dataclass
+        class FakeDataclassModel:
+            """A minimal dataclass model that has no model_copy method."""
+            id: str = "fake-model"
+            tools: object = None
+            functions: object = None
+            function_call_stack: object = None
+            tool_choice: object = None
+            metrics: dict = field(default_factory=dict)
+            usage: object = None
+
+        fake_model = FakeDataclassModel()
+        # Ensure it does NOT have model_copy
+        assert not hasattr(fake_model, "model_copy")
+
+        tool = BuiltinTaskTool(model=fake_model)
+
+        mock_chunk = MagicMock()
+        mock_chunk.event = "RunResponse"
+        mock_chunk.content = "result from dataclass model"
+        mock_chunk.tools = None
+
+        async def mock_run_stream(*args, **kwargs):
+            yield mock_chunk
+
+        mock_agent_instance = MagicMock()
+        mock_agent_instance.run_stream = mock_run_stream
+
+        with patch("agentica.agent.Agent", return_value=mock_agent_instance):
+            result = asyncio.run(tool.task("test task", subagent_type="code"))
+
+        parsed = json.loads(result)
+        assert parsed["success"] is True
+        assert "result from dataclass model" in parsed["result"]
+
+    def test_task_model_copy_uses_model_copy_when_available(self):
+        """When model has model_copy (e.g. Pydantic), it should be used."""
+        mock_model = MagicMock()
+        mock_model.model_copy.return_value = MagicMock()
+        mock_model.model_copy.return_value.tools = None
+        mock_model.model_copy.return_value.functions = None
+        mock_model.model_copy.return_value.function_call_stack = None
+        mock_model.model_copy.return_value.tool_choice = None
+        mock_model.model_copy.return_value.metrics = {}
+
+        tool = BuiltinTaskTool(model=mock_model)
+
+        mock_chunk = MagicMock()
+        mock_chunk.event = "RunResponse"
+        mock_chunk.content = "done"
+        mock_chunk.tools = None
+
+        async def mock_run_stream(*args, **kwargs):
+            yield mock_chunk
+
+        mock_agent_instance = MagicMock()
+        mock_agent_instance.run_stream = mock_run_stream
+
+        with patch("agentica.agent.Agent", return_value=mock_agent_instance):
+            result = asyncio.run(tool.task("test", subagent_type="code"))
+
+        parsed = json.loads(result)
+        assert parsed["success"] is True
+        mock_model.model_copy.assert_called_once()
+
+
+# ===========================================================================
+# Agent auto-wire tests (Agent.__init__ wires TodoTool / TaskTool)
+# ===========================================================================
+
+class TestAgentAutoWire:
+    """Agent.__init__ should automatically call set_agent/set_parent_agent on builtin tools."""
+
+    def test_agent_wires_todo_tool(self):
+        """Agent.__init__ calls BuiltinTodoTool.set_agent(self)."""
+        from agentica.agent import Agent
+        from agentica.model.openai import OpenAIChat
+
+        todo_tool = BuiltinTodoTool()
+        agent = Agent(
+            model=OpenAIChat(id="gpt-4o-mini", api_key="fake_openai_key"),
+            tools=[todo_tool],
+        )
+        assert todo_tool._agent is agent
+
+    def test_agent_wires_task_tool(self):
+        """Agent.__init__ calls BuiltinTaskTool.set_parent_agent(self)."""
+        from agentica.agent import Agent
+        from agentica.model.openai import OpenAIChat
+
+        task_tool = BuiltinTaskTool()
+        agent = Agent(
+            model=OpenAIChat(id="gpt-4o-mini", api_key="fake_openai_key"),
+            tools=[task_tool],
+        )
+        assert task_tool._parent_agent is agent
+
+    def test_todo_tool_stores_on_agent(self):
+        """After wiring, write_todos stores todos on agent.todos."""
+        from agentica.agent import Agent
+        from agentica.model.openai import OpenAIChat
+
+        todo_tool = BuiltinTodoTool()
+        agent = Agent(
+            model=OpenAIChat(id="gpt-4o-mini", api_key="fake_openai_key"),
+            tools=[todo_tool],
+        )
+        todo_tool.write_todos([
+            {"content": "Test task", "status": "pending"},
+        ])
+        assert len(agent.todos) == 1
+        assert agent.todos[0]["content"] == "Test task"
+
+
+# ===========================================================================
+# OpenAI stream_finish_reason capture tests
+# ===========================================================================
+
+class TestOpenAIStreamFinishReason:
+    """Test that OpenAIChat.response_stream correctly captures finish_reason."""
+
+    def _make_openai_chat(self):
+        from agentica.model.openai import OpenAIChat
+        return OpenAIChat(id="gpt-4o-mini", api_key="fake_openai_key")
+
+    def test_finish_reason_captured_from_last_chunk(self):
+        """stream_finish_reason should be captured from the chunk where finish_reason is not None."""
+        model = self._make_openai_chat()
+
+        # Build mock stream chunks
+        chunk1 = MagicMock()
+        chunk1.choices = [MagicMock()]
+        chunk1.choices[0].finish_reason = None
+        chunk1.choices[0].delta = MagicMock()
+        chunk1.choices[0].delta.content = "Hello"
+        chunk1.choices[0].delta.reasoning_content = None
+        chunk1.choices[0].delta.audio = None
+        chunk1.choices[0].delta.tool_calls = None
+        chunk1.usage = None
+
+        chunk2 = MagicMock()
+        chunk2.choices = [MagicMock()]
+        chunk2.choices[0].finish_reason = "stop"
+        chunk2.choices[0].delta = MagicMock()
+        chunk2.choices[0].delta.content = " World"
+        chunk2.choices[0].delta.reasoning_content = None
+        chunk2.choices[0].delta.audio = None
+        chunk2.choices[0].delta.tool_calls = None
+        chunk2.usage = None
+
+        async def mock_invoke_stream(messages):
+            yield chunk1
+            yield chunk2
+
+        model.invoke_stream = mock_invoke_stream
+
+        messages = [Message(role="user", content="Hi")]
+        collected = []
+
+        async def run():
+            async for resp in model.response_stream(messages=messages):
+                collected.append(resp)
+
+        asyncio.run(run())
+        assert model._last_stream_finish_reason == "stop"
+
+    def test_finish_reason_length_captured(self):
+        """When output is truncated, finish_reason should be 'length'."""
+        model = self._make_openai_chat()
+
+        chunk = MagicMock()
+        chunk.choices = [MagicMock()]
+        chunk.choices[0].finish_reason = "length"
+        chunk.choices[0].delta = MagicMock()
+        chunk.choices[0].delta.content = "partial output..."
+        chunk.choices[0].delta.reasoning_content = None
+        chunk.choices[0].delta.audio = None
+        chunk.choices[0].delta.tool_calls = None
+        chunk.usage = None
+
+        async def mock_invoke_stream(messages):
+            yield chunk
+
+        model.invoke_stream = mock_invoke_stream
+
+        messages = [Message(role="user", content="Hi")]
+
+        async def run():
+            async for _ in model.response_stream(messages=messages):
+                pass
+
+        asyncio.run(run())
+        assert model._last_stream_finish_reason == "length"
+
+    def test_finish_reason_none_when_no_choices(self):
+        """When stream has no choices, finish_reason should remain None."""
+        model = self._make_openai_chat()
+
+        chunk = MagicMock()
+        chunk.choices = []
+        chunk.usage = None
+
+        async def mock_invoke_stream(messages):
+            yield chunk
+
+        model.invoke_stream = mock_invoke_stream
+
+        messages = [Message(role="user", content="Hi")]
+
+        async def run():
+            async for _ in model.response_stream(messages=messages):
+                pass
+
+        asyncio.run(run())
+        assert model._last_stream_finish_reason is None
 
 
 # ===========================================================================

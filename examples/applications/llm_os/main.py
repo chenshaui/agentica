@@ -105,8 +105,8 @@ def create_llm_os(
         knowledge=knowledge,
         # 内置工具
         tools=get_builtin_tools(),
-        # 知识库搜索 & 聊天历史
-        tool_config=ToolConfig(search_knowledge=True, read_chat_history=True),
+        # 知识库搜索
+        tool_config=ToolConfig(search_knowledge=True),
         # 聊天历史
         add_history_to_messages=True,
         history_window=6,

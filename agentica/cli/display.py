@@ -43,7 +43,7 @@ def print_header(model_provider: str, model_name: str, work_dir: Optional[str] =
 
     # Built-in tools (always shown)
     builtin_tools = ["ls", "read_file", "write_file", "edit_file", "glob", "grep",
-                     "execute", "web_search", "fetch_url", "write_todos", "read_todos", "task"]
+                     "execute", "web_search", "fetch_url", "write_todos", "task"]
     console.print(f"  Built-in Tools: [white]{', '.join(builtin_tools)}[/white]")
 
     # Extra tools info
@@ -201,7 +201,7 @@ Shell Mode (Ctrl+X to toggle):
 Tips:
   - Type @ followed by a filename to reference files
   - Agent has built-in tools: ls, read_file, write_file, edit_file, glob, grep,
-    execute, web_search, fetch_url, write_todos, read_todos, task
+    execute, web_search, fetch_url, write_todos, task
   - Use --tools to add extra tools, e.g.: --tools calculator shell wikipedia
   - Use --enable-skills to load skills, then /skills to list them
   - Say "remember this" or "save this" to trigger memory saving

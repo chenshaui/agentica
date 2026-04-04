@@ -15,7 +15,6 @@ Built-in tool set for Agent, including:
 - web_search: Web search (implemented using BaiduSearch)
 - fetch_url: Fetch URL content (implemented using UrlCrawler)
 - write_todos: Create and manage task list
-- read_todos: Read current task list
 - task: Launch subagent to handle complex tasks
 """
 import asyncio
@@ -1255,8 +1254,19 @@ class BuiltinFetchUrlTool(Tool):
 
 class BuiltinTodoTool(Tool):
     """
-    Built-in task management tool providing write_todos and read_todos functions.
+    Built-in task management tool providing write_todos function.
     Used for tracking progress of complex tasks.
+    Todos are stored on the Agent instance when available, making them
+    visible to the agent via tool_result and periodic reminders.
+
+    Design (mirrors CC TodoWriteTool):
+    - write_todos tool_result contains full todo state + guidance text
+    - All-completed auto-clear: when every item is completed, list is cleared
+    - Verification nudge: when 3+ tasks all completed and none is a verification
+      step, tool_result appends a reminder to verify before reporting done
+    - No system prompt injection of todos (avoids token waste / cache busting)
+    - Periodic reminder injected by Runner when LLM hasn't called write_todos
+      for N turns (see Runner._inject_todo_reminder)
     """
     # System prompt for todo tool usage guidance
     WRITE_TODOS_SYSTEM_PROMPT = dedent("""## `write_todos`
@@ -1269,20 +1279,72 @@ class BuiltinTodoTool(Tool):
     For simple objectives that only require a few steps, it is better to just complete the objective directly and NOT use this tool.
     Writing todos takes time and tokens, use it when it is helpful for managing complex many-step problems! But not for simple few-step requests.
 
+    The todo list will be shown in your tool results when you update it.
+    If you haven't updated it in a while, you may receive a reminder with the current state.
+
     ## Important To-Do List Usage Notes to Remember
     - The `write_todos` tool should never be called multiple times in parallel.
     - Don't be afraid to revise the To-Do list as you go. New information may reveal new tasks that need to be done, or old tasks that are irrelevant.""")
 
+    # Verification nudge message (mirrors CC's mapToolResultToToolResultBlockParam)
+    _VERIFICATION_NUDGE = (
+        "\n\nNOTE: You just closed out 3+ tasks and none of them was a verification step. "
+        "Before writing your final summary, verify your work by running tests, linting, "
+        "or checking the actual output. Do not self-declare completion without evidence -- "
+        "review the results to confirm correctness."
+    )
+
     def __init__(self):
         """Initialize BuiltinTodoTool."""
         super().__init__(name="builtin_todo_tool")
-        self._todos: List[Dict[str, Any]] = []
+        self._agent: Optional["Agent"] = None
+        self._todos: List[Dict[str, Any]] = []  # fallback when no agent
         self.register(self.write_todos, is_destructive=True)
-        self.register(self.read_todos, is_read_only=True)
+
+    def set_agent(self, agent: "Agent") -> None:
+        """Receive agent reference so todos are stored on the agent."""
+        self._agent = agent
+
+    @property
+    def todos(self) -> List[Dict[str, Any]]:
+        if self._agent is not None:
+            return self._agent.todos
+        return self._todos
+
+    @todos.setter
+    def todos(self, value: List[Dict[str, Any]]) -> None:
+        if self._agent is not None:
+            self._agent.todos = value
+        else:
+            self._todos = value
 
     def get_system_prompt(self) -> Optional[str]:
         """Get the system prompt for todo tool usage guidance."""
         return self.WRITE_TODOS_SYSTEM_PROMPT
+
+    @staticmethod
+    def _needs_verification_nudge(todos: List[Dict[str, str]]) -> bool:
+        """Check if verification nudge should be appended to tool_result.
+
+        Fires when:
+        1. All todos are completed (the list is being "closed out")
+        2. There are 3+ todos (non-trivial task)
+        3. None of the todos mentions verification/verify/test/check/lint
+           (the agent skipped verification steps)
+
+        This mirrors CC's structural nudge in TodoWriteTool.call() and
+        TaskUpdateTool.call() -- it catches the exact moment the agent
+        declares "everything done" without having verified anything.
+        """
+        if len(todos) < 3:
+            return False
+        if not all(t.get("status") == "completed" for t in todos):
+            return False
+        # Check if any todo content mentions verification-related keywords
+        verification_pattern = re.compile(r'verif|test|lint|check|review|validate', re.IGNORECASE)
+        if any(verification_pattern.search(t.get("content", "")) for t in todos):
+            return False
+        return True
 
     def write_todos(self, todos: Optional[List[Dict[str, str]]] = None) -> str:
         """Create and manage a structured task list.
@@ -1355,7 +1417,7 @@ class BuiltinTodoTool(Tool):
             Example: [{"content": "Write a report", "status": "pending"}, {"content": "Review report", "status": "pending"}]
 
         Returns:
-            Updated task list
+            Updated task list with guidance message
         """
         try:
             # Validate todos parameter
@@ -1384,59 +1446,36 @@ class BuiltinTodoTool(Tool):
                     "status": status,
                 })
 
-            self._todos = validated_todos
-            logger.debug(f"Updated todo list: {len(self._todos)} items, todos: {self._todos}")
+            # Check verification nudge BEFORE auto-clear (need original todos)
+            nudge_needed = self._needs_verification_nudge(validated_todos)
+
+            # Auto-clear: all completed -> clear list (mirrors CC's allDone logic)
+            all_done = all(t["status"] == "completed" for t in validated_todos)
+            if all_done:
+                self.todos = []
+            else:
+                self.todos = validated_todos
+
+            logger.debug(f"Updated todo list: {len(validated_todos)} items, all_done={all_done}")
+
+            # Build tool_result message (mirrors CC's mapToolResultToToolResultBlockParam)
+            result_message = (
+                f"Todos have been modified successfully ({len(validated_todos)} items). "
+                "Ensure that you continue to use the todo list to track your progress. "
+                "Please proceed with the current tasks if applicable."
+            )
+            if nudge_needed:
+                result_message += self._VERIFICATION_NUDGE
 
             return json.dumps({
-                "message": f"Updated todo list with {len(self._todos)} items",
-                "todos": self._todos,
+                "message": result_message,
+                "todos": validated_todos,
+                "all_completed": all_done,
+                "verification_nudge": nudge_needed,
             }, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"Error updating todos: {e}")
             return f"Error updating todos: {e}"
-
-    def read_todos(self) -> str:
-        """Read current task list status.
-
-        Use this tool to check the current state of your task list. This is useful for:
-        1. Reviewing progress before continuing work
-        2. Checking which tasks are completed, in progress, or pending
-        3. Deciding which task to work on next
-        4. Verifying task completion before reporting to user
-
-        This tool works together with write_todos:
-        - Use write_todos to create/update tasks
-        - Use read_todos to check current status
-
-        Returns:
-            JSON formatted current task list with summary statistics
-        """
-        if not self._todos:
-            return json.dumps({
-                "message": "No todos found. Use write_todos to create a task list.",
-                "todos": [],
-                "summary": {"pending": 0, "in_progress": 0, "completed": 0, "total": 0}
-            }, ensure_ascii=False, indent=2)
-
-        # Count status statistics
-        status_counts = {"pending": 0, "in_progress": 0, "completed": 0}
-        for todo in self._todos:
-            status = todo.get("status", "pending")
-            if status in status_counts:
-                status_counts[status] += 1
-
-        total = len(self._todos)
-        progress_pct = round(status_counts["completed"] / total * 100) if total > 0 else 0
-
-        logger.debug(f"Todo list: {status_counts}, progress: {progress_pct}%")
-        return json.dumps({
-            "summary": {
-                **status_counts,
-                "total": total,
-                "progress": f"{progress_pct}%"
-            },
-            "todos": self._todos
-        }, ensure_ascii=False, indent=2)
 
 
 class BuiltinTaskTool(Tool):
@@ -1606,7 +1645,7 @@ class BuiltinTaskTool(Tool):
         EXECUTE_FUNCTIONS = {"execute"}
         WEB_SEARCH_FUNCTIONS = {"web_search"}
         FETCH_URL_FUNCTIONS = {"fetch_url"}
-        TODO_FUNCTIONS = {"write_todos", "read_todos"}
+        TODO_FUNCTIONS = {"write_todos"}
 
         allowed = set(config.allowed_tools)
         tools = []
@@ -1756,7 +1795,11 @@ class BuiltinTaskTool(Tool):
                     "error": "No model available for subagent. Please configure a model.",
                 }, ensure_ascii=False)
 
-            model = source_model.model_copy()
+            import copy
+            try:
+                model = source_model.model_copy()
+            except AttributeError:
+                model = copy.copy(source_model)
             # Reset runtime state so Agent.__init__ registers subagent's own tools cleanly
             model.tools = None
             model.functions = None
@@ -1766,8 +1809,9 @@ class BuiltinTaskTool(Tool):
             from agentica.model.usage import Usage
             model.usage = Usage()
             # Force a fresh HTTP client (the old one belongs to the parent)
-            model.client = None
-            model.http_client = None
+            for attr in ('client', 'http_client', 'async_client'):
+                if hasattr(model, attr):
+                    setattr(model, attr, None)
 
             # Generate unique run_id for subagent
             parent_agent_id = self._parent_agent.agent_id if self._parent_agent else 'main'
@@ -2046,5 +2090,3 @@ if __name__ == '__main__':
         {"content": "Task 1", "status": "in_progress"},
         {"content": "Task 2", "status": "pending"},
     ]))
-    print("\n=== read_todos test ===")
-    print(todo_tool.read_todos())

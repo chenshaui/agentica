@@ -41,7 +41,6 @@ TOOL_ICONS = {
     "fetch_url": "🔗",
     # Task management
     "write_todos": "📋",
-    "read_todos": "📋",
     # Subagent
     "task": "🤖",
     # Default

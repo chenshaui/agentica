@@ -429,6 +429,7 @@ class OpenAIChat(Model):
         stream_data: StreamData = StreamData()
         metrics: Metrics = Metrics()
 
+        stream_finish_reason: Optional[str] = None
         metrics.response_timer.start()
         async for response in self.invoke_stream(messages=messages):
             if response.choices and len(response.choices) > 0:
@@ -438,6 +439,10 @@ class OpenAIChat(Model):
                 metrics.completion_tokens += 1
                 if metrics.completion_tokens == 1:
                     metrics.time_to_first_token = metrics.response_timer.elapsed
+
+                # Capture finish_reason from the final chunk
+                if response.choices[0].finish_reason is not None:
+                    stream_finish_reason = response.choices[0].finish_reason
 
                 response_delta: ChoiceDelta = response.choices[0].delta
 

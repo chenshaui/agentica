@@ -49,7 +49,6 @@ Built-in Tools:
     - web_search: Web search
     - fetch_url: Fetch URL content
     - write_todos: Create task list
-    - read_todos: Read task list
     - task: Launch subagent
 
 Available Extra Tools (use --tools to enable):

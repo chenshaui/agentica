@@ -61,6 +61,11 @@ class PromptConfig:
     output_language: Optional[str] = None
     markdown: bool = False
 
+    # Todo reminder: inject a gentle user-role reminder when the LLM hasn't
+    # called write_todos for this many assistant turns. 0 = disabled.
+    # Mirrors CC's TODO_REMINDER_CONFIG.TURNS_SINCE_WRITE (default 10).
+    todo_reminder_interval: int = 10
+
 
 @dataclass
 class ToolConfig:
