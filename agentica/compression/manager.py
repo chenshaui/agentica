@@ -506,9 +506,12 @@ class CompressionManager:
         return over
 
     def _save_transcript(self, messages: List["Message"]) -> None:
-        """Persist current conversation to .transcripts/ before compaction."""
-        transcript_dir = Path(".transcripts")
-        transcript_dir.mkdir(exist_ok=True)
+        """Persist current conversation to transcripts dir before compaction."""
+        if self.workspace is not None and self.workspace.exists():
+            transcript_dir = Path(self.workspace.path) / ".transcripts"
+        else:
+            transcript_dir = Path.home() / ".agentica" / "transcripts"
+        transcript_dir.mkdir(parents=True, exist_ok=True)
         transcript_path = transcript_dir / f"transcript_{int(time.time())}.jsonl"
         try:
             with open(transcript_path, "w", encoding="utf-8") as fh:
@@ -525,36 +528,63 @@ class CompressionManager:
         self,
         messages: List["Message"],
         model: Optional[Any] = None,
+        custom_instructions: Optional[str] = None,
     ) -> Optional[str]:
-        """Use an LLM to summarise the conversation for continuity."""
+        """Use an LLM to summarise the conversation for continuity.
+
+        Args:
+            messages: Conversation messages to summarise.
+            model: LLM instance to use (falls back to self.model).
+            custom_instructions: Optional user-provided instructions appended to prompt.
+        """
         active_model = model or self.model
         if active_model is None:
             return None
-        try:
-            text = json.dumps(
-                [{"role": m.role, "content": str(m.content or "")[:2000]} for m in messages],
-                ensure_ascii=False,
-            )[:80_000]
-            resp = await active_model.invoke([
-                Message(
-                    role="user",
-                    content=(
-                        "Summarise this agent conversation for continuity.\n"
-                        "Include: main task, key findings, completed steps, "
-                        "pending work, and any important facts discovered.\n\n"
-                        + text
-                    ),
-                )
-            ])
-            # Extract text from common response shapes
-            if hasattr(resp, "choices"):
-                return resp.choices[0].message.content
-            if hasattr(resp, "content"):
-                return resp.content
-            return str(resp)
-        except Exception as e:
-            logger.error(f"LLM summarisation failed: {e}")
-            return None
+
+        # Adaptive limits based on model context window.
+        # Reserve ~50% of context for the summary input (the other 50% for
+        # prompt overhead + output tokens).  Fallback: 80K chars (~20K tokens).
+        context_window = getattr(active_model, "context_window", None) or 200_000
+        # 1 token ~ 4 chars; use half of context window for the conversation dump
+        max_total_chars = min(context_window * 4 // 2, 400_000)
+        # Per-message truncation: distribute budget across messages, floor 1000, cap 8000
+        per_msg_chars = max(1000, min(8000, max_total_chars // max(len(messages), 1)))
+
+        text = json.dumps(
+            [{"role": m.role, "content": str(m.content or "")[:per_msg_chars]} for m in messages],
+            ensure_ascii=False,
+        )[:max_total_chars]
+
+        prompt_parts = [
+            "Create a detailed summary of the conversation so far for continuity.",
+            "",
+            "Your summary MUST include:",
+            "1. Primary Request and Intent: the user's explicit goals and requirements",
+            "2. Key Technical Concepts: important technical details, APIs, patterns discussed",
+            "3. Files and Code: specific files, functions, code sections mentioned or modified",
+            "4. Completed Steps: what has been done, decisions made, problems solved",
+            "5. Pending Tasks: remaining work, next steps, open questions",
+            "6. Important Facts: numbers, URLs, IDs, configurations, error messages discovered",
+            "",
+            "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.",
+        ]
+        if custom_instructions:
+            prompt_parts.append("")
+            prompt_parts.append(f"Additional instructions: {custom_instructions}")
+
+        prompt_parts.append("")
+        prompt_parts.append("Conversation to summarise:")
+        prompt_parts.append(text)
+
+        resp = await active_model.invoke([
+            Message(role="user", content="\n".join(prompt_parts))
+        ])
+        # Extract text from common response shapes
+        if hasattr(resp, "choices"):
+            return resp.choices[0].message.content
+        if hasattr(resp, "content"):
+            return resp.content
+        return str(resp)
 
     async def auto_compact(
         self,
@@ -562,6 +592,7 @@ class CompressionManager:
         model: Optional[Any] = None,
         force: bool = False,
         working_memory: Optional[Any] = None,
+        custom_instructions: Optional[str] = None,
     ) -> bool:
         """Layer 2 compaction: LLM-summarise when context is near the limit.
 
@@ -579,6 +610,7 @@ class CompressionManager:
             force:    If True, bypass threshold check (reactive compact path).
             working_memory: Optional WorkingMemory instance. When its session
                 summary is available, it is used directly instead of calling LLM.
+            custom_instructions: Optional user-provided instructions for summarisation.
 
         Returns:
             True if compaction occurred, False otherwise.
@@ -601,8 +633,9 @@ class CompressionManager:
 
         # SM-compact optimization: reuse existing WorkingMemory session summary
         # when available (avoids LLM call, faster + cheaper).
+        # Skip SM-compact when custom_instructions are provided (user wants custom summary).
         summary: Optional[str] = None
-        if working_memory is not None and working_memory.summary is not None:
+        if not custom_instructions and working_memory is not None and working_memory.summary is not None:
             sm = working_memory.summary
             summary = sm.summary
             if sm.topics:
@@ -610,7 +643,7 @@ class CompressionManager:
             logger.debug("Auto-compact: reusing WorkingMemory session summary (SM-compact)")
 
         if summary is None:
-            summary = await self._summarise_conversation(messages, model)
+            summary = await self._summarise_conversation(messages, model, custom_instructions)
 
         if not summary:
             self._consecutive_auto_compact_failures += 1
