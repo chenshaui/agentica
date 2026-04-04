@@ -73,7 +73,7 @@ class BuiltinFileTool(Tool):
         # 1. Read dedup: skip re-reading unchanged files (CC saves ~18% of Read calls)
         # 2. mtime check: detect external modifications before edit/write
         # Key: resolved absolute path (str)
-        # Value: {"mtime": float, "offset": int, "limit": int|None}
+        # Value: {"mtime": float, "offset": int, "limit": int|None, "dedup_count": int}
         self._file_read_state: Dict[str, Dict[str, Any]] = {}
 
         # Register all file operation functions.
@@ -283,8 +283,16 @@ class BuiltinFileTool(Tool):
                     and prev.get("offset") == offset
                     and prev.get("limit") == limit
                 ):
-                    logger.debug(f"Read dedup: file unchanged since last read: {file_path}")
-                    return "[File unchanged since last read — content identical to previous read_file call]"
+                    dedup_count = prev.get("dedup_count", 0)
+                    if dedup_count < 1:
+                        # First repeat: content should still be in context, skip read
+                        prev["dedup_count"] = dedup_count + 1
+                        logger.debug(f"Read dedup ({dedup_count + 1}): file unchanged since last read: {file_path}")
+                        return "[File unchanged since last read — content identical to previous read_file result]"
+                    else:
+                        # Second+ repeat: LLM likely lost context, force re-read
+                        logger.debug(f"Read dedup bypass ({dedup_count + 1}): forcing re-read of {file_path}")
+                        prev["dedup_count"] = dedup_count + 1
 
             # --- Large-file guard (mirrors CC's maxSizeBytes) ---
             try:
@@ -328,6 +336,7 @@ class BuiltinFileTool(Tool):
                     "mtime": current_mtime,
                     "offset": offset,
                     "limit": limit,
+                    "dedup_count": 0,
                 }
 
             logger.debug(f"Read file {file_path}: lines {offset + 1}-{actual_end}, total {total_lines} lines")
