@@ -473,6 +473,7 @@ class Claude(Model):
                         {
                             "type": "function",
                             "function": function_def,
+                            "id": tool_use.id,
                         }
                     )
 
@@ -532,6 +533,40 @@ class Claude(Model):
                     }
                 )
             messages.append(Message(role="user", content=fc_responses))
+
+    def parse_tool_calls(
+        self, assistant_message: Message, messages: List[Message], tool_role: str = "tool",
+    ) -> tuple:
+        """Parse tool calls for Anthropic format.
+
+        Anthropic tool_calls include 'id' (tool_use_id) which is needed for result formatting.
+        Errors are appended as role="user" messages (Anthropic convention).
+        """
+        function_calls_to_run: List[FunctionCall] = []
+        tool_ids: List[str] = []
+        if assistant_message.tool_calls is None or len(assistant_message.tool_calls) == 0:
+            return function_calls_to_run, {"tool_ids": tool_ids}
+
+        for tool_call in assistant_message.tool_calls:
+            _tool_use_id = tool_call.get("id", "")
+            tool_ids.append(_tool_use_id)
+            _function_call = get_function_call_for_tool_call(tool_call, self.functions)
+            if _function_call is None:
+                messages.append(Message(role="user", content="Could not find function to call."))
+                continue
+            if _function_call.error is not None:
+                messages.append(Message(role="user", content=_function_call.error))
+                continue
+            function_calls_to_run.append(_function_call)
+
+        return function_calls_to_run, {"tool_ids": tool_ids}
+
+    def format_tool_results(
+        self, function_call_results: List[Message], messages: List[Message], provider_metadata: dict,
+    ) -> None:
+        """Format tool results for Anthropic (role='user' with tool_result content blocks)."""
+        tool_ids = provider_metadata.get("tool_ids", [])
+        self.format_function_call_results(function_call_results, tool_ids, messages)
 
     async def handle_tool_calls(
             self,
@@ -725,6 +760,7 @@ class Claude(Model):
                             {
                                 "type": "function",
                                 "function": function_def,
+                                "id": tool_use.id,
                             }
                         )
                     message_data.response_block.append(delta.content_block)

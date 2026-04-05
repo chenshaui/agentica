@@ -114,10 +114,6 @@ class TestRunEvent:
         assert RunEvent.workflow_started.value == "WorkflowStarted"
         assert RunEvent.workflow_completed.value == "WorkflowCompleted"
 
-    def test_multi_round_events_present(self):
-        assert hasattr(RunEvent, "multi_round_turn")
-        assert hasattr(RunEvent, "multi_round_completed")
-
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

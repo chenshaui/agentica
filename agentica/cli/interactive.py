@@ -470,8 +470,7 @@ def _process_stream_response(current_agent, final_input: str) -> None:
                 continue
             
             # Skip non-display events
-            if chunk.event in ("RunStarted", "RunCompleted", "UpdatingMemory", 
-                               "MultiRoundToolResult", "MultiRoundCompleted"):
+            if chunk.event in ("RunStarted", "RunCompleted", "UpdatingMemory"):
                 continue
             
             # Handle tool call events
@@ -506,27 +505,6 @@ def _process_stream_response(current_agent, final_input: str) -> None:
                                 is_error=is_error, elapsed=elapsed,
                             )
                             break
-                continue
-            
-            # Handle multi-round tool calls
-            elif chunk.event == "MultiRoundToolCall":
-                if spinner_active:
-                    status.stop()
-                    spinner_active = False
-                
-                if chunk.content:
-                    tool_content = str(chunk.content)
-                    if "(" in tool_content:
-                        tool_name = tool_content.split("(")[0]
-                        args_part = tool_content[len(tool_name)+1:-1] if tool_content.endswith(")") else ""
-                        try:
-                            tool_args = json.loads(args_part) if args_part.startswith("{") else {"args": args_part[:100]}
-                        except Exception:
-                            tool_args = {"args": args_part[:100] + "..." if len(args_part) > 100 else args_part}
-                    else:
-                        tool_name = tool_content
-                        tool_args = {}
-                    display.display_tool(tool_name, tool_args)
                 continue
             
             # Check for content

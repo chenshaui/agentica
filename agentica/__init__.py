@@ -233,7 +233,7 @@ _LAZY_IMPORTS = {
     "BuiltinWebSearchTool": "agentica.tools.buildin_tools",
     "BuiltinFetchUrlTool": "agentica.tools.buildin_tools",
     "BuiltinTodoTool": "agentica.tools.buildin_tools",
-    "BuiltinTaskTool": "agentica.tools.buildin_tools",
+    "BuiltinTaskTool": "agentica.tools.builtin_task_tool",
     "BuiltinMemoryTool": "agentica.tools.buildin_tools",
     "get_builtin_tools": "agentica.tools.buildin_tools",
 

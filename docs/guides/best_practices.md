@@ -382,16 +382,16 @@ agent = Agent(
 )
 ```
 
-### 2. 监控多轮进度
+### 2. 监控工具调用进度
 
 ```python
-async for response in agent.run_stream("复杂任务"):
-    if response.event == "MultiRoundTurn":
-        print(f"轮次 {response.extra_data.round}")
-    elif response.event == "MultiRoundToolCall":
-        print(f"调用工具: {response.content}")
-    elif response.event == "MultiRoundCompleted":
-        print("任务完成")
+async for response in agent.run_stream("complex task"):
+    if response.event == "ToolCallStarted":
+        print(f"Tool started: {response.content}")
+    elif response.event == "ToolCallCompleted":
+        print(f"Tool completed: {response.content}")
+    elif response.event == "RunResponse":
+        print(response.content, end="")
 ```
 
 ### 3. 上下文压缩

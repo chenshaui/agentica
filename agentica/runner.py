@@ -57,6 +57,7 @@ from agentica.memory import AgentRun
 from agentica.utils.string import parse_structured_output
 from agentica.utils.tokens import count_tokens
 from agentica.utils.langfuse_integration import langfuse_trace_context
+from agentica.tools.base import FunctionCall
 
 if TYPE_CHECKING:
     from agentica.agent import Agent
@@ -154,6 +155,162 @@ class Runner:
             if m.role == "assistant" and not m.tool_calls:
                 break
         return False
+
+    @staticmethod
+    def _get_last_assistant_message(messages: List[Message]) -> Optional[Message]:
+        """Get the last assistant message from the message list."""
+        for m in reversed(messages):
+            if m.role == "assistant":
+                return m
+        return None
+
+    def _loop_safety_checks(
+        self,
+        messages: List[Message],
+        loop_state: "LoopState",
+        agent: "Agent",
+    ) -> Optional[str]:
+        """Run all per-turn safety checks. Returns break-message or None to continue."""
+        if self._check_death_spiral(messages, loop_state):
+            return "\n\n[Error: All tool calls have failed repeatedly. Stopping to prevent infinite loop.]"
+
+        _cost_msg = self._check_cost_budget(
+            agent.model._cost_tracker, agent._run_max_cost_usd
+        )
+        if _cost_msg:
+            return f"\n\n[{_cost_msg}]"
+
+        return None
+
+    @staticmethod
+    def _loop_post_response(
+        messages: List[Message],
+        model: "Model",
+        loop_state: "LoopState",
+        had_tool_calls: bool,
+    ) -> bool:
+        """Check if the agentic loop should continue after a response.
+
+        Returns True to continue looping, False to break.
+        """
+        if not had_tool_calls:
+            # Max-tokens recovery: if output was truncated, inject "Continue"
+            _finish = model.last_finish_reason
+            if (
+                _finish == "length"
+                and loop_state.max_tokens_recovery_count < loop_state.max_tokens_recovery_limit
+            ):
+                loop_state.max_tokens_recovery_count += 1
+                messages.append(
+                    Message(role="user", content="Continue from where you left off.")
+                )
+                return True  # continue
+            return False  # break
+
+        # Check stop_after_tool_call
+        for m in reversed(messages):
+            if m.stop_after_tool_call:
+                return False  # break
+            if m.role == "assistant" and not m.tool_calls:
+                break
+        return True  # continue (tool calls processed, loop again)
+
+    async def _execute_tool_calls(
+        self,
+        function_calls: List[FunctionCall],
+        function_call_results: List[Message],
+        agent: "Agent",
+        model: "Model",
+        tool_role: str = "tool",
+        stream: bool = False,
+    ) -> AsyncIterator[ModelResponse]:
+        """Execute parsed tool calls with hooks, yielding ModelResponse events.
+
+        This is the Runner-owned tool execution method. It wraps Model.run_function_calls()
+        with proper hook dispatch using the Agent reference directly (no _agent_ref needed).
+        """
+        async for tool_response in model.run_function_calls(
+            function_calls=function_calls,
+            function_call_results=function_call_results,
+            tool_role=tool_role,
+        ):
+            yield tool_response
+
+    async def _handle_tool_calls_in_runner(
+        self,
+        messages: List[Message],
+        agent: "Agent",
+        model: "Model",
+        stream: bool = False,
+    ) -> bool:
+        """Check for tool calls in the last assistant message, execute them, format results.
+
+        Returns True if tool calls were found and executed (loop should continue).
+        Returns False if no tool calls (loop should check for break).
+        """
+        assistant_msg = self._get_last_assistant_message(messages)
+        if assistant_msg is None or not assistant_msg.tool_calls:
+            return False
+
+        # Parse tool calls (provider-specific)
+        function_calls, provider_metadata = model.parse_tool_calls(
+            assistant_msg, messages, tool_role="tool"
+        )
+        if not function_calls:
+            # All tool calls had errors (already appended to messages by parse_tool_calls)
+            return True
+
+        # Execute tool calls
+        function_call_results: List[Message] = []
+        tool_role = provider_metadata.get("tool_role", "tool")
+        async for _tool_resp in self._execute_tool_calls(
+            function_calls=function_calls,
+            function_call_results=function_call_results,
+            agent=agent,
+            model=model,
+            tool_role=tool_role,
+            stream=stream,
+        ):
+            pass  # Events consumed by streaming loop if needed
+
+        # Format and append results (provider-specific)
+        model.format_tool_results(function_call_results, messages, provider_metadata)
+        return True
+
+    async def _handle_tool_calls_in_runner_stream(
+        self,
+        messages: List[Message],
+        agent: "Agent",
+        model: "Model",
+    ) -> AsyncIterator[ModelResponse]:
+        """Streaming version: execute tool calls and yield ModelResponse events.
+
+        Yields tool_call_started / tool_call_completed events for streaming consumers.
+        Returns after all tool calls are done.
+        """
+        assistant_msg = self._get_last_assistant_message(messages)
+        if assistant_msg is None or not assistant_msg.tool_calls:
+            return
+
+        function_calls, provider_metadata = model.parse_tool_calls(
+            assistant_msg, messages, tool_role="tool"
+        )
+        if not function_calls:
+            return
+
+        function_call_results: List[Message] = []
+        tool_role = provider_metadata.get("tool_role", "tool")
+        async for tool_resp in self._execute_tool_calls(
+            function_calls=function_calls,
+            function_call_results=function_call_results,
+            agent=agent,
+            model=model,
+            tool_role=tool_role,
+            stream=True,
+        ):
+            yield tool_resp
+
+        model.format_tool_results(function_call_results, messages, provider_metadata)
 
     @staticmethod
     async def _maybe_compress_messages(
@@ -479,6 +636,11 @@ class Runner:
                 model_response: ModelResponse
                 agent.model = cast(Model, agent.model)
 
+                # Disable tool execution in Model layer — Runner owns tool execution now.
+                # Model.response() / response_stream() will still parse tool_calls into
+                # the assistant message, but won't execute them.
+                agent.model.run_tools = False
+
                 # Build hooks from Agent (they live on Agent, not Model)
                 _pre_tool_hook = agent._build_pre_tool_hook()
                 _post_tool_hook = agent._build_post_tool_hook()
@@ -492,25 +654,19 @@ class Runner:
 
                     while True:
                         loop_state.turn_count += 1
-
-                        # Safety: death spiral
-                        if self._check_death_spiral(messages_for_model, loop_state):
-                            yield RunResponse(
-                                event=RunEvent.run_response,
-                                content="\n\n[Error: All tool calls have failed repeatedly. Stopping to prevent infinite loop.]",
-                                run_id=agent.run_id,
-                                agent_id=agent.agent_id,
-                            )
-                            break
-
-                        # Safety: cost budget
-                        _cost_msg = self._check_cost_budget(
-                            agent.model._cost_tracker, agent._run_max_cost_usd
+                        logger.debug(
+                            f"[stream] Turn {loop_state.turn_count}: "
+                            f"agent={agent.identifier}, messages={len(messages_for_model)}"
                         )
-                        if _cost_msg:
+
+                        # Safety checks (death spiral + cost budget)
+                        _break_msg = self._loop_safety_checks(
+                            messages_for_model, loop_state, agent,
+                        )
+                        if _break_msg:
                             yield RunResponse(
                                 event=RunEvent.run_response,
-                                content=f"\n\n[{_cost_msg}]",
+                                content=_break_msg,
                                 run_id=agent.run_id,
                                 agent_id=agent.agent_id,
                             )
@@ -557,55 +713,53 @@ class Runner:
                                         run_id=agent.run_id,
                                         agent_id=agent.agent_id,
                                     )
-                            elif model_response_chunk.event == ModelResponseEvent.tool_call_started.value:
-                                tool_call_dict = model_response_chunk.tool_call
-                                if tool_call_dict is not None:
-                                    if agent.run_response.tools is None:
-                                        agent.run_response.tools = []
-                                    agent.run_response.tools.append(tool_call_dict)
-                                if agent.stream_intermediate_steps:
-                                    yield self.generic_run_response(
-                                        f"Running tool: {tool_call_dict.get('name') if tool_call_dict else 'Unknown'}",
-                                        RunEvent.tool_call_started,
-                                    )
-                            elif model_response_chunk.event == ModelResponseEvent.tool_call_completed.value:
-                                tool_call_dict = model_response_chunk.tool_call
-                                if tool_call_dict is not None and agent.run_response.tools:
-                                    for tool_call in agent.run_response.tools:
-                                        if tool_call.get("id") == tool_call_dict.get("id"):
-                                            tool_call.update(tool_call_dict)
-                                            break
-                                if agent.stream_intermediate_steps:
-                                    yield self.generic_run_response(
-                                        f"Tool completed: {tool_call_dict.get('name') if tool_call_dict else 'Unknown'}",
-                                        RunEvent.tool_call_completed,
-                                    )
 
                         # --- Lifecycle: LLM end (stream) ---
                         if agent._run_hooks is not None:
                             await agent._run_hooks.on_llm_end(agent=agent, response=model_response)
 
+                        # --- Runner-owned tool execution (streaming) ---
+                        # Model.response_stream() only parsed tool_calls (run_tools=False).
+                        # Runner now executes them, yielding tool events.
+                        _had_tool_calls = False
+                        assistant_msg = self._get_last_assistant_message(messages_for_model)
+                        if assistant_msg is not None and assistant_msg.tool_calls:
+                            _had_tool_calls = True
+                            async for tool_resp in self._handle_tool_calls_in_runner_stream(
+                                messages_for_model, agent, agent.model,
+                            ):
+                                if tool_resp.event == ModelResponseEvent.tool_call_started.value:
+                                    tool_call_dict = tool_resp.tool_call
+                                    if tool_call_dict is not None:
+                                        if agent.run_response.tools is None:
+                                            agent.run_response.tools = []
+                                        agent.run_response.tools.append(tool_call_dict)
+                                    if agent.stream_intermediate_steps:
+                                        yield self.generic_run_response(
+                                            f"Running tool: {tool_call_dict.get('name') if tool_call_dict else 'Unknown'}",
+                                            RunEvent.tool_call_started,
+                                        )
+                                elif tool_resp.event == ModelResponseEvent.tool_call_completed.value:
+                                    tool_call_dict = tool_resp.tool_call
+                                    if tool_call_dict is not None and agent.run_response.tools:
+                                        for tool_call in agent.run_response.tools:
+                                            if tool_call.get("id") == tool_call_dict.get("id"):
+                                                tool_call.update(tool_call_dict)
+                                                break
+                                    if agent.stream_intermediate_steps:
+                                        yield self.generic_run_response(
+                                            f"Tool completed: {tool_call_dict.get('name') if tool_call_dict else 'Unknown'}",
+                                            RunEvent.tool_call_completed,
+                                        )
+
                         # Post-tool hook (todo reminder injection)
                         if _post_tool_hook is not None:
                             await _post_tool_hook(messages_for_model, [])
 
-                        # Check if we should continue looping
-                        if not self._response_has_tool_calls(messages_for_model):
-                            # Max-tokens recovery: if output was truncated, inject "Continue"
-                            _finish = agent.model.last_finish_reason
-                            if (
-                                _finish == "length"
-                                and loop_state.max_tokens_recovery_count < loop_state.max_tokens_recovery_limit
-                            ):
-                                loop_state.max_tokens_recovery_count += 1
-                                messages_for_model.append(
-                                    Message(role="user", content="Continue from where you left off.")
-                                )
-                                continue
-                            break
-
-                        # Check stop_after_tool_call
-                        if self._check_stop_after_tool_call(messages_for_model):
+                        # Check if loop should continue
+                        if not self._loop_post_response(
+                            messages_for_model, agent.model, loop_state, _had_tool_calls,
+                        ):
                             break
 
                 else:
@@ -617,22 +771,18 @@ class Runner:
 
                     while True:
                         loop_state.turn_count += 1
+                        logger.debug(
+                            f"[non-stream] Turn {loop_state.turn_count}: "
+                            f"agent={agent.identifier}, messages={len(messages_for_model)}"
+                        )
                         agent._check_cancelled()
 
-                        # Safety: death spiral
-                        if self._check_death_spiral(messages_for_model, loop_state):
-                            model_response.content = (
-                                (model_response.content or "") +
-                                "\n\n[Error: All tool calls have failed repeatedly. Stopping to prevent infinite loop.]"
-                            )
-                            break
-
-                        # Safety: cost budget
-                        _cost_msg = self._check_cost_budget(
-                            agent.model._cost_tracker, agent._run_max_cost_usd
+                        # Safety checks (death spiral + cost budget)
+                        _break_msg = self._loop_safety_checks(
+                            messages_for_model, loop_state, agent,
                         )
-                        if _cost_msg:
-                            model_response.content = (model_response.content or "") + f"\n\n[{_cost_msg}]"
+                        if _break_msg:
+                            model_response.content = (model_response.content or "") + _break_msg
                             break
 
                         # Pre-tool hook (context overflow + repetition detection)
@@ -656,27 +806,19 @@ class Runner:
                         if agent._run_hooks is not None:
                             await agent._run_hooks.on_llm_end(agent=agent, response=model_response)
 
+                        # --- Runner-owned tool execution ---
+                        _had_tool_calls = await self._handle_tool_calls_in_runner(
+                            messages_for_model, agent, agent.model, stream=False,
+                        )
+
                         # Post-tool hook (todo reminder injection)
                         if _post_tool_hook is not None:
                             await _post_tool_hook(messages_for_model, [])
 
-                        # Check if we should continue looping
-                        if not self._response_has_tool_calls(messages_for_model):
-                            # Max-tokens recovery
-                            _finish = agent.model.last_finish_reason
-                            if (
-                                _finish == "length"
-                                and loop_state.max_tokens_recovery_count < loop_state.max_tokens_recovery_limit
-                            ):
-                                loop_state.max_tokens_recovery_count += 1
-                                messages_for_model.append(
-                                    Message(role="user", content="Continue from where you left off.")
-                                )
-                                continue
-                            break
-
-                        # Check stop_after_tool_call
-                        if self._check_stop_after_tool_call(messages_for_model):
+                        # Check if loop should continue
+                        if not self._loop_post_response(
+                            messages_for_model, agent.model, loop_state, _had_tool_calls,
+                        ):
                             break
 
                     # --- Context window usage warning ---

@@ -409,6 +409,12 @@ class SessionLog:
         return sum(1 for line in self.path.read_text(encoding="utf-8").splitlines() if line.strip())
 
     def _append(self, entry: Dict) -> None:
-        """Append a single JSON entry as a new line (atomic write)."""
-        with open(self.path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        """Append a single JSON entry as a new line (atomic write).
+
+        Disk errors are logged but not propagated — session logging is non-critical.
+        """
+        try:
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except OSError as e:
+            logger.warning(f"SessionLog write failed ({self.path}): {e}")

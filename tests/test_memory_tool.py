@@ -294,6 +294,7 @@ class TestWorkspaceMemoryConfig:
         agent = Agent(
             model=OpenAIChat(api_key="fake_openai_key"),
             workspace=workspace,
+            memory=True,
             long_term_memory_config=WorkspaceMemoryConfig(
                 auto_archive=True,
                 auto_extract_memory=False,
@@ -323,6 +324,7 @@ class TestWorkspaceMemoryConfig:
         agent = Agent(
             model=OpenAIChat(api_key="fake_openai_key"),
             workspace=workspace,
+            memory=True,
             long_term_memory_config=WorkspaceMemoryConfig(
                 auto_archive=True,
                 auto_extract_memory=True,
@@ -356,10 +358,32 @@ class TestWorkspaceMemoryConfig:
 
 
 class TestAgentAutoMemoryRegistration:
-    """Test that Agent auto-registers BuiltinMemoryTool when workspace is set."""
+    """Test that Agent registers BuiltinMemoryTool when memory=True and workspace is set."""
 
-    def test_auto_register_memory_tool(self):
-        """Test that BuiltinMemoryTool is auto-registered when workspace exists."""
+    def test_register_memory_tool_when_memory_true(self):
+        """Test that BuiltinMemoryTool is registered when memory=True and workspace exists."""
+        from agentica.agent.base import Agent
+        from agentica.model.openai import OpenAIChat
+
+        temp_dir = tempfile.mkdtemp()
+        workspace = Workspace(temp_dir)
+        workspace.initialize()
+
+        agent = Agent(
+            model=OpenAIChat(api_key="fake_openai_key"),
+            workspace=workspace,
+            memory=True,
+        )
+
+        has_memory_tool = any(
+            isinstance(t, BuiltinMemoryTool) for t in (agent.tools or [])
+        )
+        assert has_memory_tool, "BuiltinMemoryTool should be registered when memory=True"
+
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_no_memory_tool_when_memory_false(self):
+        """Test that BuiltinMemoryTool is NOT registered when memory=False (default)."""
         from agentica.agent.base import Agent
         from agentica.model.openai import OpenAIChat
 
@@ -372,13 +396,10 @@ class TestAgentAutoMemoryRegistration:
             workspace=workspace,
         )
 
-        # Check that BuiltinMemoryTool is in the tools list
-        has_memory_tool = False
-        for tool in (agent.tools or []):
-            if isinstance(tool, BuiltinMemoryTool):
-                has_memory_tool = True
-                break
-        assert has_memory_tool, "BuiltinMemoryTool should be auto-registered when workspace exists"
+        has_memory_tool = any(
+            isinstance(t, BuiltinMemoryTool) for t in (agent.tools or [])
+        )
+        assert not has_memory_tool, "BuiltinMemoryTool should NOT be registered when memory=False"
 
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -395,10 +416,10 @@ class TestAgentAutoMemoryRegistration:
         agent = Agent(
             model=OpenAIChat(api_key="fake_openai_key"),
             workspace=workspace,
+            memory=True,
             tools=[manual_tool],
         )
 
-        # Count BuiltinMemoryTool instances
         count = sum(1 for t in (agent.tools or []) if isinstance(t, BuiltinMemoryTool))
         assert count == 1, "Should not duplicate BuiltinMemoryTool"
 
@@ -411,6 +432,7 @@ class TestAgentAutoMemoryRegistration:
 
         agent = Agent(
             model=OpenAIChat(api_key="fake_openai_key"),
+            memory=True,
         )
 
         has_memory_tool = any(

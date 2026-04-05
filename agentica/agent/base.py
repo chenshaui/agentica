@@ -104,6 +104,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
     team: Optional[List["Agent"]] = None
     workspace: Optional[Any] = None  # Workspace type
     work_dir: Optional[str] = None  # Working directory for file operations (used by builtin tools)
+    memory: bool = False  # Whether to enable long-term memory tools and hooks
     response_model: Optional[Type[Any]] = None
 
     # ============================
@@ -182,6 +183,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
             team: Optional[List["Agent"]] = None,
             workspace: Optional[Union[Any, str]] = None,  # Workspace or str path
             work_dir: Optional[str] = None,  # Working directory for file operations
+            memory: bool = False,  # Enable long-term memory tools and hooks
             response_model: Optional[Type[Any]] = None,
             # ---- Common config ----
             add_history_to_messages: bool = False,
@@ -214,6 +216,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         self.team = team
         self.response_model = response_model
         self.work_dir = work_dir
+        self.memory = memory
 
         # Handle workspace: str → Workspace(path=str)
         if isinstance(workspace, str):
@@ -290,7 +293,8 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
 
         # Wire builtin tools that need agent reference
         if self.tools:
-            from agentica.tools.buildin_tools import BuiltinTodoTool, BuiltinTaskTool, BuiltinMemoryTool
+            from agentica.tools.buildin_tools import BuiltinTodoTool, BuiltinMemoryTool
+            from agentica.tools.builtin_task_tool import BuiltinTaskTool
             for tool in self.tools:
                 if isinstance(tool, BuiltinTodoTool):
                     tool.set_agent(self)
@@ -299,15 +303,10 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
                 elif isinstance(tool, BuiltinMemoryTool):
                     tool.set_workspace(self.workspace)
 
-        # Auto-register BuiltinMemoryTool when workspace exists and no memory tool is present
-        if self.workspace is not None:
+        # Register BuiltinMemoryTool when memory=True and workspace exists
+        if self.memory and self.workspace is not None:
             from agentica.tools.buildin_tools import BuiltinMemoryTool
-            has_memory_tool = False
-            if self.tools:
-                for tool in self.tools:
-                    if isinstance(tool, BuiltinMemoryTool):
-                        has_memory_tool = True
-                        break
+            has_memory_tool = any(isinstance(t, BuiltinMemoryTool) for t in (self.tools or []))
             if not has_memory_tool:
                 memory_tool = BuiltinMemoryTool()
                 memory_tool.set_workspace(self.workspace)
@@ -339,9 +338,9 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
                     "Install: pip install langfuse"
                 )
 
-        # Auto-archive: inject ConversationArchiveHooks when auto_archive=True (zero cost)
-        # Auto-extract: inject MemoryExtractHooks when auto_extract_memory=True (LLM cost)
-        if self.workspace is not None:
+        # Auto-archive: inject ConversationArchiveHooks when memory=True and auto_archive=True (zero cost)
+        # Auto-extract: inject MemoryExtractHooks when memory=True and auto_extract_memory=True (LLM cost)
+        if self.memory and self.workspace is not None:
             auto_hooks: list = []
             if self.long_term_memory_config.auto_archive:
                 auto_hooks.append(ConversationArchiveHooks())
@@ -373,6 +372,8 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         Returns:
             Formatted memory string, or None if workspace/memory not configured.
         """
+        if not self.memory:
+            return None
         if not self.workspace or not self.long_term_memory_config.load_workspace_memory:
             return None
         memory = await self.workspace.get_relevant_memories(
@@ -718,7 +719,10 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         self.model.function_call_stack = None
         self.model.tool_choice = None
 
-        # Set agent reference on model (for lifecycle hooks in tool execution)
+        # Set agent reference on model (legacy, for backward compatibility with
+        # direct model.run_function_calls() calls in tests/examples).
+        # In normal Runner-driven execution, run_tools=False and Runner owns
+        # tool execution, so _agent_ref is not needed.
         self.model._agent_ref = weakref.ref(self)
 
         # Set response_format

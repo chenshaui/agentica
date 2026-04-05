@@ -352,12 +352,13 @@ class TestAutoArchiveHookInjection:
     """Tests for A1: auto_archive=True injects ConversationArchiveHooks."""
 
     def test_auto_archive_injects_default_hooks(self, tmp_path):
-        """When auto_archive=True and workspace is set, _default_run_hooks should be set."""
+        """When auto_archive=True, memory=True, and workspace is set, _default_run_hooks should be set."""
         from agentica.agent.base import Agent
         from agentica.agent.config import WorkspaceMemoryConfig
 
         agent = Agent(
             workspace=str(tmp_path / "ws"),
+            memory=True,
             long_term_memory_config=WorkspaceMemoryConfig(auto_archive=True),
         )
         assert agent._default_run_hooks is not None
@@ -369,6 +370,7 @@ class TestAutoArchiveHookInjection:
 
         agent = Agent(
             workspace=str(tmp_path / "ws"),
+            memory=True,
             long_term_memory_config=WorkspaceMemoryConfig(auto_archive=False),
         )
         assert agent._default_run_hooks is None
@@ -379,6 +381,18 @@ class TestAutoArchiveHookInjection:
         from agentica.agent.config import WorkspaceMemoryConfig
 
         agent = Agent(
+            memory=True,
+            long_term_memory_config=WorkspaceMemoryConfig(auto_archive=True),
+        )
+        assert agent._default_run_hooks is None
+
+    def test_no_memory_no_default_hooks(self, tmp_path):
+        """When memory=False (default), _default_run_hooks should be None even with auto_archive=True."""
+        from agentica.agent.base import Agent
+        from agentica.agent.config import WorkspaceMemoryConfig
+
+        agent = Agent(
+            workspace=str(tmp_path / "ws"),
             long_term_memory_config=WorkspaceMemoryConfig(auto_archive=True),
         )
         assert agent._default_run_hooks is None

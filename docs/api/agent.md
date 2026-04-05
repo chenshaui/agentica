@@ -367,10 +367,6 @@ from agentica import RunEvent
 | `updating_memory` | `"UpdatingMemory"` | 正在更新记忆 |
 | `workflow_started` | `"WorkflowStarted"` | Workflow 开始 |
 | `workflow_completed` | `"WorkflowCompleted"` | Workflow 完成 |
-| `multi_round_turn` | `"MultiRoundTurn"` | 多轮 agentic 循环的单次 turn |
-| `multi_round_tool_call` | `"MultiRoundToolCall"` | 多轮循环中的工具调用 |
-| `multi_round_tool_result` | `"MultiRoundToolResult"` | 多轮循环中的工具结果 |
-| `multi_round_completed` | `"MultiRoundCompleted"` | 多轮循环全部完成 |
 
 ```python
 from agentica import Agent, ZhipuAI, RunEvent

@@ -120,7 +120,7 @@ EXAMPLE_MODELS = {
     'openai': ['gpt-4o', 'gpt-4o-mini', 'gpt-5', 'gpt-5.2', 'o3-mini'],
     'azure': ['gpt-4o', 'gpt-4o-mini'],
     'moonshot': ['kimi-k2.5', 'moonshot-v1-128k'],
-    'zhipuai': ['glm-4', 'glm-4-flash', 'glm-4.7-flash'],
+    'zhipuai': ['glm-5', 'glm-4-flash', 'glm-4.7-flash'],
     'deepseek': ['deepseek-chat', 'deepseek-reasoner'],
     'yi': ['yi-lightning', 'yi-large'],
     'doubao': ['doubao-1.5-pro-32k', 'doubao-1.5-lite-32k', 'doubao-1.5-vision-pro-32k'],

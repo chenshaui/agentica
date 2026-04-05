@@ -242,6 +242,19 @@ class Ollama(Model):
             for _fcr in function_call_results:
                 messages.append(_fcr)
 
+    def parse_tool_calls(
+        self, assistant_message: Message, messages: List[Message], tool_role: str = "tool",
+    ) -> tuple:
+        """Parse tool calls for Ollama format (uses role='user' for errors)."""
+        function_calls_to_run = self.get_function_calls_to_run(assistant_message, messages)
+        return function_calls_to_run, {"tool_role": tool_role}
+
+    def format_tool_results(
+        self, function_call_results: List[Message], messages: List[Message], provider_metadata: dict,
+    ) -> None:
+        """Format tool results for Ollama (append directly)."""
+        self.format_function_call_results(function_call_results, messages)
+
     def create_assistant_message(self, response: Mapping[str, Any], metrics: Metrics) -> Message:
         """Create an assistant message from the response."""
         message_data = MessageData()

@@ -302,6 +302,53 @@ class Model(ABC):
         # This is triggered when the function call limit is reached.
         self.tool_choice = "none"
 
+    # ── Tool call parsing and result formatting (provider-overridable) ────────
+    # Runner calls these to decouple tool execution from the Model layer.
+    # Default implementations handle OpenAI-compatible format.
+    # Providers with different protocols (Anthropic, Ollama) override.
+
+    def parse_tool_calls(
+        self, assistant_message: Message, messages: List[Message], tool_role: str = "tool",
+    ) -> tuple:
+        """Parse tool calls from assistant message into FunctionCall objects.
+
+        Returns:
+            (function_calls_to_run, provider_metadata)
+            - function_calls_to_run: List[FunctionCall] ready for execution
+            - provider_metadata: opaque dict for format_tool_results() (e.g. tool_ids for Anthropic)
+        """
+        function_calls_to_run: List[FunctionCall] = []
+        if assistant_message.tool_calls is None or len(assistant_message.tool_calls) == 0:
+            return function_calls_to_run, {}
+
+        for tool_call in assistant_message.tool_calls:
+            _tool_call_id = tool_call.get("id")
+            _function_call = get_function_call_for_tool_call(tool_call, self.functions)
+            if _function_call is None:
+                messages.append(
+                    Message(role=tool_role, tool_call_id=_tool_call_id, content="Could not find function to call.")
+                )
+                continue
+            if _function_call.error is not None:
+                messages.append(
+                    Message(role=tool_role, tool_call_id=_tool_call_id, content=_function_call.error)
+                )
+                continue
+            function_calls_to_run.append(_function_call)
+
+        return function_calls_to_run, {"tool_role": tool_role}
+
+    def format_tool_results(
+        self, function_call_results: List[Message], messages: List[Message], provider_metadata: dict,
+    ) -> None:
+        """Append tool results to messages in provider-appropriate format.
+
+        Default (OpenAI): extend messages directly (tool results already have role="tool").
+        Anthropic overrides to wrap in role="user" with tool_result content blocks.
+        """
+        if function_call_results:
+            messages.extend(function_call_results)
+
     async def run_function_calls(
             self, function_calls: List[FunctionCall], function_call_results: List[Message], tool_role: str = "tool"
     ) -> AsyncIterator[ModelResponse]:
