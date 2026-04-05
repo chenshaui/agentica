@@ -125,6 +125,11 @@ class CompressionManager:
     # Buffer tokens reserved for the compaction summary output (CC uses 13_000).
     _auto_compact_buffer_tokens: int = field(init=False, default=13_000)
 
+    def reset_run_state(self) -> None:
+        """Reset per-run state. Call at the start of each agent run to prevent
+        circuit breaker and stats from leaking across runs."""
+        self._consecutive_auto_compact_failures = 0
+
     def __post_init__(self):
         # Default target: 60% of trigger threshold
         if self.compress_target_token_limit is None and self.compress_token_limit is not None:
@@ -233,7 +238,7 @@ class CompressionManager:
 
         return truncated
 
-    def _drop_old_messages(self, messages: List["Message"]) -> int:
+    async def _drop_old_messages(self, messages: List["Message"]) -> int:
         """
         Drop old messages (assistant + tool pairs) keeping only the most recent
         `keep_recent_rounds` rounds plus system and first user message.
@@ -285,7 +290,7 @@ class CompressionManager:
         # Archive dropped messages to workspace before deletion
         if self.workspace is not None:
             dropped_messages = messages[drop_start_idx:keep_from_idx]
-            self._archive_dropped_messages(dropped_messages)
+            await self._archive_dropped_messages(dropped_messages)
 
         # Build new message list
         kept_tail = messages[keep_from_idx:]
@@ -297,10 +302,11 @@ class CompressionManager:
         logger.debug(f"Dropped {dropped_count} old messages, kept {len(messages)} messages")
         return dropped_count
 
-    def _archive_dropped_messages(self, dropped_messages: List["Message"]) -> None:
+    async def _archive_dropped_messages(self, dropped_messages: List["Message"]) -> None:
         """Archive messages that are about to be dropped to the workspace conversation archive.
 
-        Creates a background task with error callback to avoid silent data loss.
+        Awaits the archive call directly to prevent silent cancellation in
+        run_stream_sync() scenarios (C-01 fix).
         """
         if self.workspace is None:
             return
@@ -316,32 +322,15 @@ class CompressionManager:
                         "content": content[:1000],  # Limit size for archive
                     })
             if archive_msgs:
-                try:
-                    loop = asyncio.get_running_loop()
-                    task = loop.create_task(
-                        self.workspace.archive_conversation(
-                            archive_msgs, session_id="compression-archive"
-                        )
-                    )
-                    task.add_done_callback(self._on_archive_done)
-                except RuntimeError:
-                    logger.warning("No event loop running, skipping archive of dropped messages")
+                await self.workspace.archive_conversation(
+                    archive_msgs, session_id="compression-archive"
+                )
                 self.stats["messages_archived"] = (
                     self.stats.get("messages_archived", 0) + len(archive_msgs)
                 )
                 logger.debug(f"Archived {len(archive_msgs)} dropped messages to workspace")
         except Exception as e:
             logger.warning(f"Failed to archive dropped messages: {e}")
-
-    @staticmethod
-    def _on_archive_done(task: asyncio.Task) -> None:
-        """Callback for archive task completion - logs errors instead of silently dropping them."""
-        if task.cancelled():
-            logger.warning("Archive task was cancelled, dropped messages may be lost")
-            return
-        exc = task.exception()
-        if exc is not None:
-            logger.error(f"Archive task failed, dropped messages may be lost: {exc}")
 
     # -------------------------------------------------------------------------
     # Stage 2: LLM-based compression (optional)
@@ -445,7 +434,7 @@ class CompressionManager:
         # Check if still over limit
         if self._still_over_limit(messages, tools, model, response_format):
             # Stage 1b: Drop old messages
-            dropped = self._drop_old_messages(messages)
+            dropped = await self._drop_old_messages(messages)
             if dropped:
                 logger.debug(f"Stage 1b: Dropped {dropped} old messages")
 
@@ -523,7 +512,7 @@ class CompressionManager:
         # Adaptive limits based on model context window.
         # Reserve ~50% of context for the summary input (the other 50% for
         # prompt overhead + output tokens).  Fallback: 80K chars (~20K tokens).
-        context_window = getattr(active_model, "context_window", None) or 200_000
+        context_window = active_model.context_window or 200_000
         # 1 token ~ 4 chars; use half of context window for the conversation dump
         max_total_chars = min(context_window * 4 // 2, 400_000)
         # Per-message truncation: distribute budget across messages, floor 1000, cap 8000
@@ -555,15 +544,24 @@ class CompressionManager:
         prompt_parts.append("Conversation to summarise:")
         prompt_parts.append(text)
 
-        resp = await active_model.invoke([
-            Message(role="user", content="\n".join(prompt_parts))
-        ])
+        try:
+            resp = await active_model.invoke([
+                Message(role="user", content="\n".join(prompt_parts))
+            ])
+        except Exception as e:
+            logger.warning(f"Summarisation LLM call failed: {e}")
+            return None
         # Extract text from common response shapes
-        if hasattr(resp, "choices"):
-            return resp.choices[0].message.content
-        if hasattr(resp, "content"):
+        if hasattr(resp, "choices") and resp.choices:
+            try:
+                return resp.choices[0].message.content
+            except (AttributeError, IndexError):
+                pass
+        if hasattr(resp, "content") and isinstance(resp.content, str):
             return resp.content
-        return str(resp)
+        if isinstance(resp, str):
+            return resp
+        return str(resp) if resp else None
 
     async def auto_compact(
         self,
@@ -652,7 +650,7 @@ class CompressionManager:
                         _slog.append_compact_boundary(summary)
                         logger.debug("Compact boundary written to session log")
         except Exception as _cb_err:
-            logger.debug(f"Failed to write compact boundary: {_cb_err}")
+            logger.warning(f"Failed to write compact boundary: {_cb_err}")
 
         return True
 

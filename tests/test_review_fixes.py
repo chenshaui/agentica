@@ -258,39 +258,6 @@ class TestSwarmFailedResults:
 class TestCompressionArchiveCallback:
     """Tests for C1: archive task done callback."""
 
-    def test_on_archive_done_logs_exception(self):
-        """_on_archive_done should log errors from failed archive tasks."""
-        task = MagicMock()
-        task.cancelled.return_value = False
-        task.exception.return_value = IOError("disk full")
-
-        with patch("agentica.compression.manager.logger") as mock_logger:
-            CompressionManager._on_archive_done(task)
-            mock_logger.error.assert_called_once()
-            assert "disk full" in mock_logger.error.call_args[0][0]
-
-    def test_on_archive_done_logs_cancellation(self):
-        """_on_archive_done should log when task is cancelled."""
-        task = MagicMock()
-        task.cancelled.return_value = True
-
-        with patch("agentica.compression.manager.logger") as mock_logger:
-            CompressionManager._on_archive_done(task)
-            mock_logger.warning.assert_called_once()
-            assert "cancelled" in mock_logger.warning.call_args[0][0]
-
-    def test_on_archive_done_no_log_on_success(self):
-        """_on_archive_done should not log on successful completion."""
-        task = MagicMock()
-        task.cancelled.return_value = False
-        task.exception.return_value = None
-
-        with patch("agentica.compression.manager.logger") as mock_logger:
-            CompressionManager._on_archive_done(task)
-            mock_logger.error.assert_not_called()
-            mock_logger.warning.assert_not_called()
-
-
 # =========================================================================
 # I1: Archive conversation concurrency
 # =========================================================================

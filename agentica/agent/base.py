@@ -636,11 +636,15 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
     def clone(self) -> "Agent":
         """Create a lightweight clone of this Agent for concurrent execution.
 
-        Shares heavy config (model definition, tools, instructions, knowledge)
-        but resets all mutable runtime state (run_id, run_response, _running, etc.)
-        and creates a fresh Runner. Safe for parallel asyncio.gather() calls.
+        Shares heavy config (tools, instructions, knowledge) but creates a
+        fresh Model instance and resets all mutable runtime state.
+        Safe for parallel asyncio.gather() calls.
         """
         clone = copy.copy(self)
+        # Deep-copy model so each clone has independent state
+        # (metrics, _agent_ref, function_call_stack, tool_choice)
+        if self.model is not None:
+            clone.model = copy.deepcopy(self.model)
         # Reset mutable runtime state
         clone.agent_id = str(uuid4())
         clone.run_id = None
@@ -701,12 +705,13 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
             self.model = OpenAIChat()
         logger.debug(f"Agent '{self.name}' using {self.model.name or self.model.__class__.__name__}(id={self.model.id})")
 
-        # Clear previously registered tools/functions to prevent accumulation
+        # Clear previously registered tools/functions and metrics to prevent accumulation
         # across multiple run() calls on the same Agent instance.
         if self.model.functions:
             self.model.functions.clear()
         if self.model.tools:
             self.model.tools.clear()
+        self.model.metrics.clear()
         # Reset tool-call state so each agent run starts clean.
         # Prevents function_call_stack / tool_choice leaking between runs
         # (or between agents that share the same Model instance).

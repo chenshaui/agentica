@@ -391,479 +391,487 @@ class Runner:
                 return
 
             agent._running = True
-            agent.stream = stream and agent.is_streamable
-            agent.stream_intermediate_steps = stream_intermediate_steps and agent.stream
-            agent.run_id = str(uuid4())
-            agent.run_response = RunResponse(run_id=agent.run_id, agent_id=agent.agent_id)
+            try:  # R-01 fix: ensure _running is reset on any exception
+                agent.stream = stream and agent.is_streamable
+                agent.stream_intermediate_steps = stream_intermediate_steps and agent.stream
+                agent.run_id = str(uuid4())
+                agent.run_response = RunResponse(run_id=agent.run_id, agent_id=agent.agent_id)
 
-            # --- Session resume (CC-style JSONL) ---
-            # On first run, if a session log exists, replay messages from
-            # the last compact boundary into working_memory.
-            if (
-                agent._session_log is not None
-                and agent._session_log.exists()
-                and len(agent.working_memory.runs) == 0
-            ):
-                resumed_messages = agent._session_log.load()
-                if resumed_messages:
-                    for rm in resumed_messages:
-                        agent.working_memory.add_message(
-                            Message(role=rm["role"], content=rm.get("content", ""))
-                        )
-                    logger.debug(
-                        f"Session resumed from JSONL: {len(resumed_messages)} messages"
-                    )
-
-            # --- Initialise CostTracker for this run ---
-            _cost_tracker = CostTracker()
-            agent.run_response.cost_tracker = _cost_tracker
-
-            # Set query-level tool/skill filtering (cleared after run)
-            agent._enabled_tools = enabled_tools
-            agent._enabled_skills = enabled_skills
-
-            # Merge default run hooks (e.g. auto-archive) with user-provided hooks
-            effective_hooks = None
-            if hooks is not None and agent._default_run_hooks is not None:
-                effective_hooks = _CompositeRunHooks([agent._default_run_hooks, hooks])
-            elif hooks is not None:
-                effective_hooks = hooks
-            elif agent._default_run_hooks is not None:
-                effective_hooks = agent._default_run_hooks
-            if effective_hooks is not None:
-                agent._run_hooks = effective_hooks
-
-            # 1. Setup
-            agent.update_model()
-            agent.run_response.model = agent.model.id if agent.model is not None else None
-            if agent.context is not None:
-                agent._resolve_context()
-
-            # v3: Initialise a fresh CostTracker for this run and attach it to the model.
-            # The tracker accumulates USD cost across all LLM invoke() calls via
-            # Model.update_usage_metrics() / update_stream_metrics().
-            # At run-end, the populated tracker is written to RunResponse.cost_tracker.
-            if agent.model is not None:
-                agent.model._cost_tracker = CostTracker()
-
-            # Add introduction if provided
-            if agent.prompt_config.introduction is not None:
-                agent.add_introduction(agent.prompt_config.introduction)
-
-            # --- Lifecycle: agent start ---
-            if agent.hooks is not None:
-                await agent.hooks.on_start(agent=agent)
-            if agent._run_hooks is not None:
-                await agent._run_hooks.on_agent_start(agent=agent)
-
-            # 3. Prepare messages
-            system_message, user_messages, messages_for_model = await agent.get_messages_for_run(
-                message=message, audio=audio, images=images, videos=videos,
-                messages=messages, add_messages=add_messages, **kwargs
-            )
-            num_input_messages = len(messages_for_model)
-
-            if agent.stream_intermediate_steps:
-                yield self.generic_run_response("Run started", RunEvent.run_started)
-
-            # 4. Generate response from the Model
-            # The agentic loop (tool call → LLM → ...) is driven here.
-            loop_state = LoopState()
-
-            model_response: ModelResponse
-            agent.model = cast(Model, agent.model)
-
-            # Build hooks from Agent (they live on Agent, not Model)
-            _pre_tool_hook = agent._build_pre_tool_hook()
-            _post_tool_hook = agent._build_post_tool_hook()
-
-            if stream and agent.is_streamable:
-                # ============================================================
-                # STREAMING agentic loop
-                # ============================================================
-                model_response = ModelResponse(content="", reasoning_content="")
-                agent._cancelled = False
-
-                while True:
-                    loop_state.turn_count += 1
-
-                    # Safety: death spiral
-                    if self._check_death_spiral(messages_for_model, loop_state):
-                        yield RunResponse(
-                            event=RunEvent.run_response,
-                            content="\n\n[Error: All tool calls have failed repeatedly. Stopping to prevent infinite loop.]",
-                            run_id=agent.run_id,
-                            agent_id=agent.agent_id,
-                        )
-                        break
-
-                    # Safety: cost budget
-                    _cost_msg = self._check_cost_budget(
-                        agent.model._cost_tracker, agent._run_max_cost_usd
-                    )
-                    if _cost_msg:
-                        yield RunResponse(
-                            event=RunEvent.run_response,
-                            content=f"\n\n[{_cost_msg}]",
-                            run_id=agent.run_id,
-                            agent_id=agent.agent_id,
-                        )
-                        break
-
-                    # Safety: cancellation
-                    agent._check_cancelled()
-
-                    # Pre-tool hook (context overflow + repetition detection)
-                    if _pre_tool_hook is not None and loop_state.turn_count > 1:
-                        _skip = await _pre_tool_hook(messages_for_model, [])
-                        if _skip:
-                            # Hook says skip this batch — let model reconsider
-                            pass
-
-                    # Compression pipeline (cheapest-first, before LLM call)
-                    await self._maybe_compress_messages(messages_for_model, agent, agent.model)
-
-                    # --- Lifecycle: LLM start (stream) ---
-                    if agent._run_hooks is not None:
-                        await agent._run_hooks.on_llm_start(agent=agent, messages=messages_for_model)
-
-                    model_response_stream = await self._call_with_retry(
-                        agent.model, messages_for_model, loop_state, agent, stream=True
-                    )
-                    async for model_response_chunk in model_response_stream:
-                        agent._check_cancelled()
-                        if model_response_chunk.event == ModelResponseEvent.assistant_response.value:
-                            if model_response_chunk.reasoning_content is not None:
-                                if model_response.reasoning_content is None:
-                                    model_response.reasoning_content = ""
-                                model_response.reasoning_content += model_response_chunk.reasoning_content
-                                yield RunResponse(
-                                    event=RunEvent.run_response,
-                                    reasoning_content=model_response_chunk.reasoning_content,
-                                    run_id=agent.run_id,
-                                    agent_id=agent.agent_id,
-                                )
-                            if model_response_chunk.content is not None and model_response.content is not None:
-                                model_response.content += model_response_chunk.content
-                                yield RunResponse(
-                                    event=RunEvent.run_response,
-                                    content=model_response_chunk.content,
-                                    run_id=agent.run_id,
-                                    agent_id=agent.agent_id,
-                                )
-                        elif model_response_chunk.event == ModelResponseEvent.tool_call_started.value:
-                            tool_call_dict = model_response_chunk.tool_call
-                            if tool_call_dict is not None:
-                                if agent.run_response.tools is None:
-                                    agent.run_response.tools = []
-                                agent.run_response.tools.append(tool_call_dict)
-                            if agent.stream_intermediate_steps:
-                                yield self.generic_run_response(
-                                    f"Running tool: {tool_call_dict.get('name') if tool_call_dict else 'Unknown'}",
-                                    RunEvent.tool_call_started,
-                                )
-                        elif model_response_chunk.event == ModelResponseEvent.tool_call_completed.value:
-                            tool_call_dict = model_response_chunk.tool_call
-                            if tool_call_dict is not None and agent.run_response.tools:
-                                for tool_call in agent.run_response.tools:
-                                    if tool_call.get("id") == tool_call_dict.get("id"):
-                                        tool_call.update(tool_call_dict)
-                                        break
-                            if agent.stream_intermediate_steps:
-                                yield self.generic_run_response(
-                                    f"Tool completed: {tool_call_dict.get('name') if tool_call_dict else 'Unknown'}",
-                                    RunEvent.tool_call_completed,
-                                )
-
-                    # --- Lifecycle: LLM end (stream) ---
-                    if agent._run_hooks is not None:
-                        await agent._run_hooks.on_llm_end(agent=agent, response=model_response)
-
-                    # Post-tool hook (todo reminder injection)
-                    if _post_tool_hook is not None:
-                        await _post_tool_hook(messages_for_model, [])
-
-                    # Check if we should continue looping
-                    if not self._response_has_tool_calls(messages_for_model):
-                        # Max-tokens recovery: if output was truncated, inject "Continue"
-                        _finish = agent.model.last_finish_reason
-                        if (
-                            _finish == "length"
-                            and loop_state.max_tokens_recovery_count < loop_state.max_tokens_recovery_limit
-                        ):
-                            loop_state.max_tokens_recovery_count += 1
-                            messages_for_model.append(
-                                Message(role="user", content="Continue from where you left off.")
+                # --- Session resume (CC-style JSONL) ---
+                # On first run, if a session log exists, replay messages from
+                # the last compact boundary into working_memory.
+                if (
+                    agent._session_log is not None
+                    and agent._session_log.exists()
+                    and len(agent.working_memory.runs) == 0
+                ):
+                    resumed_messages = agent._session_log.load()
+                    if resumed_messages:
+                        for rm in resumed_messages:
+                            agent.working_memory.add_message(
+                                Message(role=rm["role"], content=rm.get("content", ""))
                             )
-                            continue
-                        break
-
-                    # Check stop_after_tool_call
-                    if self._check_stop_after_tool_call(messages_for_model):
-                        break
-
-            else:
-                # ============================================================
-                # NON-STREAMING agentic loop
-                # ============================================================
-                agent._cancelled = False
-                model_response = ModelResponse()
-
-                while True:
-                    loop_state.turn_count += 1
-                    agent._check_cancelled()
-
-                    # Safety: death spiral
-                    if self._check_death_spiral(messages_for_model, loop_state):
-                        model_response.content = (
-                            (model_response.content or "") +
-                            "\n\n[Error: All tool calls have failed repeatedly. Stopping to prevent infinite loop.]"
+                        logger.debug(
+                            f"Session resumed from JSONL: {len(resumed_messages)} messages"
                         )
-                        break
 
-                    # Safety: cost budget
-                    _cost_msg = self._check_cost_budget(
-                        agent.model._cost_tracker, agent._run_max_cost_usd
-                    )
-                    if _cost_msg:
-                        model_response.content = (model_response.content or "") + f"\n\n[{_cost_msg}]"
-                        break
+                # --- Initialise CostTracker for this run ---
+                _cost_tracker = CostTracker()
+                agent.run_response.cost_tracker = _cost_tracker
 
-                    # Pre-tool hook (context overflow + repetition detection)
-                    if _pre_tool_hook is not None and loop_state.turn_count > 1:
-                        _skip = await _pre_tool_hook(messages_for_model, [])
-                        if _skip:
-                            pass  # Let model reconsider
+                # Set query-level tool/skill filtering (cleared after run)
+                agent._enabled_tools = enabled_tools
+                agent._enabled_skills = enabled_skills
 
-                    # Compression pipeline (cheapest-first, before LLM call)
-                    await self._maybe_compress_messages(messages_for_model, agent, agent.model)
+                # Merge default run hooks (e.g. auto-archive) with user-provided hooks
+                effective_hooks = None
+                if hooks is not None and agent._default_run_hooks is not None:
+                    effective_hooks = _CompositeRunHooks([agent._default_run_hooks, hooks])
+                elif hooks is not None:
+                    effective_hooks = hooks
+                elif agent._default_run_hooks is not None:
+                    effective_hooks = agent._default_run_hooks
+                if effective_hooks is not None:
+                    agent._run_hooks = effective_hooks
 
-                    # --- Lifecycle: LLM start (non-stream) ---
-                    if agent._run_hooks is not None:
-                        await agent._run_hooks.on_llm_start(agent=agent, messages=messages_for_model)
+                # 1. Setup
+                agent.update_model()
+                agent.run_response.model = agent.model.id if agent.model is not None else None
+                if agent.context is not None:
+                    agent._resolve_context()
 
-                    model_response = await self._call_with_retry(
-                        agent.model, messages_for_model, loop_state, agent, stream=False
-                    )
+                # v3: Initialise a fresh CostTracker for this run and attach it to the model.
+                # The tracker accumulates USD cost across all LLM invoke() calls via
+                # Model.update_usage_metrics() / update_stream_metrics().
+                # Attach the same CostTracker to the model for accumulating USD cost
+                # across all LLM invoke() calls via update_usage_metrics().
+                if agent.model is not None:
+                    agent.model._cost_tracker = _cost_tracker
 
-                    # --- Lifecycle: LLM end (non-stream) ---
-                    if agent._run_hooks is not None:
-                        await agent._run_hooks.on_llm_end(agent=agent, response=model_response)
+                # Reset compression circuit breaker for this run
+                if agent.tool_config.compression_manager is not None:
+                    agent.tool_config.compression_manager.reset_run_state()
 
-                    # Post-tool hook (todo reminder injection)
-                    if _post_tool_hook is not None:
-                        await _post_tool_hook(messages_for_model, [])
+                # Add introduction if provided
+                if agent.prompt_config.introduction is not None:
+                    agent.add_introduction(agent.prompt_config.introduction)
 
-                    # Check if we should continue looping
-                    if not self._response_has_tool_calls(messages_for_model):
-                        # Max-tokens recovery
-                        _finish = agent.model.last_finish_reason
-                        if (
-                            _finish == "length"
-                            and loop_state.max_tokens_recovery_count < loop_state.max_tokens_recovery_limit
-                        ):
-                            loop_state.max_tokens_recovery_count += 1
-                            messages_for_model.append(
-                                Message(role="user", content="Continue from where you left off.")
-                            )
-                            continue
-                        break
+                # --- Lifecycle: agent start ---
+                if agent.hooks is not None:
+                    await agent.hooks.on_start(agent=agent)
+                if agent._run_hooks is not None:
+                    await agent._run_hooks.on_agent_start(agent=agent)
 
-                    # Check stop_after_tool_call
-                    if self._check_stop_after_tool_call(messages_for_model):
-                        break
-
-                # --- Context window usage warning ---
-                _window = agent.model.context_window
-                if _window:
-                    _ctx_tokens = count_tokens(messages_for_model, None, agent.model.id, None)
-                    _pct = _ctx_tokens / _window
-                    agent.run_response.metrics = agent.run_response.metrics or {}
-                    agent.run_response.metrics['context_window_pct'] = round(_pct, 3)
-                    if _pct >= 0.8:
-                        logger.warning(
-                            f"Agent '{agent.identifier}': context usage "
-                            f"{_ctx_tokens:,}/{_window:,} tokens ({_pct:.0%})"
-                        )
-                if agent.response_model is not None and agent.structured_outputs and model_response.parsed is not None:
-                    agent.run_response.content = model_response.parsed
-                    agent.run_response.content_type = agent.response_model.__name__
-                else:
-                    agent.run_response.content = model_response.content
-                if model_response.audio is not None:
-                    agent.run_response.audio = model_response.audio
-                if model_response.reasoning_content is not None:
-                    agent.run_response.reasoning_content = model_response.reasoning_content
-                agent.run_response.messages = messages_for_model
-                agent.run_response.created_at = model_response.created_at
-
-                # Extract tool call info from messages for non-streaming mode
-                tool_calls_data = []
-                for msg in messages_for_model:
-                    m = msg if isinstance(msg, Message) else None
-                    if m is None:
-                        continue
-                    if m.role == "tool" and m.tool_name:
-                        tool_calls_data.append(
-                            {
-                                "tool_call_id": m.tool_call_id,
-                                "tool_name": m.tool_name,
-                                "tool_args": m.tool_args,
-                                "content": m.content,
-                                "tool_call_error": m.tool_call_error or False,
-                                "metrics": m.metrics if m.metrics else {},
-                            }
-                        )
-                if tool_calls_data:
-                    agent.run_response.tools = tool_calls_data
-
-            # Build run messages
-            run_messages = user_messages + messages_for_model[num_input_messages:]
-            if system_message is not None:
-                run_messages.insert(0, system_message)
-            agent.run_response.messages = run_messages
-            agent.run_response.metrics = self._aggregate_metrics_from_run_messages(run_messages)
-            agent.run_response.usage = agent.model.usage if agent.model else None
-
-            # --- Record cost from the last request's token usage ---
-            if agent.model and agent.model.usage and agent.model.usage.request_usage_entries:
-                _last = agent.model.usage.request_usage_entries[-1]
-                _cache_read = 0
-                _cache_write = 0
-                if _last.input_tokens_details:
-                    _cache_read = _last.input_tokens_details.cached_tokens
-                agent.run_response.cost_tracker.record(
-                    model_id=agent.model.id,
-                    input_tokens=_last.input_tokens,
-                    output_tokens=_last.output_tokens,
-                    cache_read_tokens=_cache_read,
-                    cache_write_tokens=_cache_write,
+                # 3. Prepare messages
+                system_message, user_messages, messages_for_model = await agent.get_messages_for_run(
+                    message=message, audio=audio, images=images, videos=videos,
+                    messages=messages, add_messages=add_messages, **kwargs
                 )
+                num_input_messages = len(messages_for_model)
 
-            # v3: attach CostTracker to RunResponse
-            if agent.model is not None and agent.model._cost_tracker is not None:
-                agent.run_response.cost_tracker = agent.model._cost_tracker
+                if agent.stream_intermediate_steps:
+                    yield self.generic_run_response("Run started", RunEvent.run_started)
 
-            if agent.stream:
-                agent.run_response.content = model_response.content
-                if model_response.reasoning_content:
-                    agent.run_response.reasoning_content = model_response.reasoning_content
+                # 4. Generate response from the Model
+                # The agentic loop (tool call → LLM → ...) is driven here.
+                loop_state = LoopState()
 
-            # 5. Update Memory
-            if agent.stream_intermediate_steps:
-                yield self.generic_run_response("Updating memory", RunEvent.updating_memory)
+                model_response: ModelResponse
+                agent.model = cast(Model, agent.model)
 
-            if system_message is not None:
-                agent.working_memory.add_system_message(system_message, system_message_role=agent.prompt_config.system_message_role)
-            agent.working_memory.add_messages(messages=(user_messages + messages_for_model[num_input_messages:]))
+                # Build hooks from Agent (they live on Agent, not Model)
+                _pre_tool_hook = agent._build_pre_tool_hook()
+                _post_tool_hook = agent._build_post_tool_hook()
 
-            agent_run = AgentRun(response=agent.run_response)
+                if stream and agent.is_streamable:
+                    # ============================================================
+                    # STREAMING agentic loop
+                    # ============================================================
+                    model_response = ModelResponse(content="", reasoning_content="")
+                    agent._cancelled = False
 
-            # Handle agent_run message assignment
-            if message is not None:
-                user_message_for_memory: Optional[Message] = None
-                if isinstance(message, str):
-                    user_message_for_memory = Message(role=agent.prompt_config.user_message_role, content=message)
-                elif isinstance(message, Message):
-                    user_message_for_memory = message
-                if user_message_for_memory is not None:
-                    agent_run.message = user_message_for_memory
-            elif messages is not None and len(messages) > 0:
-                for _m in messages:
-                    _um = None
-                    if isinstance(_m, Message):
-                        _um = _m
-                    elif isinstance(_m, dict):
-                        try:
-                            _um = Message(**_m)
-                        except Exception as e:
-                            logger.error(f"Error converting message to Message: {e}")
-                    else:
-                        logger.warning(f"Unsupported message type: {type(_m)}")
-                        continue
-                    if _um:
-                        if agent_run.messages is None:
-                            agent_run.messages = []
-                        agent_run.messages.append(_um)
-                    else:
-                        logger.warning("Unable to add message to memory")
-            agent.working_memory.add_run(agent_run)
+                    while True:
+                        loop_state.turn_count += 1
 
-            if agent.working_memory.create_session_summary and agent.working_memory.update_session_summary_after_run:
-                await agent.working_memory.update_summary()
+                        # Safety: death spiral
+                        if self._check_death_spiral(messages_for_model, loop_state):
+                            yield RunResponse(
+                                event=RunEvent.run_response,
+                                content="\n\n[Error: All tool calls have failed repeatedly. Stopping to prevent infinite loop.]",
+                                run_id=agent.run_id,
+                                agent_id=agent.agent_id,
+                            )
+                            break
 
-            # 6. Save output to file
-            self.save_run_response_to_file(message=message, save_response_to_file=save_response_to_file)
+                        # Safety: cost budget
+                        _cost_msg = self._check_cost_budget(
+                            agent.model._cost_tracker, agent._run_max_cost_usd
+                        )
+                        if _cost_msg:
+                            yield RunResponse(
+                                event=RunEvent.run_response,
+                                content=f"\n\n[{_cost_msg}]",
+                                run_id=agent.run_id,
+                                agent_id=agent.agent_id,
+                            )
+                            break
 
-            # 7. Set run_input
-            if message is not None:
-                if isinstance(message, str):
-                    agent.run_input = message
-                elif isinstance(message, Message):
-                    agent.run_input = message.to_dict()
+                        # Safety: cancellation
+                        agent._check_cancelled()
+
+                        # Pre-tool hook (context overflow + repetition detection)
+                        if _pre_tool_hook is not None and loop_state.turn_count > 1:
+                            _skip = await _pre_tool_hook(messages_for_model, [])
+                            if _skip:
+                                # Hook says skip this batch — let model reconsider
+                                continue
+
+                        # Compression pipeline (cheapest-first, before LLM call)
+                        await self._maybe_compress_messages(messages_for_model, agent, agent.model)
+
+                        # --- Lifecycle: LLM start (stream) ---
+                        if agent._run_hooks is not None:
+                            await agent._run_hooks.on_llm_start(agent=agent, messages=messages_for_model)
+
+                        model_response_stream = await self._call_with_retry(
+                            agent.model, messages_for_model, loop_state, agent, stream=True
+                        )
+                        async for model_response_chunk in model_response_stream:
+                            agent._check_cancelled()
+                            if model_response_chunk.event == ModelResponseEvent.assistant_response.value:
+                                if model_response_chunk.reasoning_content is not None:
+                                    if model_response.reasoning_content is None:
+                                        model_response.reasoning_content = ""
+                                    model_response.reasoning_content += model_response_chunk.reasoning_content
+                                    yield RunResponse(
+                                        event=RunEvent.run_response,
+                                        reasoning_content=model_response_chunk.reasoning_content,
+                                        run_id=agent.run_id,
+                                        agent_id=agent.agent_id,
+                                    )
+                                if model_response_chunk.content is not None and model_response.content is not None:
+                                    model_response.content += model_response_chunk.content
+                                    yield RunResponse(
+                                        event=RunEvent.run_response,
+                                        content=model_response_chunk.content,
+                                        run_id=agent.run_id,
+                                        agent_id=agent.agent_id,
+                                    )
+                            elif model_response_chunk.event == ModelResponseEvent.tool_call_started.value:
+                                tool_call_dict = model_response_chunk.tool_call
+                                if tool_call_dict is not None:
+                                    if agent.run_response.tools is None:
+                                        agent.run_response.tools = []
+                                    agent.run_response.tools.append(tool_call_dict)
+                                if agent.stream_intermediate_steps:
+                                    yield self.generic_run_response(
+                                        f"Running tool: {tool_call_dict.get('name') if tool_call_dict else 'Unknown'}",
+                                        RunEvent.tool_call_started,
+                                    )
+                            elif model_response_chunk.event == ModelResponseEvent.tool_call_completed.value:
+                                tool_call_dict = model_response_chunk.tool_call
+                                if tool_call_dict is not None and agent.run_response.tools:
+                                    for tool_call in agent.run_response.tools:
+                                        if tool_call.get("id") == tool_call_dict.get("id"):
+                                            tool_call.update(tool_call_dict)
+                                            break
+                                if agent.stream_intermediate_steps:
+                                    yield self.generic_run_response(
+                                        f"Tool completed: {tool_call_dict.get('name') if tool_call_dict else 'Unknown'}",
+                                        RunEvent.tool_call_completed,
+                                    )
+
+                        # --- Lifecycle: LLM end (stream) ---
+                        if agent._run_hooks is not None:
+                            await agent._run_hooks.on_llm_end(agent=agent, response=model_response)
+
+                        # Post-tool hook (todo reminder injection)
+                        if _post_tool_hook is not None:
+                            await _post_tool_hook(messages_for_model, [])
+
+                        # Check if we should continue looping
+                        if not self._response_has_tool_calls(messages_for_model):
+                            # Max-tokens recovery: if output was truncated, inject "Continue"
+                            _finish = agent.model.last_finish_reason
+                            if (
+                                _finish == "length"
+                                and loop_state.max_tokens_recovery_count < loop_state.max_tokens_recovery_limit
+                            ):
+                                loop_state.max_tokens_recovery_count += 1
+                                messages_for_model.append(
+                                    Message(role="user", content="Continue from where you left off.")
+                                )
+                                continue
+                            break
+
+                        # Check stop_after_tool_call
+                        if self._check_stop_after_tool_call(messages_for_model):
+                            break
+
                 else:
-                    agent.run_input = message
-            elif messages is not None:
-                agent.run_input = [m.to_dict() if isinstance(m, Message) else m for m in messages]
+                    # ============================================================
+                    # NON-STREAMING agentic loop
+                    # ============================================================
+                    agent._cancelled = False
+                    model_response = ModelResponse()
 
-            if agent.stream_intermediate_steps:
-                yield self.generic_run_response(agent.run_response.content, RunEvent.run_completed)
+                    while True:
+                        loop_state.turn_count += 1
+                        agent._check_cancelled()
 
-            # --- Lifecycle: agent end ---
-            _output = agent.run_response.content
-            if agent.hooks is not None:
-                await agent.hooks.on_end(agent=agent, output=_output)
-            if agent._run_hooks is not None:
-                await agent._run_hooks.on_agent_end(agent=agent, output=_output)
+                        # Safety: death spiral
+                        if self._check_death_spiral(messages_for_model, loop_state):
+                            model_response.content = (
+                                (model_response.content or "") +
+                                "\n\n[Error: All tool calls have failed repeatedly. Stopping to prevent infinite loop.]"
+                            )
+                            break
 
-            if not agent.stream:
-                yield agent.run_response
+                        # Safety: cost budget
+                        _cost_msg = self._check_cost_budget(
+                            agent.model._cost_tracker, agent._run_max_cost_usd
+                        )
+                        if _cost_msg:
+                            model_response.content = (model_response.content or "") + f"\n\n[{_cost_msg}]"
+                            break
 
-            # Clear query-level tool/skill filtering after run
-            agent._enabled_tools = None
-            agent._enabled_skills = None
+                        # Pre-tool hook (context overflow + repetition detection)
+                        if _pre_tool_hook is not None and loop_state.turn_count > 1:
+                            _skip = await _pre_tool_hook(messages_for_model, [])
+                            if _skip:
+                                continue  # Let model reconsider
 
-            # --- Session persist (CC-style JSONL append) ---
-            # Log the complete turn: user input + tool results + assistant output
-            if agent._session_log is not None:
-                # 1. Log user input
-                _user_text = None
-                if isinstance(message, str):
-                    _user_text = message
-                elif isinstance(message, Message):
-                    _user_text = message.content if isinstance(message.content, str) else str(message.content)
-                if _user_text:
-                    agent._session_log.append("user", _user_text)
+                        # Compression pipeline (cheapest-first, before LLM call)
+                        await self._maybe_compress_messages(messages_for_model, agent, agent.model)
 
-                # 2. Log tool results from this run (if any)
-                if agent.run_response.tools:
-                    for tc in agent.run_response.tools:
-                        _tool_content = tc.get("content", "") or ""
-                        # Truncate large tool results in JSONL (full result in tool_result_storage)
-                        if len(_tool_content) > 2000:
-                            _tool_content = _tool_content[:2000] + "\n... [truncated]"
-                        agent._session_log.append(
-                            "tool", _tool_content,
-                            tool_name=tc.get("tool_name", ""),
-                            tool_call_id=tc.get("tool_call_id", ""),
-                            is_error=tc.get("tool_call_error", False),
+                        # --- Lifecycle: LLM start (non-stream) ---
+                        if agent._run_hooks is not None:
+                            await agent._run_hooks.on_llm_start(agent=agent, messages=messages_for_model)
+
+                        model_response = await self._call_with_retry(
+                            agent.model, messages_for_model, loop_state, agent, stream=False
                         )
 
-                # 3. Log assistant output (with model info + usage, mirrors CC)
-                _assistant_text = agent.run_response.content
-                if _assistant_text and isinstance(_assistant_text, str):
-                    _model_meta = {}
-                    if agent.model:
-                        _model_meta["model"] = agent.model.id
-                        if agent.model.usage and agent.model.usage.request_usage_entries:
-                            _last_usage = agent.model.usage.request_usage_entries[-1]
-                            _model_meta["usage"] = {
-                                "input_tokens": _last_usage.input_tokens,
-                                "output_tokens": _last_usage.output_tokens,
-                            }
-                    agent._session_log.append("assistant", _assistant_text, **_model_meta)
+                        # --- Lifecycle: LLM end (non-stream) ---
+                        if agent._run_hooks is not None:
+                            await agent._run_hooks.on_llm_end(agent=agent, response=model_response)
 
-            agent._running = False
+                        # Post-tool hook (todo reminder injection)
+                        if _post_tool_hook is not None:
+                            await _post_tool_hook(messages_for_model, [])
+
+                        # Check if we should continue looping
+                        if not self._response_has_tool_calls(messages_for_model):
+                            # Max-tokens recovery
+                            _finish = agent.model.last_finish_reason
+                            if (
+                                _finish == "length"
+                                and loop_state.max_tokens_recovery_count < loop_state.max_tokens_recovery_limit
+                            ):
+                                loop_state.max_tokens_recovery_count += 1
+                                messages_for_model.append(
+                                    Message(role="user", content="Continue from where you left off.")
+                                )
+                                continue
+                            break
+
+                        # Check stop_after_tool_call
+                        if self._check_stop_after_tool_call(messages_for_model):
+                            break
+
+                    # --- Context window usage warning ---
+                    _window = agent.model.context_window
+                    if _window:
+                        _ctx_tokens = count_tokens(messages_for_model, None, agent.model.id, None)
+                        _pct = _ctx_tokens / _window
+                        agent.run_response.metrics = agent.run_response.metrics or {}
+                        agent.run_response.metrics['context_window_pct'] = round(_pct, 3)
+                        if _pct >= 0.8:
+                            logger.warning(
+                                f"Agent '{agent.identifier}': context usage "
+                                f"{_ctx_tokens:,}/{_window:,} tokens ({_pct:.0%})"
+                            )
+                    if agent.response_model is not None and agent.structured_outputs and model_response.parsed is not None:
+                        agent.run_response.content = model_response.parsed
+                        agent.run_response.content_type = agent.response_model.__name__
+                    else:
+                        agent.run_response.content = model_response.content
+                    if model_response.audio is not None:
+                        agent.run_response.audio = model_response.audio
+                    if model_response.reasoning_content is not None:
+                        agent.run_response.reasoning_content = model_response.reasoning_content
+                    agent.run_response.messages = messages_for_model
+                    agent.run_response.created_at = model_response.created_at
+
+                    # Extract tool call info from messages for non-streaming mode
+                    tool_calls_data = []
+                    for msg in messages_for_model:
+                        m = msg if isinstance(msg, Message) else None
+                        if m is None:
+                            continue
+                        if m.role == "tool" and m.tool_name:
+                            tool_calls_data.append(
+                                {
+                                    "tool_call_id": m.tool_call_id,
+                                    "tool_name": m.tool_name,
+                                    "tool_args": m.tool_args,
+                                    "content": m.content,
+                                    "tool_call_error": m.tool_call_error or False,
+                                    "metrics": m.metrics if m.metrics else {},
+                                }
+                            )
+                    if tool_calls_data:
+                        agent.run_response.tools = tool_calls_data
+
+                # Build run messages
+                run_messages = user_messages + messages_for_model[num_input_messages:]
+                if system_message is not None:
+                    run_messages.insert(0, system_message)
+                agent.run_response.messages = run_messages
+                agent.run_response.metrics = self._aggregate_metrics_from_run_messages(run_messages)
+                agent.run_response.usage = agent.model.usage if agent.model else None
+
+                # --- Record cost from the last request's token usage ---
+                if agent.model and agent.model.usage and agent.model.usage.request_usage_entries:
+                    _last = agent.model.usage.request_usage_entries[-1]
+                    _cache_read = 0
+                    _cache_write = 0
+                    if _last.input_tokens_details:
+                        _cache_read = _last.input_tokens_details.cached_tokens
+                    agent.run_response.cost_tracker.record(
+                        model_id=agent.model.id,
+                        input_tokens=_last.input_tokens,
+                        output_tokens=_last.output_tokens,
+                        cache_read_tokens=_cache_read,
+                        cache_write_tokens=_cache_write,
+                    )
+
+                # v3: attach CostTracker to RunResponse
+                if agent.model is not None and agent.model._cost_tracker is not None:
+                    agent.run_response.cost_tracker = agent.model._cost_tracker
+
+                if agent.stream:
+                    agent.run_response.content = model_response.content
+                    if model_response.reasoning_content:
+                        agent.run_response.reasoning_content = model_response.reasoning_content
+
+                # 5. Update Memory
+                if agent.stream_intermediate_steps:
+                    yield self.generic_run_response("Updating memory", RunEvent.updating_memory)
+
+                if system_message is not None:
+                    agent.working_memory.add_system_message(system_message, system_message_role=agent.prompt_config.system_message_role)
+                agent.working_memory.add_messages(messages=(user_messages + messages_for_model[num_input_messages:]))
+
+                agent_run = AgentRun(response=agent.run_response)
+
+                # Handle agent_run message assignment
+                if message is not None:
+                    user_message_for_memory: Optional[Message] = None
+                    if isinstance(message, str):
+                        user_message_for_memory = Message(role=agent.prompt_config.user_message_role, content=message)
+                    elif isinstance(message, Message):
+                        user_message_for_memory = message
+                    if user_message_for_memory is not None:
+                        agent_run.message = user_message_for_memory
+                elif messages is not None and len(messages) > 0:
+                    for _m in messages:
+                        _um = None
+                        if isinstance(_m, Message):
+                            _um = _m
+                        elif isinstance(_m, dict):
+                            try:
+                                _um = Message(**_m)
+                            except Exception as e:
+                                logger.error(f"Error converting message to Message: {e}")
+                        else:
+                            logger.warning(f"Unsupported message type: {type(_m)}")
+                            continue
+                        if _um:
+                            if agent_run.messages is None:
+                                agent_run.messages = []
+                            agent_run.messages.append(_um)
+                        else:
+                            logger.warning("Unable to add message to memory")
+                agent.working_memory.add_run(agent_run)
+
+                if agent.working_memory.create_session_summary and agent.working_memory.update_session_summary_after_run:
+                    await agent.working_memory.update_summary()
+
+                # 6. Save output to file
+                self.save_run_response_to_file(message=message, save_response_to_file=save_response_to_file)
+
+                # 7. Set run_input
+                if message is not None:
+                    if isinstance(message, str):
+                        agent.run_input = message
+                    elif isinstance(message, Message):
+                        agent.run_input = message.to_dict()
+                    else:
+                        agent.run_input = message
+                elif messages is not None:
+                    agent.run_input = [m.to_dict() if isinstance(m, Message) else m for m in messages]
+
+                if agent.stream_intermediate_steps:
+                    yield self.generic_run_response(agent.run_response.content, RunEvent.run_completed)
+
+                # --- Lifecycle: agent end ---
+                _output = agent.run_response.content
+                if agent.hooks is not None:
+                    await agent.hooks.on_end(agent=agent, output=_output)
+                if agent._run_hooks is not None:
+                    await agent._run_hooks.on_agent_end(agent=agent, output=_output)
+
+                if not agent.stream:
+                    yield agent.run_response
+
+                # Clear query-level tool/skill filtering and per-run hooks after run
+                agent._enabled_tools = None
+                agent._enabled_skills = None
+                agent._run_hooks = None
+
+                # --- Session persist (CC-style JSONL append) ---
+                # Log the complete turn: user input + tool results + assistant output
+                if agent._session_log is not None:
+                    # 1. Log user input
+                    _user_text = None
+                    if isinstance(message, str):
+                        _user_text = message
+                    elif isinstance(message, Message):
+                        _user_text = message.content if isinstance(message.content, str) else str(message.content)
+                    if _user_text:
+                        agent._session_log.append("user", _user_text)
+
+                    # 2. Log tool results from this run (if any)
+                    if agent.run_response.tools:
+                        for tc in agent.run_response.tools:
+                            _tool_content = tc.get("content", "") or ""
+                            # Truncate large tool results in JSONL (full result in tool_result_storage)
+                            if len(_tool_content) > 2000:
+                                _tool_content = _tool_content[:2000] + "\n... [truncated]"
+                            agent._session_log.append(
+                                "tool", _tool_content,
+                                tool_name=tc.get("tool_name", ""),
+                                tool_call_id=tc.get("tool_call_id", ""),
+                                is_error=tc.get("tool_call_error", False),
+                            )
+
+                    # 3. Log assistant output (with model info + usage, mirrors CC)
+                    _assistant_text = agent.run_response.content
+                    if _assistant_text and isinstance(_assistant_text, str):
+                        _model_meta = {}
+                        if agent.model:
+                            _model_meta["model"] = agent.model.id
+                            if agent.model.usage and agent.model.usage.request_usage_entries:
+                                _last_usage = agent.model.usage.request_usage_entries[-1]
+                                _model_meta["usage"] = {
+                                    "input_tokens": _last_usage.input_tokens,
+                                    "output_tokens": _last_usage.output_tokens,
+                                }
+                        agent._session_log.append("assistant", _assistant_text, **_model_meta)
+
+            finally:
+                agent._running = False
 
         trace_input = message if isinstance(message, str) else str(message) if message else None
         trace_name = agent.name or "agent-run"

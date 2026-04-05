@@ -40,8 +40,8 @@ def _get_default_base_dir() -> str:
 
 def _iso_now() -> str:
     """Return current time as ISO 8601 string with milliseconds (CC convention)."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + \
-        f"{datetime.now(timezone.utc).microsecond // 1000:03d}Z"
+    now = datetime.now(timezone.utc)
+    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
 
 
 class SessionLog:

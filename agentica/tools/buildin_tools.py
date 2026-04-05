@@ -298,7 +298,10 @@ class BuiltinFileTool(Tool):
             try:
                 file_size = path.stat().st_size
                 if file_size > self.MAX_FILE_SIZE_BYTES:
-                    total_lines = sum(1 for _ in open(path, errors='ignore'))
+                    loop = asyncio.get_running_loop()
+                    total_lines = await loop.run_in_executor(
+                        None, lambda: sum(1 for _ in open(path, errors='ignore'))
+                    )
                     return (
                         f"Error: File too large ({file_size:,} bytes, {total_lines:,} lines). "
                         f"Use offset and limit to read specific sections.\n"

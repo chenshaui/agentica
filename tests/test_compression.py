@@ -289,7 +289,7 @@ class TestCompressionManagerDropOldMessages(unittest.TestCase):
             Message(role="assistant", content="recent reply", tool_calls=[{"id": "3"}]),
             Message(role="tool", content="recent tool result", tool_call_id="3"),
         ]
-        dropped = cm._drop_old_messages(msgs)
+        dropped = asyncio.run(cm._drop_old_messages(msgs))
         self.assertGreater(dropped, 0)
         # System and first user always preserved
         self.assertEqual(msgs[0].role, "system")
@@ -305,7 +305,7 @@ class TestCompressionManagerDropOldMessages(unittest.TestCase):
             Message(role="assistant", content="reply", tool_calls=[{"id": "1"}]),
             Message(role="tool", content="result", tool_call_id="1"),
         ]
-        dropped = cm._drop_old_messages(msgs)
+        dropped = asyncio.run(cm._drop_old_messages(msgs))
         self.assertEqual(dropped, 0)
 
 
@@ -332,8 +332,7 @@ class TestCompressionManagerAutoCompact(unittest.TestCase):
         wm.summary.summary = "Previously discussed: project setup and testing"
         wm.summary.topics = ["setup", "testing"]
 
-        with patch.object(cm, '_save_transcript'):
-            result = asyncio.run(cm.auto_compact(msgs, force=True, working_memory=wm))
+        result = asyncio.run(cm.auto_compact(msgs, force=True, working_memory=wm))
         self.assertTrue(result)
         self.assertEqual(len(msgs), 2)
         self.assertIn("[Context compressed]", msgs[0].content)
@@ -343,8 +342,7 @@ class TestCompressionManagerAutoCompact(unittest.TestCase):
         from agentica.compression.manager import CompressionManager
         cm = CompressionManager()
         msgs = [Message(role="user", content="hi")]
-        with patch.object(cm, '_save_transcript'), \
-             patch.object(cm, '_summarise_conversation', new_callable=AsyncMock, return_value=None):
+        with patch.object(cm, '_summarise_conversation', new_callable=AsyncMock, return_value=None):
             result = asyncio.run(cm.auto_compact(msgs, force=True))
         self.assertFalse(result)
         self.assertEqual(cm._consecutive_auto_compact_failures, 1)
@@ -354,8 +352,7 @@ class TestCompressionManagerAutoCompact(unittest.TestCase):
         cm = CompressionManager()
         cm._consecutive_auto_compact_failures = 2
         msgs = [Message(role="user", content="hi"), Message(role="assistant", content="ok")]
-        with patch.object(cm, '_save_transcript'), \
-             patch.object(cm, '_summarise_conversation', new_callable=AsyncMock, return_value="summary text"):
+        with patch.object(cm, '_summarise_conversation', new_callable=AsyncMock, return_value="summary text"):
             result = asyncio.run(cm.auto_compact(msgs, force=True))
         self.assertTrue(result)
         self.assertEqual(cm._consecutive_auto_compact_failures, 0)

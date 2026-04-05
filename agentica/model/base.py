@@ -386,10 +386,15 @@ class Model(ABC):
                 timers[idx].stop()
 
         if safe_indices:
-            await asyncio.gather(
+            gather_results = await asyncio.gather(
                 *[_execute_safe(i, function_calls[i]) for i in safe_indices],
-                return_exceptions=False,
+                return_exceptions=True,
             )
+            # Handle any unhandled exceptions from gather (e.g. CancelledError)
+            for gi, idx in enumerate(safe_indices):
+                if isinstance(gather_results[gi], BaseException) and exceptions[idx] is None:
+                    exceptions[idx] = gather_results[gi]
+                    results[idx] = False
 
         # Phase 2b: run unsafe tools serially; bash error → cancel rest
         bash_errored = False

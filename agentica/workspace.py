@@ -912,9 +912,8 @@ You are a helpful AI assistant.
     def _get_archive_lock(self, filepath: Path) -> asyncio.Lock:
         """Get or create a per-file asyncio.Lock for serializing archive writes."""
         key = str(filepath)
-        if key not in self._archive_locks:
-            self._archive_locks[key] = asyncio.Lock()
-        return self._archive_locks[key]
+        # Use setdefault for atomic get-or-create (W-01 fix)
+        return self._archive_locks.setdefault(key, asyncio.Lock())
 
     async def archive_conversation(self, messages: List[Dict], session_id: Optional[str] = None) -> str:
         """Archive a conversation to daily Markdown file.

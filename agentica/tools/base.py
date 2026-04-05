@@ -409,6 +409,8 @@ class FunctionCall(BaseModel):
             logger.debug(f"{e.__class__.__name__}: {e}")
             self.error = str(e)
             raise
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.warning(f"Could not run function {self.get_call_str()}")
             logger.exception(e)
