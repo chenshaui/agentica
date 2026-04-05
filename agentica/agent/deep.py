@@ -25,17 +25,23 @@ Usage:
     response = agent.run_sync("Research the latest advances in RAG")
     print(response.content)
 
+    # Enable memory tool (LLM can save/search memories)
+    agent = DeepAgent(include_memory=True)
+
+    # Enable human-in-the-loop
+    agent = DeepAgent(include_user_input=True)
+
+    # Disable web search (file-only agent)
+    agent = DeepAgent(include_web_search=False, include_fetch_url=False)
+
+    # Custom task subagent model
+    from agentica import OpenAIChat
+    agent = DeepAgent(task_model=OpenAIChat(id="gpt-4o-mini"))
+
     # With cost budget
     from agentica import RunConfig
     response = await agent.run("Analyze X", config=RunConfig(max_cost_usd=1.0))
     print(response.cost_tracker.total_cost_usd)
-
-    # With custom model
-    from agentica import OpenAIChat
-    agent = DeepAgent(model=OpenAIChat(id="gpt-4o"))
-
-    # Resume previous session
-    agent = DeepAgent(session_id="my-previous-session")
 
     # With sandbox isolation
     from agentica import SandboxConfig
@@ -91,6 +97,20 @@ class DeepAgent(Agent):
         tool_config: Optional[ToolConfig] = None,
         long_term_memory_config: Optional[WorkspaceMemoryConfig] = None,
         sandbox_config: Optional[SandboxConfig] = None,
+        # Builtin tool toggles — mirror get_builtin_tools() params
+        include_file_tools: bool = True,
+        include_execute: bool = True,
+        include_web_search: bool = True,
+        include_fetch_url: bool = True,
+        include_todos: bool = True,
+        include_task: bool = True,
+        include_skills: bool = True,
+        include_user_input: bool = False,
+        include_memory: bool = False,
+        task_model: Optional[Model] = None,
+        task_tools: Optional[List[Any]] = None,
+        custom_skill_dirs: Optional[List[str]] = None,
+        user_input_callback: Optional[Callable] = None,
         **kwargs,
     ):
         # Default model
@@ -112,7 +132,20 @@ class DeepAgent(Agent):
             get_builtin_tools(
                 work_dir=work_dir,
                 workspace=workspace,
-                include_skills=True,
+                include_file_tools=include_file_tools,
+                include_execute=include_execute,
+                include_web_search=include_web_search,
+                include_fetch_url=include_fetch_url,
+                include_todos=include_todos,
+                include_task=include_task,
+                include_skills=include_skills,
+                include_user_input=include_user_input,
+                include_memory=include_memory,
+                task_model=task_model,
+                task_tools=task_tools,
+                custom_skill_dirs=custom_skill_dirs,
+                user_input_callback=user_input_callback,
+                sandbox_config=sandbox_config,
             )
         )
         if tools:
