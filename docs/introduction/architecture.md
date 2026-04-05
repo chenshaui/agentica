@@ -1,145 +1,293 @@
 # Architecture Overview
 
-Agentica 采用分层架构，将 Agent 的身份定义与执行引擎解耦。
-
-## 系统架构图
-
-<div align="center">
-  <img src="../assets/architecturev2.jpg" alt="Architecture" width="800" />
-</div>
+Agentica 采用分层架构，将 Agent 的**身份定义**与**执行引擎**解耦，同时内置了上下文压缩、会话持久化和并发安全工具执行等生产级能力。
 
 ## 五层架构
 
 ```
 +------------------------------------------------------------------+
 |                        Application Layer                          |
-|   CLI / Web UI / API Service / ACP Server                        |
+|  CLI (agentica)  /  FastAPI  /  ACP Server  /  Web UI            |
 +------------------------------------------------------------------+
 |                        Orchestration Layer                         |
-|   Team (delegation) | Workflow (pipeline) | Swarm (autonomous)   |
+|  Team (delegation)  |  Workflow (pipeline)  |  Swarm (mesh)      |
 +------------------------------------------------------------------+
 |                          Agent Layer                               |
-|   Agent  <-->  Runner (execution engine)                          |
-|   PromptsMixin | ToolsMixin | TeamMixin | PrinterMixin           |
+|  Agent  <--->  Runner (execution engine)                          |
+|  PromptsMixin | ToolsMixin | TeamMixin | PrinterMixin            |
 +------------------------------------------------------------------+
 |                          Model Layer                               |
-|   OpenAI | Anthropic | ZhipuAI | DeepSeek | Ollama | ...        |
-|   Tool loop | Compression | Death spiral | Cost budget           |
+|  OpenAI | Anthropic | ZhipuAI | DeepSeek | Ollama | LiteLLM    |
+|  Tool loop | Compression | Death spiral | Cost budget            |
 +------------------------------------------------------------------+
 |                        Infrastructure Layer                        |
-|   Tools | Knowledge(RAG) | Memory | VectorDB | MCP | Hooks      |
+|  Tools | Knowledge(RAG) | Memory | VectorDB | MCP | Hooks        |
 +------------------------------------------------------------------+
 ```
 
 ## Agent 与 Runner 的分离
 
-Agent 定义 **"我是谁、我能做什么"**，Runner 负责 **"怎么执行"**：
+**Agent** 定义"我是谁、我能做什么"（静态配置）；  
+**Runner** 负责"怎么执行"（动态执行引擎）。
+
+两者解耦的好处：Runner 可独立测试，Agent 配置可以序列化，不同的 Runner 策略可以插拔。
 
 ```python
+# agentica/agent/base.py（简化）
 @dataclass(init=False)
 class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
     def __init__(self, ...):
-        self._runner = Runner(self)
+        self._runner = Runner(self)   # Runner 持有 Agent 弱引用
 
     async def run(self, message, **kw) -> RunResponse:
         return await self._runner.run(message, **kw)
 ```
 
-### Runner 执行流程
+Agent 通过 Mixin 组合获得各类能力，每个 Mixin 只是方法容器，**状态全部存在 Agent 的 dataclass fields 上**：
+
+| Mixin | 职责 |
+|-------|------|
+| `PromptsMixin` | System Prompt 三区组装、PromptBuilder 集成 |
+| `ToolsMixin` | 工具注册、tool system prompt 合并、builtin tool 管理 |
+| `TeamMixin` | 团队委派、transfer prompt 生成 |
+| `PrinterMixin` | 流式事件打印、格式化输出 |
+
+## Runner 执行流程
 
 ```
 User Message
-    |
-    v
-[InputGuardrail] -- 输入验证
-    |
-    v
+    │
+    ▼
+[InputGuardrail]          ← 拦截不合规输入
+    │
+    ▼
 Runner._run_impl()
-    |
-    +--> 构建 System Prompt (PromptsMixin)
-    +--> 调用 Model (LLM API)
-    |       |
-    |       v
-    |   Model Response
-    |       |
-    |       +--> 有 tool_calls? --> 执行工具 --> [ToolGuardrail]
-    |       |                           |
-    |       |                           v
-    |       |                     工具结果加入消息
-    |       |                           |
-    |       |                           v
-    |       |                     继续 Model 循环 (agentic loop)
-    |       |
-    |       +--> 无 tool_calls? --> 返回响应
-    |
-    v
-[OutputGuardrail] -- 输出验证
-    |
-    v
-RunResponse
+    │
+    ├─► 构建 System Prompt  (PromptsMixin.get_system_message)
+    │       ├── Static Zone:    description + instructions
+    │       ├── Semi-static:    workspace context + git status
+    │       └── Dynamic Zone:   workspace memory + datetime
+    │
+    ├─► 上下文压缩检查       (CompressionManager.compress)
+    │       ├── Stage 1a: 截断旧工具结果
+    │       ├── Stage 1b: 丢弃旧消息轮次
+    │       └── Stage 2:  LLM 摘要压缩（可选）
+    │
+    ├─► LLM API 调用         (Model.response / response_stream)
+    │
+    ▼
+Model Response
+    │
+    ├─[有 tool_calls]──────────────────────────────────────┐
+    │                                                       │
+    │       ┌── concurrency_safe=True ──────┐              │
+    │       │  asyncio.gather() 并发执行    │              │
+    │       └──────────────────────────────┘              │
+    │       [ToolInputGuardrail] → 执行工具 → [ToolOutputGuardrail]
+    │                                   │                  │
+    │                      工具结果加入消息历史              │
+    │                                   │                  │
+    │                      Session Log 追加                │
+    │                                   │                  │
+    │                      继续循环 ────┘                  │
+    │                                                       │
+    └─[无 tool_calls]──────────────────────────────────────┘
+                │
+                ▼
+    [OutputGuardrail]
+                │
+                ▼
+           RunResponse
 ```
 
-## System Prompt 三区结构
+## 上下文压缩机制
 
-为最大化 LLM prefix-cache 命中率，System Prompt 分为三个区域：
-
-```
-+-- STATIC ZONE (不变) -----------------------------------+
-|  description, task, role, team, instructions,           |
-|  guidelines, expected_output, additional_context        |
-+---------------------------------------------------------+
-|                                                         |
-+-- SEMI-STATIC ZONE (少变) ------------------------------+
-|  workspace context (AGENT.md), git status,              |
-|  model system message, team transfer prompt             |
-+---------------------------------------------------------+
-|                                                         |
-+-- DYNAMIC ZONE (每轮可变) ------------------------------+
-|  workspace memory, session summary, datetime,           |
-|  json output prompt                                     |
-+---------------------------------------------------------+
-```
-
-静态内容在前，动态内容在后。同一分钟内的请求共享相同的 prefix-cache。
-
-## 数据流
-
-### 非流式
+当消息历史积累到一定长度时，Agentica 自动触发**三阶段压缩流水线**：
 
 ```
-agent.run(message)
-  -> Runner.run()
-    -> Runner._run_impl()
-      -> Model.response(messages)
-        -> [tool loop if needed]
-      <- ModelResponse
-    <- RunResponse
+触发条件：token_count >= context_window × threshold（默认 0.8）
+
+Stage 1a: 截断工具结果
+    最旧的 tool result 内容截断为前 N chars
+    保留 "[truncated]" 标记和文件路径
+
+Stage 1b: 丢弃旧消息
+    从最旧的 assistant+tool 轮次开始丢弃
+    保留 system message + 最近 K 轮
+
+Stage 2（可选，use_llm_compression=True）:
+    用轻量 LLM 摘要旧工具结果
+    LLM：原始内容 → 精简摘要（保留关键数据）
+
+Auto Compact（手动或自动触发）:
+    整个对话历史 → LLM 摘要 → [Context compressed]\n{summary}
+    CompactBoundary 写入 Session Log，恢复时从此处开始
 ```
 
-### 流式
+**大工具结果持久化**（`tool_result_storage`）：单个工具结果超过阈值时，完整内容写入磁盘，上下文中只保留预览 + 文件路径：
 
 ```
-agent.run_stream(message)
-  -> Runner.run_stream()
-    -> Runner._run_impl_stream()
-      -> Model.response_stream(messages)
-        -> [SSE token-by-token]
-        -> [tool loop if needed]
-      <- AsyncIterator[ModelResponse]
-    <- AsyncIterator[RunResponse]
+~/.agentica/projects/<cwd>/<session_id>/tool-results/<tool_use_id>.txt
 ```
+
+## Session Log（JSONL 会话日志）
+
+基于追加写 JSONL 的持久化会话日志，每次 `run()` 自动追加：
+
+```jsonl
+{"type":"user","uuid":"a1b2...","parent_uuid":null,"session_id":"sess-001","timestamp":"2026-04-05T10:00:00.000Z","content":"分析这段代码"}
+{"type":"assistant","uuid":"c3d4...","parent_uuid":"a1b2...","timestamp":"...","content":"好的...","model":"gpt-4o","usage":{"input_tokens":1024,"output_tokens":256}}
+{"type":"tool","uuid":"e5f6...","parent_uuid":"c3d4...","tool_name":"read_file","content":"..."}
+{"type":"compact_boundary","uuid":"g7h8...","parent_uuid":null,"summary":"...会话摘要..."}
+```
+
+**恢复机制**：重新创建相同 `session_id` 的 Agent 时，从最后一个 `compact_boundary` 开始加载消息，跳过历史数据（大文件优化）。
+
+**存储路径**：`~/.agentica/projects/<sanitized-cwd>/<session-id>.jsonl`
+
+## 工具并发执行
+
+LLM 一次性返回多个工具调用时，Agentica 自动并发执行安全的只读工具：
+
+```
+LLM 返回: [read_file("a.py"), grep("TODO"), read_file("b.py")]
+
+                    asyncio.gather()
+                    ┌─────────────────────┐
+  ──► read_file("a.py")  (concurrency_safe=True)
+  ──► grep("TODO")       (concurrency_safe=True)
+  ──► read_file("b.py")  (concurrency_safe=True)
+                    └─────────────────────┘
+                    等待全部完成，一起写入消息历史
+
+  ──► execute("git commit")  (concurrency_safe=False) → 串行执行
+```
+
+**安全标注**：每个工具函数通过 `is_read_only`、`is_destructive`、`concurrency_safe` 元数据声明其行为语义，Guardrail 和权限系统据此决策。
 
 ## 安全机制
 
-| 机制 | 说明 |
-|------|------|
-| **Guardrails** | 4 层守卫: InputGuardrail, OutputGuardrail, ToolInputGuardrail, ToolOutputGuardrail |
-| **Death Spiral Detection** | 连续 5 轮全部工具调用失败时自动停止 |
-| **Cost Budget** | `RunConfig(max_cost_usd=N)` 设置运行成本上限 |
-| **Stream Idle Timeout** | 检测流式响应中的 "静默挂起" |
+### 四层 Guardrails
+
+```
+输入 → [InputGuardrail] → Agent → [OutputGuardrail] → 输出
+
+工具调用: Agent → [ToolInputGuardrail] → 工具执行 → [ToolOutputGuardrail] → Agent
+```
+
+```python
+from agentica.guardrails.agent import InputGuardrail, OutputGuardrail
+
+def check_language(message: str) -> bool:
+    # 拦截非中文输入
+    return True  # False = 拦截
+
+agent = Agent(
+    model=ZhipuAI(),
+    input_guardrails=[InputGuardrail(check_language)],
+)
+```
+
+### Death Spiral 检测
+
+当连续 N 轮（默认 5）所有工具调用都失败时，自动停止，防止无限 error-retry 循环。
+
+### Cost Budget
+
+通过 `RunConfig` 设置单次运行的成本上限：
+
+```python
+from agentica.run_config import RunConfig
+
+result = await agent.run(
+    "复杂的分析任务",
+    config=RunConfig(
+        max_cost_usd=0.5,      # 最多花 0.5 美元
+        max_tokens=10000,      # 最多输出 10000 tokens
+        timeout=120,           # 最长运行 120 秒
+    ),
+)
+```
+
+### Repetition Detection
+
+当 Agent 反复用相同参数调用同一工具时（`max_repeated_tool_calls=3`），自动注入"你在循环，换策略"的提示，打破死循环。
+
+## 多 Agent 编排
+
+### Team（委派模式）
+
+```
+Leader Agent
+    ├── Member Agent A  (专注搜索)
+    ├── Member Agent B  (专注代码分析)
+    └── Member Agent C  (专注报告生成)
+
+Leader 根据任务将子任务委派给最合适的 Member
+Member 完成后返回结果，Leader 整合并回复用户
+```
+
+```python
+from agentica import Agent, ZhipuAI
+
+search_agent = Agent(name="Searcher", tools=[DuckDuckGoTool()])
+analyst_agent = Agent(name="Analyst", instructions=["分析数据，输出洞察"])
+
+leader = Agent(
+    model=ZhipuAI(),
+    team=[search_agent, analyst_agent],
+)
+```
+
+### Workflow（管道模式）
+
+```
+Input
+  → Agent A (数据收集)
+  → Agent B (数据分析)
+  → Agent C (报告生成)
+  → Output
+```
+
+确定性管道，每步输出作为下步输入，适合结构化多步骤任务。
+
+### Swarm（网状模式）
+
+多 Agent 自主协作，动态决定任务分配，适合复杂、不可预测的任务场景。
+
+## 钩子系统（Hooks）
+
+生命周期钩子允许在 Agent 运行的各个阶段插入自定义逻辑：
+
+```python
+from agentica.hooks import AgentHooks, RunHooks
+from agentica.run_response import RunResponse
+
+class MyHooks(RunHooks):
+    async def on_agent_start(self, agent, message):
+        print(f"开始处理: {message[:50]}")
+
+    async def on_agent_end(self, agent, response: RunResponse):
+        print(f"完成 | tokens: {response.metrics.get('total_tokens')}")
+
+    async def on_tool_call_completed(self, agent, tool_name, result):
+        print(f"工具 {tool_name} 完成")
+
+agent = Agent(model=ZhipuAI())
+result = await agent.run("你好", hooks=MyHooks())
+```
+
+内置 Hooks 实现：
+
+| Hook 类 | 功能 |
+|---------|------|
+| `MemoryExtractHooks` | 对话结束后自动提取记忆 |
+| `ConversationArchiveHooks` | 对话结束后自动归档 |
 
 ## 下一步
 
-- [安装指南](../getting-started/installation.md)
-- [Agent 核心概念](../concepts/agent.md)
-- [Hooks 生命周期](../advanced/hooks.md)
+- [Agent 核心概念](../concepts/agent.md) -- Agent API 详解
+- [Tools](../concepts/tools.md) -- 工具系统深度解析
+- [Memory & Workspace](../concepts/memory.md) -- 记忆和持久化
+- [Hooks](../advanced/hooks.md) -- 生命周期钩子完整 API
+- [Compression](../advanced/compression.md) -- 上下文压缩配置
