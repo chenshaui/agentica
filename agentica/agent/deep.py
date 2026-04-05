@@ -26,7 +26,7 @@ Usage:
     print(response.content)
 
     # Enable memory tool (LLM can save/search memories)
-    agent = DeepAgent(include_memory=True)
+    agent = DeepAgent(memory=False)  # explicitly disable memory
 
     # Enable human-in-the-loop
     agent = DeepAgent(include_user_input=True)
@@ -106,7 +106,7 @@ class DeepAgent(Agent):
         include_task: bool = True,
         include_skills: bool = True,
         include_user_input: bool = False,
-        include_memory: bool = False,
+        memory: bool = True,
         task_model: Optional[Model] = None,
         task_tools: Optional[List[Any]] = None,
         custom_skill_dirs: Optional[List[str]] = None,
@@ -131,7 +131,6 @@ class DeepAgent(Agent):
         all_tools: List[Union[ModelTool, Tool, Callable, Dict, Function]] = list(
             get_builtin_tools(
                 work_dir=work_dir,
-                workspace=workspace,
                 include_file_tools=include_file_tools,
                 include_execute=include_execute,
                 include_web_search=include_web_search,
@@ -140,7 +139,6 @@ class DeepAgent(Agent):
                 include_task=include_task,
                 include_skills=include_skills,
                 include_user_input=include_user_input,
-                include_memory=include_memory,
                 task_model=task_model,
                 task_tools=task_tools,
                 custom_skill_dirs=custom_skill_dirs,
@@ -181,6 +179,7 @@ class DeepAgent(Agent):
             tools=all_tools,
             workspace=workspace,
             work_dir=work_dir,
+            memory=memory,
             session_id=session_id,
             add_history_to_messages=add_history_to_messages,
             history_window=history_window,
