@@ -180,9 +180,23 @@ agent.cancel()
 
 ---
 
-#### `get_chat_history() -> List[Message]`
+#### `agent.working_memory.messages -> List[Message]`
 
-获取聊天历史。
+获取当前会话的消息历史（替代已移除的 `get_chat_history()`）：
+
+```python
+# 获取全部消息
+messages = agent.working_memory.messages
+
+# 获取最近 N 轮的消息（dict 格式）
+recent = agent.working_memory.get_messages_from_last_n_runs(n=5)
+
+# 获取所有消息（dict 格式，含 role/content）
+all_msgs = agent.working_memory.get_messages()
+```
+
+!!! note "`get_chat_history()` 已移除"
+    原 `get_chat_history()` 方法已不存在。直接访问 `agent.working_memory.messages`（返回 `List[Message]`）或调用 `agent.working_memory.get_messages()`（返回 `List[Dict]`）。
 
 ---
 
@@ -228,8 +242,10 @@ from agentica.agent.config import ToolConfig
 | `tool_choice` | `str \| Dict` | `None` | 工具选择策略 |
 | `search_knowledge` | `bool` | `True` | 允许 Agent 主动搜索知识库 |
 | `add_references` | `bool` | `False` | 添加知识库引用 |
-| `compress_tool_results` | `bool` | `False` | 压缩工具结果 |
-| `compression_manager` | `CompressionManager` | `None` | 压缩管理器实例 |
+| `compress_tool_results` | `bool` | `False` | 压缩工具结果（节省 token） |
+| `compression_manager` | `CompressionManager` | `None` | 自定义压缩管理器实例 |
+| `context_overflow_threshold` | `float` | `0.0` | context_window 使用率触发截断的阈值（0-1，0=禁用，推荐 0.8） |
+| `max_repeated_tool_calls` | `int` | `0` | 相同工具+参数连续调用 N 次后注入"你在循环"提示（0=禁用，推荐 3） |
 
 ## WorkspaceMemoryConfig
 
@@ -239,10 +255,11 @@ from agentica.agent.config import WorkspaceMemoryConfig
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `load_workspace_context` | `bool` | `True` | 加载 workspace 上下文 |
-| `load_workspace_memory` | `bool` | `True` | 加载 workspace 记忆 |
+| `load_workspace_context` | `bool` | `True` | 加载 workspace 上下文（AGENT.md 等文件） |
+| `load_workspace_memory` | `bool` | `True` | 加载 workspace 相关记忆到 System Prompt |
 | `max_memory_entries` | `int` | `5` | 每次注入的最大记忆条数（按相关性排序） |
-| `auto_archive` | `bool` | `False` | 每次 run() 后自动归档对话 |
+| `auto_archive` | `bool` | `False` | 每次 run() 后自动归档对话（零 LLM 成本） |
+| `auto_extract_memory` | `bool` | `False` | 每次 run() 后自动提取记忆（有 LLM 成本，仅在 LLM 未主动调用 save_memory 时触发） |
 
 ## TeamConfig
 
@@ -282,11 +299,17 @@ from agentica import DeepAgent
 
 | 工具 | 函数 | 说明 |
 |------|------|------|
-| 文件 | `ls`, `glob`, `grep`, `read_file`, `write_file`, `edit_file` | 文件系统操作 |
+| 文件 | `ls`, `glob`, `grep`, `read_file`, `write_file`, `edit_file`, `multi_edit_file` | 文件系统操作 |
 | 执行 | `execute` | 运行 Shell 命令 |
 | 搜索 | `web_search`, `fetch_url` | 网页搜索和抓取 |
 | 任务 | `task` | 委派子任务给子 Agent |
-| TODO | `read_todos`, `write_todos` | 任务列表管理 |
+| TODO | `write_todos` | 任务列表管理（写入即读取，单工具设计） |
+| 记忆 | `save_memory`, `search_memory` | 持久化记忆读写（需配合 Workspace） |
+| 用户输入 | `user_input` | Human-in-the-loop 请求用户确认或输入 |
+
+!!! note "`read_todos` 已移除"
+    历史版本有 `read_todos` 工具，当前版本只有 `write_todos`。`write_todos` 采用"写即读"设计：
+    每次调用返回完整的当前 todo 列表状态，LLM 通过返回值获取最新状态，无需单独的读工具。
 
 ---
 
@@ -329,17 +352,41 @@ Agent 运行的返回值。
 from agentica import RunEvent
 ```
 
-运行事件枚举：
+运行事件枚举（`str` + `Enum`，事件值为驼峰字符串）：
 
-| 事件 | 说明 |
-|------|------|
-| `run_started` | 运行开始 |
-| `run_response` | 正常响应内容 |
-| `run_completed` | 运行完成 |
-| `tool_call_started` | 工具调用开始 |
-| `tool_call_completed` | 工具调用完成 |
-| `multi_round_turn` | 多轮对话轮次 |
-| `multi_round_completed` | 多轮对话完成 |
+| 事件 | 值 | 说明 |
+|------|-----|------|
+| `run_started` | `"RunStarted"` | 运行开始 |
+| `run_response` | `"RunResponse"` | 正常响应内容 token |
+| `run_completed` | `"RunCompleted"` | 运行完成（最后一个 chunk） |
+| `tool_call_started` | `"ToolCallStarted"` | 工具调用开始 |
+| `tool_call_completed` | `"ToolCallCompleted"` | 工具调用完成 |
+| `reasoning_started` | `"ReasoningStarted"` | 推理链开始（DeepSeek-R1 等） |
+| `reasoning_step` | `"ReasoningStep"` | 推理链步骤 token |
+| `reasoning_completed` | `"ReasoningCompleted"` | 推理链完成 |
+| `updating_memory` | `"UpdatingMemory"` | 正在更新记忆 |
+| `workflow_started` | `"WorkflowStarted"` | Workflow 开始 |
+| `workflow_completed` | `"WorkflowCompleted"` | Workflow 完成 |
+| `multi_round_turn` | `"MultiRoundTurn"` | 多轮 agentic 循环的单次 turn |
+| `multi_round_tool_call` | `"MultiRoundToolCall"` | 多轮循环中的工具调用 |
+| `multi_round_tool_result` | `"MultiRoundToolResult"` | 多轮循环中的工具结果 |
+| `multi_round_completed` | `"MultiRoundCompleted"` | 多轮循环全部完成 |
+
+```python
+from agentica import Agent, ZhipuAI, RunEvent
+
+agent = Agent(model=ZhipuAI())
+async for chunk in agent.run_stream("帮我写一个排序"):
+    match chunk.event:
+        case RunEvent.run_response:
+            print(chunk.content, end="", flush=True)
+        case RunEvent.tool_call_started:
+            print(f"\n🔧 {chunk.content}")
+        case RunEvent.reasoning_step:
+            print(f"[think] {chunk.content}", end="")  # 推理模型思考过程
+        case RunEvent.run_completed:
+            print(f"\n✓ tokens: {chunk.metrics}")
+```
 
 ---
 
