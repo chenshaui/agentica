@@ -71,7 +71,7 @@ class Skill:
         metadata: Additional metadata from frontmatter
         user_invocable: If False, cannot be invoked via /trigger
         is_hidden: If True, hidden from typeahead and /skills listing
-        location: Source location type (project, user, managed, builtin)
+        location: Source location type (project, user, managed)
     """
 
     name: str
@@ -91,7 +91,7 @@ class Skill:
     user_invocable: bool = True  # If False, skill cannot be invoked via /trigger directly
     is_hidden: bool = False  # If True, hidden from typeahead / /skills listing
 
-    # Source location type: project, user, managed, builtin
+    # Source location type: project, user, managed
     location: str = "project"
 
     @classmethod
