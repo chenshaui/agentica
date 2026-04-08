@@ -194,7 +194,7 @@ class PromptsMixin:
         #   │ description, task, role, team, instructions,    │  ← never changes
         #   │ guidelines, expected_output, additional_context │     between runs
         #   ├─ SEMI-STATIC ZONE ─────────────────────────────┤
-        #   │ workspace context (AGENT.md etc.)               │  ← rarely changes
+        #   │ workspace context (AGENTS.md etc.)               │  ← rarely changes
         #   │ model system message                            │
         #   │ team transfer prompt                            │
         #   ├─ DYNAMIC ZONE ─────────────────────────────────┤

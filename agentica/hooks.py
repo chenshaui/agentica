@@ -49,7 +49,7 @@ MEMORY_EXCLUSION_SPEC = (
     "- Git history, recent changes, or who-changed-what — `git log`/`git blame` "
     "are authoritative.\n"
     "- Debugging solutions or fix recipes — the fix is in the code.\n"
-    "- Anything already documented in AGENT.md files.\n"
+    "- Anything already documented in AGENTS.md files.\n"
     "- Ephemeral task details: in-progress work, temporary state, current "
     "conversation context.\n"
     "- Activity logs, PR lists, or task summaries — only the *surprising* or "
@@ -303,7 +303,7 @@ class MemoryExtractHooks(RunHooks):
         "extract key information worth remembering for future sessions.\n\n"
         "Memories capture context NOT derivable from the current project state. "
         "Code patterns, architecture, git history, and file structure are derivable "
-        "(via grep/git/AGENT.md) and must NOT be saved as memories.\n\n"
+        "(via grep/git/AGENTS.md) and must NOT be saved as memories.\n\n"
         "## Memory types\n\n"
         + MEMORY_TYPE_SPEC +
         "\n## What NOT to save\n\n"

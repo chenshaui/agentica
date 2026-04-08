@@ -41,7 +41,7 @@ agent = Agent(
 
 ```
 workspace/
-+-- AGENT.md         # Agent 全局指令（共享）
++-- AGENTS.md         # Agent 全局指令（共享）
 +-- PERSONA.md       # Agent 人格设定（共享）
 +-- TOOLS.md         # 工具使用说明（共享）
 +-- users/
@@ -231,7 +231,7 @@ agent = Agent(session_id="my-session-001")
 from agentica.workspace import Workspace, WorkspaceConfig
 
 config = WorkspaceConfig(
-    agent_md="AGENT.md",
+    agent_md="AGENTS.md",
     persona_md="PERSONA.md",
     tools_md="TOOLS.md",
     user_md="USER.md",

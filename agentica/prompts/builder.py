@@ -39,7 +39,7 @@ class PromptBuilder:
 
         Args:
             identity: Custom identity description
-            workspace_context: Additional context from workspace (AGENT.md, etc.)
+            workspace_context: Additional context from workspace (AGENTS.md, etc.)
             active_tools: List of currently enabled tool names for dynamic tool table
             tool_descriptions: Optional mapping of tool_name -> description for tool table
             enable_heartbeat: Enable forced iteration mechanism

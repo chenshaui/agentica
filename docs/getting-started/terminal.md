@@ -183,7 +183,7 @@ mcp, skill, ...
   Path: ~/.agentica/workspace
   User: default
   Memory entries: 5
-  Context files: AGENT.md, PERSONA.md
+  Context files: AGENTS.md, PERSONA.md
 ```
 
 ### `/model [provider/model]`

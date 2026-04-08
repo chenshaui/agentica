@@ -96,7 +96,7 @@ class TestWorkspaceInitialize(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             ws = Workspace(path=tmpdir)
             ws.initialize()
-            self.assertTrue((Path(tmpdir) / "AGENT.md").exists())
+            self.assertTrue((Path(tmpdir) / "AGENTS.md").exists())
             self.assertTrue((Path(tmpdir) / "PERSONA.md").exists())
             self.assertTrue((Path(tmpdir) / "TOOLS.md").exists())
             self.assertTrue((Path(tmpdir) / "skills").exists())
@@ -112,17 +112,17 @@ class TestWorkspaceInitialize(unittest.TestCase):
             ws = Workspace(path=tmpdir)
             ws.initialize()
             # Write custom content
-            (Path(tmpdir) / "AGENT.md").write_text("custom", encoding="utf-8")
+            (Path(tmpdir) / "AGENTS.md").write_text("custom", encoding="utf-8")
             ws.initialize()  # Without force, should not overwrite
-            self.assertEqual((Path(tmpdir) / "AGENT.md").read_text(encoding="utf-8"), "custom")
+            self.assertEqual((Path(tmpdir) / "AGENTS.md").read_text(encoding="utf-8"), "custom")
 
     def test_initialize_force_overwrites(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             ws = Workspace(path=tmpdir)
             ws.initialize()
-            (Path(tmpdir) / "AGENT.md").write_text("custom", encoding="utf-8")
+            (Path(tmpdir) / "AGENTS.md").write_text("custom", encoding="utf-8")
             ws.initialize(force=True)
-            content = (Path(tmpdir) / "AGENT.md").read_text(encoding="utf-8")
+            content = (Path(tmpdir) / "AGENTS.md").read_text(encoding="utf-8")
             self.assertNotEqual(content, "custom")
 
 
@@ -189,7 +189,7 @@ class TestWorkspaceConfig(unittest.TestCase):
 
     def test_default_config(self):
         config = WorkspaceConfig()
-        self.assertEqual(config.agent_md, "AGENT.md")
+        self.assertEqual(config.agent_md, "AGENTS.md")
         self.assertEqual(config.memory_dir, "memory")
         self.assertEqual(config.skills_dir, "skills")
         self.assertEqual(config.users_dir, "users")

@@ -249,7 +249,7 @@ async def main():
 
 Memory Architecture:
   workspace/
-  +-- AGENT.md            # Agent instructions
+  +-- AGENTS.md            # Agent instructions
   +-- users/
   |   +-- {user_id}/
   |       +-- USER.md     # User profile

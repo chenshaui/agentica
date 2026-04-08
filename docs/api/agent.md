@@ -255,7 +255,7 @@ from agentica.agent.config import WorkspaceMemoryConfig
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `load_workspace_context` | `bool` | `True` | 加载 workspace 上下文（AGENT.md 等文件） |
+| `load_workspace_context` | `bool` | `True` | 加载 workspace 上下文（AGENTS.md 等文件） |
 | `load_workspace_memory` | `bool` | `True` | 加载 workspace 相关记忆到 System Prompt |
 | `max_memory_entries` | `int` | `5` | 每次注入的最大记忆条数（按相关性排序） |
 | `auto_archive` | `bool` | `False` | 每次 run() 后自动归档对话（零 LLM 成本） |

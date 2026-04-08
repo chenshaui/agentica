@@ -20,7 +20,7 @@ class TestWorkspaceConfig:
     def test_default_config(self):
         """Test default configuration values."""
         config = WorkspaceConfig()
-        assert config.agent_md == "AGENT.md"
+        assert config.agent_md == "AGENTS.md"
         assert config.persona_md == "PERSONA.md"
         assert config.tools_md == "TOOLS.md"
         assert config.user_md == "USER.md"
@@ -68,7 +68,7 @@ class TestWorkspace:
 
         assert result is True
         # Global shared files
-        assert (temp_workspace_path / "AGENT.md").exists()
+        assert (temp_workspace_path / "AGENTS.md").exists()
         assert (temp_workspace_path / "PERSONA.md").exists()
         assert (temp_workspace_path / "TOOLS.md").exists()
         assert (temp_workspace_path / "skills").is_dir()
@@ -133,7 +133,7 @@ class TestWorkspace:
         context = asyncio.run(workspace.get_context_prompt())
 
         # Should include content from default files
-        assert "AGENT.md" in context or "Agent" in context
+        assert "AGENTS.md" in context or "Agent" in context
         assert len(context) > 0
 
     def test_write_memory_daily(self, temp_workspace_path):
@@ -222,8 +222,8 @@ class TestWorkspace:
         files = workspace.list_files()
 
         # list_files only returns globally shared files
-        assert "AGENT.md" in files
-        assert files["AGENT.md"] is True
+        assert "AGENTS.md" in files
+        assert files["AGENTS.md"] is True
         assert "PERSONA.md" in files
         assert "TOOLS.md" in files
 

@@ -45,7 +45,7 @@ class WorkspaceConfig:
         skills_dir: Skills directory name
         users_dir: User data directory name (for multi-user isolation)
     """
-    agent_md: str = "AGENT.md"
+    agent_md: str = "AGENTS.md"
     persona_md: str = "PERSONA.md"
     tools_md: str = "TOOLS.md"
     user_md: str = "USER.md" # user infomation
@@ -63,7 +63,7 @@ class Workspace:
     supporting multi-user isolation. All user data is stored under users/ directory.
 
     Directory structure:
-    - AGENT.md: Agent instructions and constraints (globally shared)
+    - AGENTS.md: Agent instructions and constraints (globally shared)
     - PERSONA.md: Agent persona settings (globally shared)
     - TOOLS.md: Tool usage documentation (globally shared)
     - skills/: Custom skills directory (globally shared)
@@ -94,7 +94,7 @@ class Workspace:
 
     # Global config files (shared across all users)
     DEFAULT_GLOBAL_FILES = {
-        "AGENT.md": """# Agent Instructions
+        "AGENTS.md": """# Agent Instructions
 
 You are a helpful AI assistant.
 
@@ -242,7 +242,7 @@ You are a helpful AI assistant.
         """
         self.path.mkdir(parents=True, exist_ok=True)
 
-        # Create globally shared files (AGENT.md, PERSONA.md, TOOLS.md)
+        # Create globally shared files (AGENTS.md, PERSONA.md, TOOLS.md)
         for filename, content in self.DEFAULT_GLOBAL_FILES.items():
             filepath = self.path / filename
             if not filepath.exists() or force:
@@ -288,7 +288,7 @@ You are a helpful AI assistant.
         """Check if workspace exists.
 
         Returns:
-            Whether both workspace directory and AGENT.md file exist
+            Whether both workspace directory and AGENTS.md file exist
         """
         return self.path.exists() and (self.path / self.config.agent_md).exists()
 
@@ -353,25 +353,25 @@ You are a helpful AI assistant.
     async def get_context_prompt(self) -> str:
         """Get workspace context (for injecting into System Prompt).
 
-        Reads AGENT.md, PERSONA.md, TOOLS.md file contents (globally shared),
+        Reads AGENTS.md, PERSONA.md, TOOLS.md file contents (globally shared),
         and user-specific USER.md file content.
 
-        Also discovers AGENT.md files along the directory chain from CWD up to
+        Also discovers AGENTS.md files along the directory chain from CWD up to
         the filesystem root (mirrors CC's multi-level CLAUDE.md merge).
-        The merge order is: global ~/.agentica/AGENT.md -> ancestor dirs
-        (root first) -> CWD AGENT.md -> workspace AGENT.md.
+        The merge order is: global ~/.agentica/AGENTS.md -> ancestor dirs
+        (root first) -> CWD AGENTS.md -> workspace AGENTS.md.
 
         Returns:
             Merged context string
         """
         contents = []
 
-        # 1. Multi-level AGENT.md chain (CWD upward)
+        # 1. Multi-level AGENTS.md chain (CWD upward)
         chain_contents = self._load_agent_md_chain()
         if chain_contents:
-            contents.append(f"<!-- Project AGENT.md chain -->\n{chain_contents}")
+            contents.append(f"<!-- Project AGENTS.md chain -->\n{chain_contents}")
 
-        # 2. Workspace-level files (AGENT.md, PERSONA.md, TOOLS.md)
+        # 2. Workspace-level files (AGENTS.md, PERSONA.md, TOOLS.md)
         global_files = [
             self.config.agent_md,
             self.config.persona_md,
@@ -392,16 +392,16 @@ You are a helpful AI assistant.
         return "\n\n---\n\n".join(contents) if contents else ""
 
     def _load_agent_md_chain(self) -> str:
-        """Load AGENT.md files from CWD upward to root, plus global ~/.agentica/AGENT.md.
+        """Load AGENTS.md files from CWD upward to root, plus global ~/.agentica/AGENTS.md.
 
         Mirrors CC's multi-level CLAUDE.md merge: knowledge files at higher
         directories provide broad context, while those closer to CWD provide
         project-specific instructions.
 
         Merge order (earlier = lower priority, later = higher priority):
-            1. ~/.agentica/AGENT.md  (user global preferences)
-            2. /repo-root/AGENT.md   (project-level, checked into git)
-            3. /repo-root/src/AGENT.md  (subdir-specific, if CWD is deeper)
+            1. ~/.agentica/AGENTS.md  (user global preferences)
+            2. /repo-root/AGENTS.md   (project-level, checked into git)
+            3. /repo-root/src/AGENTS.md  (subdir-specific, if CWD is deeper)
 
         Returns:
             Merged content string, or empty string if no files found.
@@ -409,7 +409,7 @@ You are a helpful AI assistant.
         cwd = Path(os.getcwd())
         found: list[str] = []
 
-        # Walk from CWD upward, collecting AGENT.md files
+        # Walk from CWD upward, collecting AGENTS.md files (also check AGENTS.md for compat)
         visited = set()
         for dir_path in [cwd] + list(cwd.parents):
             resolved = dir_path.resolve()
@@ -417,7 +417,10 @@ You are a helpful AI assistant.
                 break
             visited.add(resolved)
 
-            agent_md = resolved / "AGENT.md"
+            # Prefer AGENTS.md, fallback to AGENT.md for backward compat
+            agent_md = resolved / "AGENTS.md"
+            if not agent_md.is_file():
+                agent_md = resolved / "AGENT.md"
             if agent_md.is_file():
                 try:
                     text = agent_md.read_text(encoding="utf-8").strip()
@@ -434,8 +437,10 @@ You are a helpful AI assistant.
         # Reverse so root-level comes first (lower priority)
         found.reverse()
 
-        # Prepend user global AGENT.md (~/.agentica/AGENT.md)
-        global_agent_md = Path(AGENTICA_HOME) / "AGENT.md"
+        # Prepend user global AGENTS.md (~/.agentica/AGENTS.md, fallback AGENT.md)
+        global_agent_md = Path(AGENTICA_HOME) / "AGENTS.md"
+        if not global_agent_md.is_file():
+            global_agent_md = Path(AGENTICA_HOME) / "AGENT.md"
         if global_agent_md.is_file():
             try:
                 text = global_agent_md.read_text(encoding="utf-8").strip()
@@ -444,7 +449,7 @@ You are a helpful AI assistant.
             except Exception:
                 pass
 
-        # Deduplicate: if workspace AGENT.md is the same as a chain file, skip
+        # Deduplicate: if workspace AGENTS.md is the same as a chain file, skip
         workspace_agent_md = self.path / self.config.agent_md
         workspace_path_resolved = workspace_agent_md.resolve() if workspace_agent_md.exists() else None
         if workspace_path_resolved:

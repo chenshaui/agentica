@@ -11,7 +11,7 @@ A pre-configured Agent that enables every Runner agentic-loop feature:
 - Death spiral detection + cost tracking + cost budget
 - Context overflow handling (FIFO message truncation at 80%)
 - Repeated tool-call detection (inject "change strategy" at 3 repeats)
-- Workspace memory (AGENT.md, MEMORY.md, daily memory, relevance recall)
+- Workspace memory (AGENTS.md, MEMORY.md, daily memory, relevance recall)
 - Conversation archive (auto_archive for search_conversations)
 - Agentic prompt (heartbeat, tools guide, self-verification)
 - Sandbox isolation (optional, off by default)

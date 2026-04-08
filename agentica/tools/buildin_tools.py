@@ -1542,7 +1542,7 @@ class BuiltinMemoryTool(Tool):
 
         Memories capture context NOT derivable from the current project state.
         Code patterns, architecture, git history, and file structure are derivable
-        (via grep/git/AGENT.md) and must NOT be saved as memories.
+        (via grep/git/AGENTS.md) and must NOT be saved as memories.
 
         If the user explicitly asks you to remember something, save it immediately
         as whichever type fits best. If they ask you to forget, tell them to delete
