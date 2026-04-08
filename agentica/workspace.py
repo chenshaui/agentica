@@ -407,9 +407,9 @@ You are a helpful AI assistant.
             Merged content string, or empty string if no files found.
         """
         cwd = Path(os.getcwd())
-        found: list[str] = []
+        found: list[tuple[str, str]] = []  # (source_path, content)
 
-        # Walk from CWD upward, collecting AGENTS.md files (also check AGENTS.md for compat)
+        # Walk from CWD upward, collecting AGENTS.md files
         visited = set()
         for dir_path in [cwd] + list(cwd.parents):
             resolved = dir_path.resolve()
@@ -425,12 +425,11 @@ You are a helpful AI assistant.
                 try:
                     text = agent_md.read_text(encoding="utf-8").strip()
                     if text:
-                        found.append(text)
+                        found.append((str(agent_md), text))
                 except Exception:
                     pass
 
-            # Stop at git root (project boundary) to avoid scanning
-            # unrelated parent directories
+            # Stop at git root (project boundary)
             if (resolved / ".git").exists():
                 break
 
@@ -445,21 +444,21 @@ You are a helpful AI assistant.
             try:
                 text = global_agent_md.read_text(encoding="utf-8").strip()
                 if text:
-                    found.insert(0, text)
+                    found.insert(0, (str(global_agent_md), text))
             except Exception:
                 pass
 
-        # Deduplicate: if workspace AGENTS.md is the same as a chain file, skip
+        # Deduplicate: skip workspace AGENTS.md if already in chain
         workspace_agent_md = self.path / self.config.agent_md
-        workspace_path_resolved = workspace_agent_md.resolve() if workspace_agent_md.exists() else None
-        if workspace_path_resolved:
-            found = [
-                f for f in found
-                if not (self.path.resolve() / self.config.agent_md).is_file()
-                or f != (self.path.resolve() / self.config.agent_md).read_text(encoding="utf-8").strip()
-            ]
+        workspace_content = None
+        if workspace_agent_md.is_file():
+            workspace_content = workspace_agent_md.read_text(encoding="utf-8").strip()
+        if workspace_content:
+            found = [(p, c) for p, c in found if c != workspace_content]
 
-        return "\n\n---\n\n".join(found) if found else ""
+        # Format with source path annotations
+        parts = [f"<!-- {path} -->\n{content}" for path, content in found]
+        return "\n\n---\n\n".join(parts) if parts else ""
 
     def get_git_context(self, max_status_lines: int = 30) -> Optional[str]:
         """Get git status context for system prompt injection.
