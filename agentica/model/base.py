@@ -7,6 +7,7 @@ part of the code is from phidata
 import asyncio
 import collections.abc
 import io
+import json
 import base64
 import weakref
 from abc import ABC, abstractmethod
@@ -408,8 +409,28 @@ class Model(ABC):
         # Default timeout for tool execution (seconds)
         _DEFAULT_TOOL_TIMEOUT = 120
 
+        # Guardrail facade (lazy import, runs once per call)
+        if _agent is not None and (_agent.tool_input_guardrails or _agent.tool_output_guardrails):
+            from agentica.guardrails.tool import check_input_guardrails, check_output_guardrails
+            _has_guardrails = True
+        else:
+            _has_guardrails = False
+
         # Phase 2a: run safe tools in parallel
         async def _execute_safe(idx: int, fc: FunctionCall) -> None:
+            # Input guardrail check
+            if _has_guardrails:
+                _fc_args = json.dumps(fc.arguments) if fc.arguments else None
+                reject_msg = await check_input_guardrails(
+                    _agent, fc.function.name, _fc_args, fc.call_id,
+                )
+                if reject_msg is not None:
+                    fc.result = reject_msg
+                    fc.error = reject_msg
+                    results[idx] = False
+                    timers[idx].start()
+                    timers[idx].stop()
+                    return
             timers[idx].start()
             try:
                 if fc.function.manages_own_timeout:
@@ -417,6 +438,16 @@ class Model(ABC):
                 else:
                     _timeout = fc.function.timeout or _DEFAULT_TOOL_TIMEOUT
                     results[idx] = await asyncio.wait_for(fc.execute(), timeout=_timeout)
+                # Output guardrail check
+                if _has_guardrails:
+                    _fc_args = json.dumps(fc.arguments) if fc.arguments else None
+                    reject_msg = await check_output_guardrails(
+                        _agent, fc.function.name, _fc_args, fc.call_id, fc.result,
+                    )
+                    if reject_msg is not None:
+                        fc.result = reject_msg
+                        fc.error = reject_msg
+                        results[idx] = False
             except asyncio.TimeoutError:
                 _timeout = fc.function.timeout or _DEFAULT_TOOL_TIMEOUT
                 exceptions[idx] = TimeoutError(
@@ -465,6 +496,19 @@ class Model(ABC):
                     timers[idx].start()
                     timers[idx].stop()
                     continue
+            # Input guardrail check (before execution)
+            if _has_guardrails:
+                _fc_args = json.dumps(fc.arguments) if fc.arguments else None
+                reject_msg = await check_input_guardrails(
+                    _agent, fc.function.name, _fc_args, fc.call_id,
+                )
+                if reject_msg is not None:
+                    fc.result = reject_msg
+                    fc.error = reject_msg
+                    results[idx] = False
+                    timers[idx].start()
+                    timers[idx].stop()
+                    continue
             timers[idx].start()
             try:
                 if fc.function.manages_own_timeout:
@@ -472,6 +516,16 @@ class Model(ABC):
                 else:
                     _timeout = fc.function.timeout or _DEFAULT_TOOL_TIMEOUT
                     results[idx] = await asyncio.wait_for(fc.execute(), timeout=_timeout)
+                # Output guardrail check (after execution)
+                if _has_guardrails:
+                    _fc_args = json.dumps(fc.arguments) if fc.arguments else None
+                    reject_msg = await check_output_guardrails(
+                        _agent, fc.function.name, _fc_args, fc.call_id, fc.result,
+                    )
+                    if reject_msg is not None:
+                        fc.result = reject_msg
+                        fc.error = reject_msg
+                        results[idx] = False
             except asyncio.TimeoutError:
                 exceptions[idx] = TimeoutError(
                     f"Tool '{fc.function.name}' timed out after {fc.function.timeout or _DEFAULT_TOOL_TIMEOUT}s"
@@ -542,8 +596,9 @@ class Model(ABC):
                         yield ModelResponse(content=str(item))
             else:
                 function_call_output = function_call.result
-                # Ensure output is str or list for Message.content validation
-                if function_call_output is not None and not isinstance(function_call_output, (str, list)):
+                # Ensure output is always str for tool Message.content — some
+                # providers reject list-type tool results (M-02 fix)
+                if function_call_output is not None and not isinstance(function_call_output, str):
                     function_call_output = str(function_call_output)
                 if function_call.function.show_result:
                     yield ModelResponse(content=function_call_output)

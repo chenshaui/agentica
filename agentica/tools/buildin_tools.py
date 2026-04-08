@@ -77,6 +77,11 @@ class BuiltinFileTool(Tool):
         # Value: {"mtime": float, "offset": int, "limit": int|None, "dedup_count": int}
         self._file_read_state: Dict[str, Dict[str, Any]] = {}
 
+    def clear_read_cache(self) -> None:
+        """Clear file read dedup cache. Call after context compression to prevent
+        stale sentinel responses when file content is no longer in LLM context."""
+        self._file_read_state.clear()
+
         # Register all file operation functions.
         # Read-only tools are concurrency_safe (can run in parallel with each other).
         # Write tools (write_file, edit_file, multi_edit_file) stay serialised.

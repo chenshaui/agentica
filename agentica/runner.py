@@ -132,6 +132,16 @@ class Runner:
         return state.consecutive_all_error_turns >= state.death_spiral_threshold
 
     @staticmethod
+    def _clear_file_read_cache(agent: "Agent") -> None:
+        """Clear BuiltinFileTool read dedup cache after context compression."""
+        from agentica.tools.buildin_tools import BuiltinFileTool
+        if agent.tools:
+            for tool in agent.tools:
+                if isinstance(tool, BuiltinFileTool):
+                    tool.clear_read_cache()
+                    break
+
+    @staticmethod
     def _check_cost_budget(cost_tracker, max_cost_usd: Optional[float]) -> Optional[str]:
         """Check if the cost budget has been exceeded.
 
@@ -358,11 +368,14 @@ class Runner:
             logger.debug("Stage 3 (rule-based compress): truncating + dropping old messages")
             await cm.compress(messages, tools=model.tools, model=model)
             await _fire_compact_hooks('on_post_compact')
+            # Clear file read dedup cache — content is no longer in context
+            Runner._clear_file_read_cache(agent)
 
         # Stage 4: auto-compact via LLM summarisation
         compacted = await cm.auto_compact(messages, model=model)
         if compacted:
             logger.debug("Stage 4 (auto-compact): conversation summarised by LLM")
+            Runner._clear_file_read_cache(agent)
             await _fire_compact_hooks('on_post_compact')
 
     @staticmethod
@@ -517,6 +530,7 @@ class Runner:
         agent = self.agent
 
         async def _run_core() -> AsyncIterator[RunResponse]:
+            nonlocal message  # on_user_prompt hook may reassign message
             # Guard: warn if this agent instance is already running concurrently.
             # Agent is not thread-safe — concurrent runs share mutable state
             # (run_id, run_response, _run_hooks, _enabled_tools, model.functions).
@@ -618,6 +632,20 @@ class Runner:
                     await agent.hooks.on_start(agent=agent)
                 if agent._run_hooks is not None:
                     await agent._run_hooks.on_agent_start(agent=agent)
+
+                # --- Lifecycle: on_user_prompt hook ---
+                # Allows hooks to inspect/modify user input before message assembly.
+                if isinstance(message, str) and agent._run_hooks is not None:
+                    try:
+                        modified = await agent._run_hooks.on_user_prompt(
+                            agent=agent, message=message,
+                        )
+                        if modified is not None:
+                            message = modified
+                    except Exception as e:
+                        # Fail-open by design: hook errors never block the user's
+                        # request. Early-stage product -- minimize user disruption.
+                        logger.warning(f"on_user_prompt hook error: {e}")
 
                 # 3. Prepare messages
                 system_message, user_messages, messages_for_model = await agent.get_messages_for_run(
