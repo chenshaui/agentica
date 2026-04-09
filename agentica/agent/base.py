@@ -133,6 +133,10 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
     team_config: TeamConfig = field(default_factory=TeamConfig)
     sandbox_config: Optional[SandboxConfig] = None
 
+    # Tool-level guardrails (run before/after each tool call)
+    tool_input_guardrails: List[Any] = field(default_factory=list)
+    tool_output_guardrails: List[Any] = field(default_factory=list)
+
     # ============================
     # Runtime
     # ============================
@@ -200,6 +204,8 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
             long_term_memory_config: Optional[WorkspaceMemoryConfig] = None,
             team_config: Optional[TeamConfig] = None,
             sandbox_config: Optional[SandboxConfig] = None,
+            tool_input_guardrails: Optional[List[Any]] = None,
+            tool_output_guardrails: Optional[List[Any]] = None,
             # ---- Runtime ----
             working_memory: Optional[WorkingMemory] = None,
             context: Optional[Dict[str, Any]] = None,
@@ -246,6 +252,8 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         self.long_term_memory_config = long_term_memory_config or WorkspaceMemoryConfig()
         self.team_config = team_config or TeamConfig()
         self.sandbox_config = sandbox_config
+        self.tool_input_guardrails = tool_input_guardrails or []
+        self.tool_output_guardrails = tool_output_guardrails or []
 
         # Runtime
         self.working_memory = working_memory or WorkingMemory()

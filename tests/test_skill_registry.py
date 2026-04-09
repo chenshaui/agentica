@@ -101,12 +101,16 @@ class TestSkillMethods(unittest.TestCase):
     """Skill instance methods."""
 
     def _make_skill(self, **kwargs):
+        content = kwargs.pop("content", None)
         defaults = dict(
-            name="Test", description="Desc", content="Body",
+            name="Test", description="Desc",
             path=Path("/tmp/test"),
         )
         defaults.update(kwargs)
-        return Skill(**defaults)
+        skill = Skill(**defaults)
+        if content is not None:
+            skill.content = content
+        return skill
 
     def test_matches_trigger(self):
         skill = self._make_skill(trigger="/commit")
@@ -163,12 +167,14 @@ class TestSkillRegistry(unittest.TestCase):
 
     def _make_skill(self, name, location="project", trigger=None,
                     user_invocable=True, is_hidden=False):
-        return Skill(
+        skill = Skill(
             name=name, description=f"Desc for {name}",
-            content="body", path=Path("/tmp"),
+            path=Path("/tmp"),
             location=location, trigger=trigger,
             user_invocable=user_invocable, is_hidden=is_hidden,
         )
+        skill.content = "body"
+        return skill
 
     def test_register_and_get(self):
         skill = self._make_skill("A")

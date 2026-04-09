@@ -291,6 +291,84 @@ async def run_tool_output_guardrails(
     return ToolGuardrailFunctionOutput.allow()
 
 
+# =============================================================================
+# Facade: one-liner guardrail checks for the Model layer
+# =============================================================================
+
+async def check_input_guardrails(
+    agent: "Agent[Any]",
+    tool_name: str,
+    tool_arguments: Optional[str],
+    tool_call_id: Optional[str],
+) -> Optional[str]:
+    """Run tool input guardrails for a single tool call.
+
+    Design decision: fail-open. Guardrails are observational by default.
+    In early product stages we prioritize zero user friction -- the AI is
+    trusted to act reasonably, and guardrail bugs must never block normal
+    tool execution. If a guardrail itself raises, we log and allow.
+
+    Returns:
+        Reject message string if guardrails reject, else None (allow).
+    """
+    if not agent.tool_input_guardrails:
+        return None
+    try:
+        data = ToolInputGuardrailData(
+            context=ToolContext(
+                tool_name=tool_name,
+                tool_arguments=tool_arguments,
+                tool_call_id=tool_call_id,
+                agent=agent,
+            ),
+            agent=agent,
+        )
+        result = await run_tool_input_guardrails(data, agent.tool_input_guardrails)
+        if result.is_reject_content():
+            return result.get_reject_message()
+    except Exception as e:
+        # Fail-open by design: guardrail errors never block tool execution.
+        # Rationale: early-stage product, minimize user disruption.
+        logger.warning(f"Tool input guardrail error for '{tool_name}': {e}")
+    return None
+
+
+async def check_output_guardrails(
+    agent: "Agent[Any]",
+    tool_name: str,
+    tool_arguments: Optional[str],
+    tool_call_id: Optional[str],
+    output: Any,
+) -> Optional[str]:
+    """Run tool output guardrails for a single tool call.
+
+    Same fail-open policy as check_input_guardrails -- see its docstring.
+
+    Returns:
+        Reject message string if guardrails reject, else None (allow).
+    """
+    if not agent.tool_output_guardrails:
+        return None
+    try:
+        data = ToolOutputGuardrailData(
+            context=ToolContext(
+                tool_name=tool_name,
+                tool_arguments=tool_arguments,
+                tool_call_id=tool_call_id,
+                agent=agent,
+            ),
+            agent=agent,
+            output=output,
+        )
+        result = await run_tool_output_guardrails(data, agent.tool_output_guardrails)
+        if result.is_reject_content():
+            return result.get_reject_message()
+    except Exception as e:
+        # Fail-open by design: see check_input_guardrails docstring.
+        logger.warning(f"Tool output guardrail error for '{tool_name}': {e}")
+    return None
+
+
 __all__ = [
     "ToolGuardrailTripwireTriggered",
     "ToolInputGuardrailTripwireTriggered",
@@ -310,4 +388,6 @@ __all__ = [
     "tool_output_guardrail",
     "run_tool_input_guardrails",
     "run_tool_output_guardrails",
+    "check_input_guardrails",
+    "check_output_guardrails",
 ]

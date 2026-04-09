@@ -61,11 +61,12 @@ class Skill:
     Attributes:
         name: Skill name (required)
         description: Skill description (required)
-        content: The markdown body with instructions
+        content: The markdown body with instructions (lazy-loaded from SKILL.md)
         path: Path to the skill directory
         license: Optional license information
         trigger: Optional trigger command (e.g., /commit)
         argument_hint: Hint for trigger arguments (e.g. "<file-path>")
+        when_to_use: Keywords describing when this skill is useful
         requires: List of required tools or commands
         allowed_tools: List of tools allowed for this skill
         metadata: Additional metadata from frontmatter
@@ -76,13 +77,17 @@ class Skill:
 
     name: str
     description: str
-    content: str  # The markdown body (instructions)
     path: Path  # Path to the skill directory
+
+    # Lazy-loaded content: body is read from SKILL.md on first .content access
+    _content: Optional[str] = field(default=None, repr=False, init=False)
+    _content_loaded: bool = field(default=False, repr=False, init=False)
 
     # Optional metadata from frontmatter
     license: Optional[str] = None
     trigger: Optional[str] = None  # Trigger command like /commit
     argument_hint: Optional[str] = None  # Hint for argument (e.g. "<file-path>")
+    when_to_use: Optional[str] = None  # Keywords describing when this skill is useful
     requires: List[str] = field(default_factory=list)  # Required tools/commands
     allowed_tools: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -93,6 +98,36 @@ class Skill:
 
     # Source location type: project, user, managed
     location: str = "project"
+
+    @property
+    def content(self) -> str:
+        """Lazy-load the markdown body from SKILL.md on first access."""
+        if not self._content_loaded:
+            md_file = self.path / "SKILL.md"
+            if md_file.exists():
+                raw = md_file.read_text(encoding='utf-8')
+                _, body = self._parse_frontmatter(raw.strip())
+                self._content = body.strip()
+            else:
+                self._content = ""
+            self._content_loaded = True
+        return self._content or ""
+
+    @content.setter
+    def content(self, value: str) -> None:
+        self._content = value
+        self._content_loaded = True
+
+    def invalidate_content(self) -> None:
+        """Clear cached content so next .content access re-reads SKILL.md.
+
+        Call this after the underlying SKILL.md file has been modified on disk.
+        Only the body is reloaded; frontmatter fields (name, description, trigger,
+        when_to_use, etc.) are NOT refreshed. To pick up frontmatter changes,
+        re-parse via ``Skill.from_skill_md()`` and re-register.
+        """
+        self._content = None
+        self._content_loaded = False
 
     @classmethod
     def from_skill_md(cls, skill_md_path: Path, location: str = "project") -> Optional["Skill"]:
@@ -110,7 +145,7 @@ class Skill:
             return None
 
         content = skill_md_path.read_text(encoding='utf-8')
-        frontmatter, body = cls._parse_frontmatter(content.strip())
+        frontmatter, _ = cls._parse_frontmatter(content.strip())
 
         if not frontmatter:
             return None
@@ -124,11 +159,12 @@ class Skill:
         return cls(
             name=name,
             description=description,
-            content=body.strip(),
+            # content NOT passed -- lazy loaded via property on first access
             path=skill_md_path.parent,
             license=frontmatter.get('license'),
             trigger=frontmatter.get('trigger'),
             argument_hint=frontmatter.get('argument-hint'),
+            when_to_use=frontmatter.get('when_to_use') or frontmatter.get('when-to-use'),
             requires=frontmatter.get('requires', []) or [],
             allowed_tools=frontmatter.get('allowed-tools', []) or [],
             metadata=frontmatter.get('metadata', {}) or {},
@@ -194,6 +230,21 @@ Base directory: {self.path}
 """
         return header + self.content
 
+    def matches_keywords(self, text: str) -> bool:
+        """Check if text matches this skill's when_to_use keywords.
+
+        Args:
+            text: User input text to check
+
+        Returns:
+            True if any keyword from when_to_use appears in text
+        """
+        if not self.when_to_use:
+            return False
+        text_lower = text.lower()
+        keywords = [kw.strip().lower() for kw in re.split(r'[,;.\n]', self.when_to_use) if kw.strip()]
+        return any(kw in text_lower for kw in keywords if len(kw) > 2)
+
     def to_xml(self) -> str:
         """
         Format skill as XML for inclusion in prompts.
@@ -201,27 +252,36 @@ Base directory: {self.path}
         Returns:
             XML formatted skill entry
         """
-        return f"""<skill>
-<name>{self.name}</name>
-<description>{self.description}</description>
-<location>{self.location}</location>
-</skill>"""
+        parts = [
+            f"<name>{self.name}</name>",
+            f"<description>{self.description}</description>",
+            f"<location>{self.location}</location>",
+        ]
+        if self.when_to_use:
+            parts.append(f"<when_to_use>{self.when_to_use}</when_to_use>")
+        inner = "\n".join(parts)
+        return f"<skill>\n{inner}\n</skill>"
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self, include_content: bool = True) -> Dict[str, Any]:
         """
         Convert skill to dictionary representation.
+
+        Args:
+            include_content: If True (default), access self.content which may
+                trigger lazy loading from SKILL.md. Set False for discovery
+                listings where only metadata is needed.
 
         Returns:
             Dictionary with skill data
         """
-        return {
+        d: Dict[str, Any] = {
             "name": self.name,
             "description": self.description,
-            "content": self.content,
             "path": str(self.path),
             "license": self.license,
             "trigger": self.trigger,
             "argument_hint": self.argument_hint,
+            "when_to_use": self.when_to_use,
             "requires": self.requires,
             "allowed_tools": self.allowed_tools,
             "metadata": self.metadata,
@@ -229,6 +289,9 @@ Base directory: {self.path}
             "is_hidden": self.is_hidden,
             "location": self.location,
         }
+        if include_content:
+            d["content"] = self.content
+        return d
 
     def matches_trigger(self, text: str) -> bool:
         """

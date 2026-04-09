@@ -95,6 +95,12 @@ class Claude(Model):
     structured_outputs: bool = False
     supports_structured_outputs: bool = True
 
+    # Prompt caching: inject cache_control breakpoints into system message
+    # and conversation history to reduce input token costs on multi-turn runs.
+    # Anthropic charges 0.1x for cache reads (vs 1.25x write on first request).
+    # Default True -- automatic caching with zero user friction.
+    enable_cache_control: bool = True
+
     def _get_structured_output_tool(self) -> Optional[Dict[str, Any]]:
         """Build a synthetic tool from response_format for structured output via tool_use."""
         if (
@@ -192,6 +198,17 @@ class Claude(Model):
                             content.append(image_content)
 
                 chat_messages.append({"role": message.role, "content": content})  # type: ignore
+
+        # Prompt caching: mark the last user/assistant turn so the
+        # conversation prefix is cached on subsequent requests.
+        # This uses one of the 4 allowed cache breakpoints (system uses another).
+        if self.enable_cache_control and chat_messages:
+            last_msg = chat_messages[-1]
+            if isinstance(last_msg.get("content"), list) and last_msg["content"]:
+                last_block = last_msg["content"][-1]
+                if isinstance(last_block, dict):
+                    last_block["cache_control"] = {"type": "ephemeral"}
+
         return chat_messages, " ".join(system_messages)
 
     async def add_image(self, image: Union[str, bytes]) -> Optional[Dict[str, Any]]:
@@ -272,7 +289,21 @@ class Claude(Model):
             Dict[str, Any]: The request keyword arguments.
         """
         request_kwargs = self.request_kwargs.copy()
-        request_kwargs["system"] = system_message
+
+        # Prompt caching: wrap system message as content block with cache_control.
+        # Anthropic API accepts system as str OR List[ContentBlock].
+        # The cache breakpoint on the system block keeps the static prefix cached
+        # across multi-turn conversations (cache read = 0.1x input cost).
+        if self.enable_cache_control and system_message:
+            request_kwargs["system"] = [
+                {
+                    "type": "text",
+                    "text": system_message,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+        else:
+            request_kwargs["system"] = system_message
 
         # Structured output via tool_use: inject synthetic tool and force tool_choice
         structured_tool = self._get_structured_output_tool()
@@ -408,10 +439,21 @@ class Claude(Model):
                 response_time=metrics.response_timer.elapsed,
             )
             # Anthropic cache_creation_input_tokens / cache_read_input_tokens
-            cache_read = usage.cache_read_input_tokens
+            cache_read = usage.cache_read_input_tokens or 0
+            cache_write = usage.cache_creation_input_tokens or 0
             if cache_read:
                 entry.input_tokens_details = TokenDetails(cached_tokens=cache_read)
             self.usage.add(entry)
+
+            # Cost tracking: pass both cache_read and cache_write for accurate cost calculation
+            if self._cost_tracker is not None:
+                self._cost_tracker.record(
+                    model_id=self.id,
+                    input_tokens=metrics.input_tokens,
+                    output_tokens=metrics.output_tokens,
+                    cache_read_tokens=cache_read,
+                    cache_write_tokens=cache_write,
+                )
 
     def create_assistant_message(self, response: AnthropicMessage, metrics: Metrics) -> Tuple[Message, str, List[str]]:
         """
