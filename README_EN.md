@@ -18,6 +18,10 @@
 
 **Agentica** is a lightweight Python framework for building AI agents. Async-First architecture with support for tool calling, RAG, multi-agent teams, workflow orchestration, and MCP protocol.
 
+<div align="center">
+  <img src="https://raw.githubusercontent.com/shibing624/agentica/main/docs/assets/agent_loop.png" width="800" alt="Agentica Loop Architecture" />
+</div>
+
 ## Installation
 
 ```bash
