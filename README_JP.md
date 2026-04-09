@@ -18,10 +18,19 @@
 
 **Agentica** は軽量な Python フレームワークで、AIエージェントの構築に使用します。Async-First アーキテクチャで、ツール呼び出し、RAG、マルチエージェントチーム、ワークフローオーケストレーション、MCP プロトコルをサポートします。
 
+## アーキテクチャ
+
+Agentica は、低レベルのモデルルーティングから高レベルのマルチエージェントオーケストレーションまで、完全な抽象化スタックを提供します：
+
 <div align="center">
   <img src="https://raw.githubusercontent.com/shibing624/agentica/main/docs/assets/architecturev2.jpg" width="800" alt="Agentica Architecture" />
-  <br/>
-  <br/>
+</div>
+
+### コア実行エンジン (Agentic Loop)
+
+Agent のコアは、ツール呼び出しによって厳密に駆動される決定論的な `while(true)` エンジン内で実行され、無限ループ防止、コスト追跡、コンテキストのマイクロ圧縮 (Compaction)、および4層のガードレールシステムが組み込まれています：
+
+<div align="center">
   <img src="https://raw.githubusercontent.com/shibing624/agentica/main/docs/assets/agent_loop.png" width="800" alt="Agentica Loop Architecture" />
 </div>
 

@@ -18,10 +18,19 @@
 
 **Agentica** 是一个轻量级 Python 框架，用于构建 AI 智能体。Async-First 架构，支持工具调用、RAG、多智能体团队、工作流编排和 MCP 协议。
 
+## 架构
+
+Agentica 提供了从底层模型路由到顶层多智能体协作的完整抽象：
+
 <div align="center">
   <img src="https://raw.githubusercontent.com/shibing624/agentica/main/docs/assets/architecturev2.jpg" width="800" alt="Agentica Architecture" />
-  <br/>
-  <br/>
+</div>
+
+### 核心执行引擎 (Agentic Loop)
+
+Agentica 的单体 Agent 运行在一个纯粹的基于控制流的 `while(true)` 引擎中，严格依据工具调用来驱动，并内置了防死循环、成本追踪、上下文微压缩（Compaction）和四层安全护栏：
+
+<div align="center">
   <img src="https://raw.githubusercontent.com/shibing624/agentica/main/docs/assets/agent_loop.png" width="800" alt="Agentica Loop Architecture" />
 </div>
 
