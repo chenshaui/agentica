@@ -8,18 +8,9 @@ theme:
   name: material
   language: zh
   palette:
-    - scheme: default
-      primary: black
-      accent: indigo
-      toggle:
-        icon: material/brightness-7
-        name: Switch to dark mode
-    - scheme: slate
-      primary: black
-      accent: indigo
-      toggle:
-        icon: material/brightness-4
-        name: Switch to light mode
+    scheme: default
+    primary: white
+    accent: indigo
   favicon: assets/favicon.png
   icon:
     logo: material/robot-happy
