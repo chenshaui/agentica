@@ -7,7 +7,7 @@ Separates "each run may differ" parameters from Agent construction.
 Agent fields are defaults; RunConfig overrides them for a specific run.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import (
     Any,
     Dict,

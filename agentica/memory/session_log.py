@@ -57,7 +57,12 @@ class SessionLog:
     - load() returns messages ready to inject into WorkingMemory
     """
 
-    def __init__(self, session_id: str, base_dir: Optional[str] = None):
+    def __init__(
+        self,
+        session_id: str,
+        base_dir: Optional[str] = None,
+        search_index: Optional[Any] = None,
+    ):
         self.session_id = session_id
         self.base_dir = Path(base_dir) if base_dir else Path(_get_default_base_dir())
         self.path = self.base_dir / f"{session_id}.jsonl"
@@ -66,6 +71,9 @@ class SessionLog:
         self._cwd: str = os.getcwd()
         self._version: str = self._get_version()
         self._git_branch: Optional[str] = self._get_git_branch()
+        # Optional search index for dual-write (FTS5 acceleration).
+        # If set, each append() also writes to the search index.
+        self._search_index = search_index
 
     @staticmethod
     def _get_version() -> str:
@@ -114,6 +122,12 @@ class SessionLog:
             **meta,
         })
         self._last_uuid = entry_uuid
+        # Dual-write to search index if configured
+        if self._search_index is not None:
+            try:
+                self._search_index.index_message(self.session_id, role, content)
+            except Exception as e:
+                logger.debug(f"Search index write failed: {e}")
         return entry_uuid
 
     def append_compact_boundary(self, summary: str) -> str:
