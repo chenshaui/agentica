@@ -18,6 +18,21 @@ def tmp_dir():
         yield d
 
 
+class RecordingIndex:
+    def __init__(self):
+        self.calls = []
+
+    def index_message(self, session_id, role, content, timestamp=None):
+        self.calls.append(
+            {
+                "session_id": session_id,
+                "role": role,
+                "content": content,
+                "timestamp": timestamp,
+            }
+        )
+
+
 class TestSessionLogBasic:
     """Core append + load tests."""
 
@@ -295,6 +310,40 @@ class TestToolResultLogging:
         messages = log.load()
         assert len(messages) == 3
         assert messages[1]["role"] == "tool"
+
+
+class TestSessionIndexDualWrite:
+    def test_indexes_regular_messages(self, tmp_dir):
+        index = RecordingIndex()
+        log = SessionLog("dual-write-msg", base_dir=tmp_dir, search_index=index)
+
+        log.append("user", "hello index")
+
+        assert len(index.calls) == 1
+        assert index.calls[0]["session_id"] == "dual-write-msg"
+        assert index.calls[0]["role"] == "user"
+        assert index.calls[0]["content"] == "hello index"
+
+    def test_indexes_compact_boundary_summary(self, tmp_dir):
+        index = RecordingIndex()
+        log = SessionLog("dual-write-boundary", base_dir=tmp_dir, search_index=index)
+
+        log.append_compact_boundary("summary for search")
+
+        assert len(index.calls) == 1
+        assert index.calls[0]["role"] == "compact_boundary"
+        assert index.calls[0]["content"] == "summary for search"
+
+    def test_marks_index_unhealthy_after_failure(self, tmp_dir):
+        class FailingIndex:
+            def index_message(self, *args, **kwargs):
+                raise RuntimeError("fts unavailable")
+
+        log = SessionLog("dual-write-fail", base_dir=tmp_dir, search_index=FailingIndex())
+
+        log.append("user", "hello")
+
+        assert log.search_index_healthy is False
 
 
 class TestResumeAt:

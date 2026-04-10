@@ -20,6 +20,12 @@ def main():
         server.run()
         return
 
+    if hasattr(args, "command") and args.command == "extensions":
+        from agentica.cli.extensions import run_extensions_command
+
+        run_extensions_command(args)
+        return
+
     # Store agent configuration parameters
     agent_config = {
         "model_provider": args.model_provider,

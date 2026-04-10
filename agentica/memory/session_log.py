@@ -74,6 +74,7 @@ class SessionLog:
         # Optional search index for dual-write (FTS5 acceleration).
         # If set, each append() also writes to the search index.
         self._search_index = search_index
+        self._search_index_healthy: bool = True
 
     @staticmethod
     def _get_version() -> str:
@@ -122,12 +123,7 @@ class SessionLog:
             **meta,
         })
         self._last_uuid = entry_uuid
-        # Dual-write to search index if configured
-        if self._search_index is not None:
-            try:
-                self._search_index.index_message(self.session_id, role, content)
-            except Exception as e:
-                logger.debug(f"Search index write failed: {e}")
+        self._write_search_index_entry(role, content)
         return entry_uuid
 
     def append_compact_boundary(self, summary: str) -> str:
@@ -149,6 +145,7 @@ class SessionLog:
             "summary": summary,
         })
         self._last_uuid = entry_uuid
+        self._write_search_index_entry("compact_boundary", summary)
         return entry_uuid
 
     # ------------------------------------------------------------------
@@ -350,7 +347,11 @@ class SessionLog:
         if not self.path.exists():
             raise FileNotFoundError(f"Session log not found: {self.path}")
 
-        new_log = SessionLog(new_session_id, base_dir=str(self.base_dir))
+        new_log = SessionLog(
+            new_session_id,
+            base_dir=str(self.base_dir),
+            search_index=self._search_index if self._search_index_healthy else None,
+        )
 
         lines = self.path.read_text(encoding="utf-8").splitlines()
         for line in lines:
@@ -365,6 +366,7 @@ class SessionLog:
             entry["session_id"] = new_session_id
             new_log._append(entry)
             new_log._last_uuid = entry.get("uuid")
+            new_log._index_existing_entry(entry)
 
             # Stop at the fork point
             if at_uuid and entry.get("uuid") == at_uuid:
@@ -416,6 +418,11 @@ class SessionLog:
         """Check if the session log file exists."""
         return self.path.exists()
 
+    @property
+    def search_index_healthy(self) -> bool:
+        """Whether dual-write search indexing is still healthy."""
+        return self._search_index_healthy
+
     def entry_count(self) -> int:
         """Count total entries in the log."""
         if not self.path.exists():
@@ -432,3 +439,30 @@ class SessionLog:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except OSError as e:
             logger.warning(f"SessionLog write failed ({self.path}): {e}")
+
+    def _index_existing_entry(self, entry: Dict[str, Any]) -> None:
+        """Index an existing JSONL entry using the same read-model rules."""
+        entry_type = entry.get("type")
+        if entry_type in ("user", "assistant", "system", "tool"):
+            self._write_search_index_entry(entry_type, entry.get("content", ""))
+        elif entry_type == "compact_boundary":
+            self._write_search_index_entry("compact_boundary", entry.get("summary", ""))
+
+    def _write_search_index_entry(self, role: str, content: str) -> None:
+        """Best-effort dual-write to the search index.
+
+        JSONL remains the canonical session store. If the search index fails,
+        we keep the primary write, mark the index unhealthy, and stop dual-write
+        attempts for this SessionLog instance to avoid silent repeated drift.
+        """
+        if self._search_index is None or not self._search_index_healthy:
+            return
+        try:
+            self._search_index.index_message(self.session_id, role, content)
+        except Exception as e:
+            self._search_index_healthy = False
+            logger.warning(
+                "Search index write disabled for session %s after failure: %s",
+                self.session_id,
+                e,
+            )

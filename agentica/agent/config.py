@@ -111,6 +111,9 @@ class WorkspaceMemoryConfig:
     # Only fires when the LLM didn't call save_memory during the run.
     # Costs one extra LLM request per run (mirrors CC's extractMemories service).
     auto_extract_memory: bool = False
+    # Recompile confirmed user/feedback memories into ~/.agentica/AGENTS.md so
+    # future sessions automatically inherit long-lived preferences.
+    sync_memories_to_global_agent_md: bool = False
 
 
 @dataclass

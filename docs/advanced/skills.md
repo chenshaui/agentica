@@ -2,7 +2,7 @@
 
 Skills 是 Agentica 的"提示即能力"系统——通过 Markdown 文件定义的指令，按需注入到 Agent 的 System Prompt 中，赋予 Agent 特定领域的专业知识和工作流程。
 
-**核心理念**：Skills 是**用户自定义内容**，不是框架内置的。框架只提供加载机制，你来定义能力。
+**核心理念**：Skills 是**用户自定义内容**，不是框架内置的。框架只提供加载机制，你来定义能力。对 Agentica 来说，框架负责运行时、工具链和记忆基础设施，Skill 则负责把特定 workflow 注入进去，例如代码评审、研究流程，或 `learn-from-experience` 这类 self-learn 策略。
 
 ## 核心概念
 
@@ -73,14 +73,18 @@ metadata:
 ~/.agentica/skills/            # 用户级 skills（跨项目共用）
   git-commit/
     SKILL.md
+
+/opt/agent-skills/learn-from-experience/   # 外部托管 skill（可选）
+  SKILL.md
 ```
 
 **搜索路径（优先级从高到低）**：
 
 1. `.claude/skills/`（项目级）
 2. `.agentica/skills/`（项目级）
-3. `~/.claude/skills/`（用户级）
-4. `~/.agentica/skills/`（用户级）
+3. `AGENTICA_EXTRA_SKILL_PATH` 指定的外部目录（支持用 `:` 分隔多个路径，也支持直接指向单个 skill 目录）
+4. `~/.claude/skills/`（用户级）
+5. `~/.agentica/skills/`（用户级）
 
 同名 Skill，项目级覆盖用户级。
 
@@ -104,12 +108,55 @@ agent = Agent(
 )
 ```
 
+也可以直接挂外部 skill 仓库，而不必复制到项目目录：
+
+```bash
+export AGENTICA_EXTRA_SKILL_PATH="/home/user/skills/learn-from-experience:/opt/shared/skills"
+```
+
+当路径本身就是一个包含 `SKILL.md` 的 skill 目录时，`SkillLoader` 会直接加载它。
+
 ### 方式二：DeepAgent 内置（CLI 推荐）
 
 ```bash
 agentica --enable-skills
 # Skills 自动从标准目录加载，对话中可直接使用
 ```
+
+`DeepAgent` 现在默认也会自动加载当前工作目录下的 `mcp_config.json/yaml/yml`，所以 CLI 里不需要再单独把 MCP 打开，skills 和 MCP 都是开箱即用。
+
+安装外部 skill 集合：
+
+```bash
+agentica extensions install https://github.com/obra/superpowers
+```
+
+这个命令会：
+- 克隆远程仓库，或读取本地目录
+- 自动发现根目录 `SKILL.md`、`skills/`、`.agentica/skills/`、`.claude/skills/` 下的 skill
+- 把发现到的 skill 安装到 `~/.agentica/skills/`
+
+如果你已经下载到本地，也可以直接安装本地 repo：
+
+```bash
+agentica extensions install /path/to/skill-repo --target-dir ~/.agentica/skills
+```
+
+如果你安装到自定义目录而不是标准搜索路径，记得把该目录加入 `AGENTICA_EXTRA_SKILL_PATH`，否则 CLI 刷新后也不会自动发现它。
+
+如果你已经进入交互式 CLI，则直接使用 slash command，不用退出：
+
+```text
+> /extensions install https://github.com/obra/superpowers
+> /extensions list
+> /extensions remove learn-from-experience
+> /extensions reload
+```
+
+如果你希望 Agent 带有持续学习 workflow，推荐做法是：
+- 用 `DeepAgent` 作为默认运行时
+- 把 `learn-from-experience` 安装到 `~/.agentica/skills/`，或通过 `AGENTICA_EXTRA_SKILL_PATH` 指向外部目录
+- 再配合 `WorkspaceMemoryConfig(sync_memories_to_global_agent_md=True)`，把确认过的偏好同步进 `~/.agentica/AGENTS.md`
 
 ### 方式三：按需激活（RunConfig 白名单）
 
@@ -126,6 +173,10 @@ result = await agent.run(
 
 ```
 > /skills                           # 列出所有可用 skills
+> /extensions install <repo-or-path> # 安装并自动刷新当前 session
+> /extensions list                  # 查看已安装扩展
+> /extensions remove <skill-name>   # 删除已安装 skill
+> /extensions reload                # 重新扫描磁盘并刷新当前 session
 > 用 code-reviewer skill 审查 @main.py
 > /review @authentication.py        # 用 trigger 激活（如果配置了）
 ```

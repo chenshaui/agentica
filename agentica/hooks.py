@@ -316,9 +316,10 @@ class MemoryExtractHooks(RunHooks):
         "Conversation:\n"
     )
 
-    def __init__(self):
+    def __init__(self, sync_memories_to_global_agent_md: bool = False):
         self._run_inputs: Dict[str, Optional[str]] = {}
         self._tool_calls: Dict[str, List[str]] = {}  # agent_id -> list of tool names called
+        self._sync_memories_to_global_agent_md = sync_memories_to_global_agent_md
 
     async def on_agent_start(self, agent: Any, **kwargs) -> None:
         agent_id = agent.agent_id
@@ -409,6 +410,9 @@ class MemoryExtractHooks(RunHooks):
                     content=content,
                     memory_type=mem_type,
                     description=title,
+                    sync_to_global_agent_md=(
+                        self._sync_memories_to_global_agent_md and mem_type in ("user", "feedback")
+                    ),
                 )
                 logger.debug(f"Auto-extracted memory: {title} (type: {mem_type})")
 

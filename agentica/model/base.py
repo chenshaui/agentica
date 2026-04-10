@@ -236,6 +236,11 @@ class Model(ABC):
             if isinstance(tool, ModelTool):
                 tools_for_api.append(tool.to_dict())
             elif isinstance(tool, Dict):
+                function_name = tool.get("function", {}).get("name")
+                if function_name and self.functions is not None:
+                    fn = self.functions.get(function_name)
+                    if fn is not None and not fn.is_available():
+                        continue
                 tools_for_api.append(tool)
         return tools_for_api
 
@@ -269,7 +274,7 @@ class Model(ABC):
                         self.functions[name] = func
                         # Deferred tools: register in functions (executable) but
                         # don't add schema to tools (invisible to LLM until discovered).
-                        if not func.deferred:
+                        if not func.deferred and func.is_available():
                             self.tools.append({"type": "function", "function": func.to_dict()})
                         logger.debug(f"Function {name} from {tool.name} added to model.")
 
@@ -280,7 +285,7 @@ class Model(ABC):
                     if strict and self.supports_structured_outputs:
                         tool.strict = True
                     self.functions[tool.name] = tool
-                    if not tool.deferred:
+                    if not tool.deferred and tool.is_available():
                         self.tools.append({"type": "function", "function": tool.to_dict()})
                     logger.debug(f"Function {tool.name} added to model.")
 
@@ -293,7 +298,8 @@ class Model(ABC):
                         if strict and self.supports_structured_outputs:
                             func.strict = True
                         self.functions[func.name] = func
-                        self.tools.append({"type": "function", "function": func.to_dict()})
+                        if not func.deferred and func.is_available():
+                            self.tools.append({"type": "function", "function": func.to_dict()})
                         logger.debug(f"Function {func.name} added to model.")
                 except Exception as e:
                     logger.warning(f"Could not add function {tool}: {e}")

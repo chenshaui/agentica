@@ -122,6 +122,22 @@ class TestModelAddTool:
         assert first.get("type") == "function"
         assert "function" in first
 
+    def test_skips_unavailable_function(self):
+        model = self._make_model()
+
+        def gated_tool() -> str:
+            """Conditionally available."""
+            return "ok"
+
+        func = Function.from_callable(gated_tool)
+        func.available_when = lambda: False
+
+        model.add_tool(func)
+
+        assert model.functions is not None
+        assert "gated_tool" in model.functions
+        assert model.tools == []
+
 
 # ---------------------------------------------------------------------------
 # TestRunFunctionCalls — Parallel tool execution

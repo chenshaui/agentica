@@ -11,6 +11,8 @@ This module implements a subagent system that allows main agents to:
 
 Based on the subagent design pattern from modern AI coding assistants.
 """
+import asyncio
+import json
 
 from dataclasses import dataclass
 from enum import Enum
@@ -21,11 +23,16 @@ from typing import (
     List,
     Literal,
     Optional,
+    TYPE_CHECKING,
     Union,
 )
 from datetime import datetime
 
+from agentica.tools.base import Function, ModelTool, Tool
 from agentica.utils.log import logger
+
+if TYPE_CHECKING:
+    from agentica.agent import Agent
 
 
 class SubagentType(str, Enum):
@@ -245,9 +252,85 @@ class SubagentRegistry:
     # Execution methods (spawn isolated subagents and run to completion)
     # ================================================================
 
+    @staticmethod
+    def _build_inherited_context(parent_agent: "Agent") -> str:
+        """Build a concise context summary from the parent agent."""
+        parts: List[str] = []
+
+        working_memory = parent_agent.working_memory
+        if working_memory is not None and working_memory.summary is not None:
+            summary_text = working_memory.summary.summary
+            if isinstance(summary_text, str) and summary_text.strip():
+                parts.append(summary_text.strip())
+
+        if not parts:
+            run_response = parent_agent.run_response
+            if run_response is not None and isinstance(run_response.content, str) and run_response.content.strip():
+                parts.append(run_response.content.strip())
+
+        if not parts:
+            parent_context = parent_agent.context
+            if isinstance(parent_context, str) and parent_context.strip():
+                parts.append(parent_context.strip())
+            elif isinstance(parent_context, dict) and parent_context:
+                parts.append(json.dumps(parent_context, ensure_ascii=False, sort_keys=True))
+
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _tool_names(tool: Any) -> List[str]:
+        """Extract callable function names represented by a parent tool entry."""
+        if isinstance(tool, Function):
+            return [tool.name]
+        if isinstance(tool, Tool):
+            return list(tool.functions.keys())
+        if isinstance(tool, ModelTool):
+            if tool.type == "function" and isinstance(tool.function, dict):
+                function_name = tool.function.get("name")
+                if isinstance(function_name, str) and function_name:
+                    return [function_name]
+            return []
+        if callable(tool):
+            return [tool.__name__]
+        return []
+
+    def _select_child_tools(self, parent_tools: List[Any], config: SubagentConfig) -> List[Any]:
+        """Filter parent tools according to subagent policy.
+
+        Keeps explicit contracts readable:
+        - Parent agent is expected to be a real Agent
+        - Tool list may still contain mixed tool representations, so normalize
+          names in one helper instead of scattering dynamic lookups.
+        """
+        child_tools: List[Any] = []
+
+        for tool in parent_tools:
+            candidate_names = self._tool_names(tool)
+            allowed_names = [
+                name
+                for name in candidate_names
+                if name not in self.BLOCKED_TOOLS
+                and (config.allowed_tools is None or name in config.allowed_tools)
+                and (config.denied_tools is None or name not in config.denied_tools)
+            ]
+
+            if not allowed_names:
+                continue
+
+            if isinstance(tool, Tool):
+                filtered_tool = Tool(name=tool.name, description=tool.description)
+                for name in allowed_names:
+                    filtered_tool.functions[name] = tool.functions[name]
+                child_tools.append(filtered_tool)
+                continue
+
+            child_tools.append(tool)
+
+        return child_tools
+
     async def spawn(
         self,
-        parent_agent: Any,
+        parent_agent: "Agent",
         task: str,
         agent_type: Union[str, SubagentType] = SubagentType.CODE,
         context: str = "",
@@ -268,10 +351,22 @@ class SubagentRegistry:
         Returns:
             Dict with keys: status, content, agent_type, error (if failed).
         """
+        parent_context = parent_agent.context or {}
+        inherited_depth = int(parent_context.get("_subagent_depth", 0)) + 1
+        depth = max(depth, inherited_depth)
+
         if depth > self.MAX_DEPTH:
             return {
                 "status": "error",
                 "error": f"Max subagent depth exceeded ({self.MAX_DEPTH})",
+                "agent_type": str(agent_type),
+                "content": "",
+            }
+
+        if depth > 1 and not bool(parent_context.get("_can_spawn_subagents", True)):
+            return {
+                "status": "error",
+                "error": "Nested subagent spawning is not allowed for this subagent type.",
                 "agent_type": str(agent_type),
                 "content": "",
             }
@@ -285,53 +380,66 @@ class SubagentRegistry:
                 "content": "",
             }
 
-        # Tool filtering: parent tools intersected with config, minus BLOCKED_TOOLS
-        parent_tools = getattr(parent_agent, "tools", []) or []
-        child_tools = [
-            fn for fn in parent_tools
-            if getattr(fn, "name", "") not in self.BLOCKED_TOOLS
-            and (
-                config.allowed_tools is None
-                or getattr(fn, "name", "") in config.allowed_tools
-            )
-            and (
-                config.denied_tools is None
-                or getattr(fn, "name", "") not in config.denied_tools
-            )
-        ]
+        parent_tools = parent_agent.tools or []
+        child_tools = self._select_child_tools(parent_tools, config)
 
         # Build focused prompt for child
         prompt_parts = [config.system_prompt]
+        prompt_context_parts: List[str] = []
+        if config.inherit_context:
+            inherited_context = self._build_inherited_context(parent_agent)
+            if inherited_context:
+                prompt_context_parts.append(inherited_context)
         if context:
-            prompt_parts.append(f"\n## Context\n{context}")
+            prompt_context_parts.append(context)
+        if prompt_context_parts:
+            prompt_context_text = "\n\n".join(prompt_context_parts)
+            prompt_parts.append(f"\n## Context\n{prompt_context_text}")
         prompt_parts.append(f"\n## Task\n{task}")
         prompt_parts.append("\nBe direct and efficient. Complete the task and stop.")
 
         try:
             # Lazy import to avoid circular dependency
             from agentica.agent import Agent
+            from agentica.agent.config import ToolConfig
 
             child = Agent(
-                name=f"{getattr(parent_agent, 'name', 'agent')}_sub_{config.name}",
-                model=getattr(parent_agent, "model", None),
+                name=f"{parent_agent.name or 'agent'}_sub_{config.name}",
+                model=parent_agent.model,
                 instructions="\n".join(prompt_parts),
                 tools=child_tools,
+                tool_config=ToolConfig(tool_call_limit=config.tool_call_limit),
+                context={
+                    "_subagent_depth": depth,
+                    "_can_spawn_subagents": config.can_spawn_subagents,
+                },
                 # Controlled inheritance
                 workspace=(
-                    getattr(parent_agent, "workspace", None)
+                    parent_agent.workspace
                     if config.inherit_workspace else None
                 ),
                 knowledge=(
-                    getattr(parent_agent, "knowledge", None)
+                    parent_agent.knowledge
                     if config.inherit_knowledge else None
                 ),
             )
 
-            result = await child.run(task)
+            if config.timeout > 0:
+                result = await asyncio.wait_for(child.run(task), timeout=config.timeout)
+            else:
+                result = await child.run(task)
             return {
                 "status": "completed",
                 "content": result.content if result else "",
                 "agent_type": config.type.value,
+            }
+        except asyncio.TimeoutError:
+            logger.warning("Subagent timed out after %ss", config.timeout)
+            return {
+                "status": "error",
+                "error": f"Subagent timed out after {config.timeout} seconds",
+                "agent_type": config.type.value,
+                "content": "",
             }
         except Exception as e:
             logger.error(f"Subagent execution failed: {e}")
@@ -344,7 +452,7 @@ class SubagentRegistry:
 
     async def spawn_batch(
         self,
-        parent_agent: Any,
+        parent_agent: "Agent",
         tasks: List[Dict[str, Any]],
         max_concurrent: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
@@ -361,18 +469,33 @@ class SubagentRegistry:
         Returns:
             List of result dicts in same order as input tasks.
         """
-        import asyncio
-
         sem = asyncio.Semaphore(max_concurrent or self.MAX_CONCURRENT)
 
         async def _run_one(spec: Dict[str, Any]) -> Dict[str, Any]:
             async with sem:
-                return await self.spawn(
-                    parent_agent=parent_agent,
-                    task=spec["task"],
-                    agent_type=spec.get("type", SubagentType.CODE),
-                    context=spec.get("context", ""),
-                )
+                task = spec.get("task")
+                if not isinstance(task, str) or not task.strip():
+                    return {
+                        "status": "error",
+                        "error": "Task spec missing required 'task' field",
+                        "agent_type": str(spec.get("type", SubagentType.CODE)),
+                        "content": "",
+                    }
+                try:
+                    return await self.spawn(
+                        parent_agent=parent_agent,
+                        task=task,
+                        agent_type=spec.get("type", SubagentType.CODE),
+                        context=spec.get("context", ""),
+                    )
+                except Exception as e:
+                    logger.error("Subagent batch execution failed: %s", e)
+                    return {
+                        "status": "error",
+                        "error": str(e),
+                        "agent_type": str(spec.get("type", SubagentType.CODE)),
+                        "content": "",
+                    }
 
         return list(await asyncio.gather(*[_run_one(t) for t in tasks]))
 

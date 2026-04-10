@@ -18,6 +18,11 @@ load_dotenv(AGENTICA_DOTENV_PATH)
 
 AGENTICA_DATA_DIR = os.getenv("AGENTICA_DATA_DIR", f"{AGENTICA_HOME}/data")
 AGENTICA_SKILL_DIR = os.getenv("AGENTICA_SKILL_DIR", f"{AGENTICA_HOME}/skills")
+AGENTICA_EXTRA_SKILL_PATHS = [
+    os.path.expanduser(path)
+    for path in os.getenv("AGENTICA_EXTRA_SKILL_PATH", "").split(os.pathsep)
+    if path.strip()
+]
 AGENTICA_WORKSPACE_DIR = os.getenv("AGENTICA_WORKSPACE_DIR", f"{AGENTICA_HOME}/workspace")
 AGENTICA_PROJECTS_DIR = os.getenv("AGENTICA_PROJECTS_DIR", f"{AGENTICA_HOME}/projects")
 AGENTICA_LOG_LEVEL = os.getenv("AGENTICA_LOG_LEVEL", "INFO").upper()

@@ -134,11 +134,66 @@ def _get_tool_import_path(tool_name: str) -> str:
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='CLI for agentica')
-    
     # Check if running in ACP mode (special handling)
     if len(sys.argv) > 1 and sys.argv[1] == 'acp':
         return None  # Signal to run in ACP mode
+
+    if len(sys.argv) > 1 and sys.argv[1] == "extensions":
+        parser = argparse.ArgumentParser(description="Manage Agentica skill extensions")
+        subparsers = parser.add_subparsers(dest="extensions_command", required=True)
+
+        install_parser = subparsers.add_parser(
+            "install",
+            help="Install skills from a git repository URL or local directory",
+        )
+        install_parser.add_argument("source", help="Git repository URL or local path")
+        install_parser.add_argument(
+            "--target-dir",
+            default=None,
+            help="Install target directory (default: ~/.agentica/skills)",
+        )
+        install_parser.add_argument(
+            "--force",
+            action="store_true",
+            help="Replace already installed skills with the same name",
+        )
+
+        list_parser = subparsers.add_parser(
+            "list",
+            help="List installed skills from the target directory",
+        )
+        list_parser.add_argument(
+            "--target-dir",
+            default=None,
+            help="Skill directory to inspect (default: ~/.agentica/skills)",
+        )
+
+        remove_parser = subparsers.add_parser(
+            "remove",
+            help="Remove an installed skill by name",
+        )
+        remove_parser.add_argument("skill_name", help="Installed skill directory name")
+        remove_parser.add_argument(
+            "--target-dir",
+            default=None,
+            help="Skill directory to modify (default: ~/.agentica/skills)",
+        )
+
+        reload_parser = subparsers.add_parser(
+            "reload",
+            help="Reload skills from disk and print the current registry count",
+        )
+        reload_parser.add_argument(
+            "--target-dir",
+            default=None,
+            help="Skill directory to inspect (default: ~/.agentica/skills)",
+        )
+
+        args = parser.parse_args(sys.argv[2:])
+        args.command = "extensions"
+        return args
+
+    parser = argparse.ArgumentParser(description='CLI for agentica')
     
     parser.add_argument('--query', type=str, help='Question to ask the LLM', default=None)
     parser.add_argument('--model_provider', type=str,

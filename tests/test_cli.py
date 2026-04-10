@@ -103,6 +103,87 @@ class TestCLIConfiguration(unittest.TestCase):
         self.assertIsInstance(history_file, str)
         self.assertTrue(history_file.endswith("cli_history.txt"))
 
+    def test_parse_extensions_remove_command(self):
+        """CLI supports `agentica extensions remove <skill-name>`."""
+        from agentica.cli.config import parse_args
+
+        with patch.object(
+            sys,
+            "argv",
+            ["agentica", "extensions", "remove", "learn-from-experience"],
+        ):
+            args = parse_args()
+
+        self.assertEqual(args.command, "extensions")
+        self.assertEqual(args.extensions_command, "remove")
+        self.assertEqual(args.skill_name, "learn-from-experience")
+
+    def test_parse_extensions_install_command(self):
+        """CLI parses local install sources without network access."""
+        from agentica.cli.config import parse_args
+
+        with patch.object(
+            sys,
+            "argv",
+            ["agentica", "extensions", "install", "/tmp/mock-skill-repo"],
+        ):
+            args = parse_args()
+
+        self.assertEqual(args.command, "extensions")
+        self.assertEqual(args.extensions_command, "install")
+        self.assertEqual(args.source, "/tmp/mock-skill-repo")
+
+    def test_interactive_extensions_install_reports_replaced_symlinked_skill(self):
+        """Interactive install prints when it replaces a symlinked skill."""
+        import agentica.cli.interactive as interactive
+        from agentica.skills.skill import Skill
+        from agentica.skills.skill_registry import SkillRegistry
+
+        refreshed_registry = SkillRegistry()
+        refreshed_registry.register(
+            Skill(
+                name="learn-from-experience",
+                description="Learn from feedback",
+                path=MagicMock(),
+                location="user",
+            )
+        )
+        installed_skill = Skill(
+            name="learn-from-experience",
+            description="Learn from feedback",
+            path=MagicMock(),
+            location="user",
+        )
+
+        def fake_install_skills(source, destination_dir=None, force=False, replaced_symlinked_skills=None):
+            self.assertTrue(force)
+            self.assertEqual(source, "/tmp/mock-skill-repo")
+            replaced_symlinked_skills.append("learn-from-experience")
+            return [installed_skill]
+
+        with patch.object(interactive, "install_skills", side_effect=fake_install_skills), patch.object(
+            interactive, "reset_skill_registry"
+        ), patch.object(interactive, "load_skills"), patch.object(
+            interactive, "get_skill_registry", return_value=refreshed_registry
+        ), patch.object(
+            interactive, "create_agent", return_value=MagicMock()
+        ), patch.object(interactive.console, "print") as console_print:
+            interactive._cmd_extensions(
+                cmd_args="install /tmp/mock-skill-repo --force",
+                agent_config={"model_provider": "zhipuai", "model_name": "glm-5", "debug": False, "work_dir": None},
+                extra_tools=[],
+                workspace=None,
+                skills_registry=SkillRegistry(),
+            )
+
+        self.assertTrue(
+            any(
+                "replaced existing symlinked skill" in str(call.args[0])
+                for call in console_print.call_args_list
+                if call.args
+            )
+        )
+
 
 class TestToolRegistryIntegrity(unittest.TestCase):
     """Test cases for tool registry integrity."""

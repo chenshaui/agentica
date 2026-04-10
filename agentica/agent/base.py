@@ -310,6 +310,9 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
                     tool.set_parent_agent(self)
                 elif isinstance(tool, BuiltinMemoryTool):
                     tool.set_workspace(self.workspace)
+                    tool.set_sync_global_agent_md(
+                        self.long_term_memory_config.sync_memories_to_global_agent_md
+                    )
 
         # Register BuiltinMemoryTool when memory=True and workspace exists
         if self.memory and self.workspace is not None:
@@ -318,6 +321,9 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
             if not has_memory_tool:
                 memory_tool = BuiltinMemoryTool()
                 memory_tool.set_workspace(self.workspace)
+                memory_tool.set_sync_global_agent_md(
+                    self.long_term_memory_config.sync_memories_to_global_agent_md
+                )
                 if self.tools is None:
                     self.tools = [memory_tool]
                 else:
@@ -353,7 +359,13 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
             if self.long_term_memory_config.auto_archive:
                 auto_hooks.append(ConversationArchiveHooks())
             if self.long_term_memory_config.auto_extract_memory:
-                auto_hooks.append(MemoryExtractHooks())
+                auto_hooks.append(
+                    MemoryExtractHooks(
+                        sync_memories_to_global_agent_md=(
+                            self.long_term_memory_config.sync_memories_to_global_agent_md
+                        )
+                    )
+                )
             if auto_hooks:
                 self._default_run_hooks = _CompositeRunHooks(auto_hooks)
 

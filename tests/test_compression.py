@@ -357,6 +357,38 @@ class TestCompressionManagerAutoCompact(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(cm._consecutive_auto_compact_failures, 0)
 
+    def test_iterative_summary_does_not_duplicate_new_turn_dump(self):
+        from agentica.compression.manager import CompressionManager
+
+        class FakeModel:
+            context_window = 200_000
+
+            def __init__(self):
+                self.captured_prompt = None
+
+            async def invoke(self, messages):
+                self.captured_prompt = messages[0].content
+
+                class Resp:
+                    content = "updated summary"
+
+                return Resp()
+
+        cm = CompressionManager()
+        cm._previous_summary = "old summary"
+        model = FakeModel()
+        msgs = [
+            Message(role="user", content="user asks for change"),
+            Message(role="assistant", content="assistant responds"),
+        ]
+
+        summary = asyncio.run(cm._summarise_conversation(msgs, model))
+
+        self.assertEqual(summary, "updated summary")
+        self.assertIsNotNone(model.captured_prompt)
+        self.assertEqual(model.captured_prompt.count('"role": "user"'), 1)
+        self.assertEqual(model.captured_prompt.count("Conversation to summarise:"), 0)
+
 
 class TestCompressionManagerGetStats(unittest.TestCase):
     """get_stats and get_compression_ratio."""

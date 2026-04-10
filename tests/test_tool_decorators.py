@@ -63,6 +63,14 @@ class TestToolDecorator(unittest.TestCase):
 
         self.assertTrue(heavy_tool._tool_metadata["deferred"])
 
+    def test_available_when_metadata(self):
+        @tool(name="conditional_tool", available_when=lambda: False)
+        def conditional_tool() -> str:
+            return ""
+
+        self.assertIn("available_when", conditional_tool._tool_metadata)
+        self.assertFalse(conditional_tool._tool_metadata["available_when"]())
+
     def test_wraps_preserves_function_name(self):
         @tool(name="custom_name")
         def original_func(x: int) -> int:
@@ -119,6 +127,14 @@ class TestFunctionFromCallableWithDecorator(unittest.TestCase):
 
         func = Function.from_callable(lazy)
         self.assertTrue(func.deferred)
+
+    def test_reads_available_when(self):
+        @tool(available_when=lambda: False)
+        def conditional() -> str:
+            return ""
+
+        func = Function.from_callable(conditional)
+        self.assertFalse(func.is_available())
 
     def test_plain_function_without_decorator(self):
         def plain(x: int) -> int:

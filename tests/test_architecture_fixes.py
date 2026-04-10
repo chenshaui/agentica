@@ -214,6 +214,13 @@ class TestCompressionManagerResetRun(unittest.TestCase):
         cm.reset_run_state()
         self.assertEqual(cm._consecutive_auto_compact_failures, 0)
 
+    def test_reset_clears_iterative_summary(self):
+        from agentica.compression import CompressionManager
+        cm = CompressionManager()
+        cm._previous_summary = "summary from previous run"
+        cm.reset_run_state()
+        self.assertIsNone(cm._previous_summary)
+
 
 class TestGetLastAssistantMessage(unittest.TestCase):
     """Test Runner._get_last_assistant_message helper."""

@@ -2,9 +2,14 @@
 """Tests for Skill lazy loading and keyword matching."""
 import tempfile
 import unittest
+import importlib
+import os
 from pathlib import Path
+from unittest.mock import patch
 
+import agentica.config as agentica_config
 from agentica.skills.skill import Skill
+from agentica.skills.skill_loader import SkillLoader
 from agentica.skills.skill_registry import SkillRegistry
 
 
@@ -207,6 +212,43 @@ class TestSkillWhenToUseDashFrontmatter(unittest.TestCase):
         skill = Skill.from_skill_md(skill_dir / "SKILL.md")
         self.assertIsNotNone(skill)
         self.assertEqual(skill.when_to_use, "foo, bar")
+
+
+class TestSkillLoaderManagedDirs(unittest.TestCase):
+    """Managed skill dirs can point directly at a single external skill directory."""
+
+    def test_load_all_accepts_direct_skill_dir_from_managed_paths(self):
+        tmpdir = tempfile.mkdtemp()
+        skill_dir = Path(tmpdir) / "learn-from-experience"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: learn-from-experience\ndescription: Learns from corrections\n---\n# Body",
+            encoding="utf-8",
+        )
+
+        with patch("agentica.skills.skill_loader.AGENTICA_EXTRA_SKILL_PATHS", [str(skill_dir)]):
+            registry = SkillLoader(project_root=Path(tmpdir)).load_all(SkillRegistry())
+
+        skill = registry.get("learn-from-experience")
+        self.assertIsNotNone(skill)
+        self.assertEqual(skill.name, "learn-from-experience")
+
+    def test_extra_skill_path_env_supports_multiple_paths(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_value = (
+                f"{tmpdir}/skills/learn-from-experience"
+                f"{os.pathsep}"
+                f"{tmpdir}/shared/skills"
+            )
+            with patch.dict(os.environ, {"AGENTICA_EXTRA_SKILL_PATH": env_value}, clear=False):
+                config = importlib.reload(agentica_config)
+                self.assertEqual(
+                    config.AGENTICA_EXTRA_SKILL_PATHS,
+                    [
+                        f"{tmpdir}/skills/learn-from-experience",
+                        f"{tmpdir}/shared/skills",
+                    ],
+                )
 
 
 if __name__ == "__main__":

@@ -267,6 +267,30 @@ class TestMemoryExtractHooks:
         # Conversation < 50 chars, should skip extraction
         agent.model.response.assert_not_called()
 
+    def test_extract_and_save_passes_global_sync_flag(self):
+        """Extracted user/feedback memories should pass global sync when enabled."""
+        hooks = MemoryExtractHooks(sync_memories_to_global_agent_md=True)
+        workspace = MagicMock()
+        workspace.write_memory_entry = AsyncMock()
+        model = MagicMock()
+        model.response = AsyncMock(return_value=MagicMock(content=json.dumps([
+            {
+                "title": "python_style",
+                "content": "Prefer concise, typed Python.",
+                "type": "feedback",
+            }
+        ])))
+
+        asyncio.run(hooks._extract_and_save(model, workspace, "User: test\n\nAssistant: ok"))
+
+        workspace.write_memory_entry.assert_awaited_once_with(
+            title="python_style",
+            content="Prefer concise, typed Python.",
+            memory_type="feedback",
+            description="python_style",
+            sync_to_global_agent_md=True,
+        )
+
 
 class TestWorkspaceMemoryConfig:
     """Test that auto_archive and auto_extract_memory are separate configs."""
@@ -277,6 +301,7 @@ class TestWorkspaceMemoryConfig:
         config = WorkspaceMemoryConfig()
         assert config.auto_archive is False
         assert config.auto_extract_memory is False
+        assert config.sync_memories_to_global_agent_md is False
         assert config.load_workspace_context is True
         assert config.load_workspace_memory is True
         assert config.max_memory_entries == 5

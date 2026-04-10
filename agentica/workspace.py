@@ -523,6 +523,108 @@ You are a helpful AI assistant.
         "If a memory references a specific file path, function, or flag, "
         "verify it still exists before recommending it."
     )
+    _GLOBAL_AGENT_SYNC_START = "<!-- agentica:learned-preferences:start -->"
+    _GLOBAL_AGENT_SYNC_END = "<!-- agentica:learned-preferences:end -->"
+    _GLOBAL_AGENT_SYNC_HEADER = "## Learned Preferences"
+    _GLOBAL_AGENT_SYNC_TYPES = {"user", "feedback"}
+
+    def _get_global_agent_md_path(self) -> Path:
+        """Return the user-global AGENTS.md path loaded into prompts."""
+        global_home = Path(AGENTICA_HOME).expanduser()
+        global_home.mkdir(parents=True, exist_ok=True)
+        return global_home / "AGENTS.md"
+
+    @staticmethod
+    def _parse_frontmatter(content: str) -> Dict[str, str]:
+        """Parse simple YAML frontmatter into a flat string dict."""
+        match = re.match(r"^---\s*\n(.*?)\n---\s*\n?", content, flags=re.DOTALL)
+        if not match:
+            return {}
+
+        metadata: Dict[str, str] = {}
+        for line in match.group(1).splitlines():
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            metadata[key.strip()] = value.strip()
+        return metadata
+
+    @staticmethod
+    def _summarize_memory_for_global_agent(content: str, max_chars: int = 180) -> str:
+        """Collapse a memory body into one readable line for global steering."""
+        normalized = re.sub(r"\s+", " ", content).strip()
+        if len(normalized) <= max_chars:
+            return normalized
+        return normalized[: max_chars - 3].rstrip() + "..."
+
+    async def sync_memories_to_global_agent_md(self, limit: int = 30) -> str:
+        """Compile user/feedback memories into ~/.agentica/AGENTS.md.
+
+        This keeps long-lived preferences in the same global instruction chain
+        that `get_context_prompt()` already loads on every run.
+        """
+        self._initialize_user_dir()
+        memory_dir = self._get_user_memory_dir()
+
+        synced_entries: List[str] = []
+        if memory_dir.exists():
+            memory_files = sorted(
+                memory_dir.glob("*.md"),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+            for memory_file in memory_files:
+                raw = (await _async_read_text(memory_file)).strip()
+                if not raw:
+                    continue
+
+                metadata = self._parse_frontmatter(raw)
+                memory_type = metadata.get("type", "project")
+                if memory_type not in self._GLOBAL_AGENT_SYNC_TYPES:
+                    continue
+
+                title = metadata.get("name", memory_file.stem)
+                summary = self._summarize_memory_for_global_agent(self._strip_frontmatter(raw))
+                if not summary:
+                    continue
+
+                synced_entries.append(f"- [{memory_type}] {title}: {summary}")
+                if len(synced_entries) >= limit:
+                    break
+
+        if not synced_entries:
+            synced_entries.append("- No confirmed user or feedback memories have been synced yet.")
+
+        block = "\n".join(
+            [
+                self._GLOBAL_AGENT_SYNC_HEADER,
+                self._GLOBAL_AGENT_SYNC_START,
+                "Generated from workspace memories. Edit the memory entries, not this block.",
+                *synced_entries,
+                self._GLOBAL_AGENT_SYNC_END,
+            ]
+        )
+
+        global_agent_md = self._get_global_agent_md_path()
+        existing = ""
+        if global_agent_md.exists():
+            existing = (await _async_read_text(global_agent_md)).strip()
+
+        if existing:
+            pattern = (
+                rf"{re.escape(self._GLOBAL_AGENT_SYNC_HEADER)}\n"
+                rf"{re.escape(self._GLOBAL_AGENT_SYNC_START)}[\s\S]*?"
+                rf"{re.escape(self._GLOBAL_AGENT_SYNC_END)}"
+            )
+            if re.search(pattern, existing):
+                updated = re.sub(pattern, block, existing)
+            else:
+                updated = existing.rstrip() + "\n\n" + block
+        else:
+            updated = "# Agent Instructions\n\n" + block
+
+        await _async_write_text(global_agent_md, updated.strip() + "\n")
+        return str(global_agent_md)
 
     async def get_relevant_memories(
         self,
@@ -617,6 +719,7 @@ You are a helpful AI assistant.
         content: str,
         memory_type: str = "project",
         description: str = "",
+        sync_to_global_agent_md: bool = False,
     ) -> str:
         """Write a typed memory entry as an individual file and update MEMORY.md index.
 
@@ -632,6 +735,8 @@ You are a helpful AI assistant.
             content: Full memory content (why + how to apply)
             memory_type: One of "user", "feedback", "project", "reference"
             description: One-line hook for relevance scoring (defaults to title)
+            sync_to_global_agent_md: If True, recompile synced memories into
+                ~/.agentica/AGENTS.md after this write.
 
         Returns:
             Absolute path to the written memory file.
@@ -660,6 +765,9 @@ You are a helpful AI assistant.
             title=title,
             hook=hook,
         )
+
+        if sync_to_global_agent_md and memory_type in self._GLOBAL_AGENT_SYNC_TYPES:
+            await self.sync_memories_to_global_agent_md()
 
         return str(filepath)
 

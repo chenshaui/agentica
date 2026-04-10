@@ -16,7 +16,16 @@
 [![GitHub issues](https://img.shields.io/github/issues/shibing624/agentica.svg)](https://github.com/shibing624/agentica/issues)
 [![Wechat Group](https://img.shields.io/badge/wechat-group-green.svg?logo=wechat)](#社区与支持)
 
-**Agentica** 是一个轻量级 Python 框架，用于构建 AI 智能体。Async-First 架构，支持工具调用、RAG、多智能体团队、工作流编排和 MCP 协议。
+**Agentica** 不是套一层 LLM API 的聊天壳，而是一个 Async-First 的 agent harness。
+它让 Agent 能真正跑起来: 调工具、跑长任务、做多智能体协作、跨会话保留记忆，并通过 Skill system 接入可演进的 self-learn 工作流。
+
+| 能力 | 说明 |
+|------|------|
+| **Long-running Agent Loop** | `Runner` 驱动的 LLM ↔ Tool 循环，内置压缩、重试、成本预算、死循环防护 |
+| **Works Beyond Chat** | 文件、执行、搜索、浏览器、MCP、多智能体、Workflow，不依附单一 IDE 场景 |
+| **Memory That Survives Sessions** | Workspace 记忆按条目存储、相关性召回，并可把确认过的偏好同步到 `~/.agentica/AGENTS.md` |
+| **Skill-Based Self-Learn** | SkillTool 可加载外部技能；内置 Agent 持续学习策略 |
+| **Open, Composable Harness** | 模型、工具、记忆、Skill、Guardrails、MCP 都是可替换部件，而不是封闭 SaaS 黑盒 |
 
 ## 架构
 
@@ -76,13 +85,13 @@ export DEEPSEEK_API_KEY="your-api-key"      # DeepSeek
 - **多智能体** — Team（动态委派）、Swarm（并行/自治）和 Workflow（确定性编排）
 - **安全守卫** — 输入/输出/工具级 Guardrails，流式实时检测
 - **MCP / ACP** — Model Context Protocol 和 Agent Communication Protocol 支持
-- **Skill 系统** — 基于 Markdown 的技能注入，模型无关
+- **Skill 系统** — 基于 Markdown 的技能注入，支持项目级、用户级和外部托管 skill 目录
 - **多模态** — 文本、图像、音频、视频理解
-- **持久化记忆** — 索引/内容分离、相关性召回、四类型分类、drift 防御
+- **持久化记忆** — 索引/内容分离、相关性召回、四类型分类、drift 防御，并可同步长期偏好到全局 `AGENTS.md`
 
 ## Workspace 记忆
 
-Workspace 提供跨会话的持久化记忆，采用索引/召回设计：
+Workspace 提供跨会话的持久化记忆，采用索引/召回设计；需要时还可以把确认过的用户/反馈记忆编译进全局 `~/.agentica/AGENTS.md`，让新 session 自动继承：
 
 ```python
 from agentica import Workspace
@@ -96,6 +105,7 @@ await workspace.write_memory_entry(
     content="User prefers concise, typed Python.",
     memory_type="feedback",              # user|feedback|project|reference
     description="python coding style",   # 相关性匹配关键词
+    sync_to_global_agent_md=True,        # 同步到 ~/.agentica/AGENTS.md 的 Learned Preferences 区块
 )
 
 # 相关性召回（根据当前 query 返回最相关的 ≤5 条）
@@ -105,22 +115,48 @@ memory = await workspace.get_relevant_memories(query="how to write python")
 Agent 自动根据当前 query 召回最相关记忆，而非全量注入：
 
 ```python
-from agentica import Agent, Workspace
+from agentica import DeepAgent, Workspace
 from agentica.agent.config import WorkspaceMemoryConfig
 
-agent = Agent(
+agent = DeepAgent(
     workspace=Workspace("./workspace"),
     long_term_memory_config=WorkspaceMemoryConfig(
         max_memory_entries=5,  # 最多注入 5 条相关记忆
+        sync_memories_to_global_agent_md=True,
     ),
 )
 ```
+
+`DeepAgent` 默认启用 `SkillTool(auto_load=True)`，会自动发现 `~/.agentica/skills/` 和 `.agentica/skills/` 目录下的 skill；同时默认开启 `tool_config.auto_load_mcp=True`，启动时会自动读取工作目录里的 `mcp_config.json/yaml/yml`。这样 DeepAgent 开箱就是带 skills + MCP + memory 的一键完全体。
 
 ## CLI
 
 ```bash
 agentica --model_provider zhipuai --model_name glm-4.7-flash
 ```
+
+安装外部 skill 集合：
+
+```bash
+agentica extensions install https://github.com/obra/superpowers
+```
+
+如果你已经进入交互式 CLI，也可以直接在会话里安装并立刻刷新当前 skills：
+
+```text
+> /extensions install https://github.com/obra/superpowers
+> /extensions list
+> /extensions remove learn-from-experience
+> /extensions reload
+```
+
+也支持安装本地目录或指定目标目录：
+
+```bash
+agentica extensions install /path/to/skill-repo --target-dir ~/.agentica/skills
+```
+
+如果你安装到自定义目录而不是标准搜索路径，记得把这个目录加入 `AGENTICA_EXTRA_SKILL_PATH`，这样 `DeepAgent` 和 CLI 才会自动发现它。
 
 <img src="https://github.com/shibing624/agentica/blob/main/docs/assets/cli_snap.png" width="800" />
 

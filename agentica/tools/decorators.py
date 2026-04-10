@@ -13,7 +13,7 @@ Usage:
     agent = Agent(tools=[search])
 """
 from functools import wraps
-from typing import Optional
+from typing import Callable, Optional
 
 
 def tool(
@@ -27,6 +27,7 @@ def tool(
     is_destructive: bool = False,
     deferred: bool = False,
     interrupt_behavior: str = "cancel",
+    available_when: Optional[Callable[[], bool]] = None,
 ):
     """Decorator: attach tool metadata to a function for Agent auto-detection.
 
@@ -49,6 +50,8 @@ def tool(
             The tool can be discovered via tool_search and loaded on demand.
         interrupt_behavior: "cancel" (tool can be terminated mid-execution)
             or "block" (tool must complete before honoring cancellation).
+        available_when: Optional callback that returns True when the tool
+            should be exposed to the LLM. False hides the tool schema.
 
     Returns:
         Decorated function with _tool_metadata attribute.
@@ -65,6 +68,7 @@ def tool(
             "is_destructive": is_destructive,
             "deferred": deferred,
             "interrupt_behavior": interrupt_behavior,
+            "available_when": available_when,
         }
 
         @wraps(func)

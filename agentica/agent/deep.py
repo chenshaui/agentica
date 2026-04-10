@@ -74,6 +74,7 @@ class DeepAgent(Agent):
     - 5-stage compression pipeline (compress_tool_results=True)
     - Context overflow handling at 80% (context_overflow_threshold=0.8)
     - Repeated tool-call detection at 3 (max_repeated_tool_calls=3)
+    - MCP auto-loading from local mcp_config.json/yaml when available
     - Workspace memory with relevance recall (max_memory_entries=10)
     - Conversation auto-archive (auto_archive=True)
     - Agentic prompt with datetime and agent name
@@ -160,6 +161,7 @@ class DeepAgent(Agent):
 
         if tool_config is None:
             tool_config = ToolConfig(
+                auto_load_mcp=True,
                 compress_tool_results=True,
                 context_overflow_threshold=0.8,
                 max_repeated_tool_calls=3,
@@ -171,6 +173,7 @@ class DeepAgent(Agent):
                 load_workspace_context=True,
                 load_workspace_memory=True,
                 max_memory_entries=10,
+                sync_memories_to_global_agent_md=True,
             )
 
         super().__init__(

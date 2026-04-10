@@ -48,6 +48,7 @@ from agentica.skills.skill_loader import (
     list_skill_files,
     read_skill_file,
 )
+from agentica.skills.installer import install_skills, list_installed_skills, remove_skill
 
 __all__ = [
     # Skill class
@@ -62,6 +63,9 @@ __all__ = [
     "get_available_skills",
     "register_skill",
     "register_skills",
+    "install_skills",
+    "list_installed_skills",
+    "remove_skill",
     # File operations
     "list_skill_files",
     "read_skill_file",

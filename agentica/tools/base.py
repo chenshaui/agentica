@@ -611,7 +611,8 @@ class Tool:
 
     def register(self, function: Callable[..., Any], sanitize_arguments: bool = True,
                  concurrency_safe: bool = False, is_read_only: bool = False,
-                 is_destructive: bool = False):
+                 is_destructive: bool = False,
+                 available_when: Optional[Callable[[], bool]] = None):
         """Register a function with the toolkit.
 
         Args:
@@ -622,6 +623,8 @@ class Tool:
                                 concurrency_safe tools (e.g. read_file, glob).
             is_read_only:       If True, the function only reads data and never modifies state.
             is_destructive:     If True, the function performs irreversible operations.
+            available_when:     Optional callback that returns True when the tool
+                                should be exposed to the LLM.
 
         Returns:
             The registered function
@@ -635,6 +638,7 @@ class Tool:
                 concurrency_safe=concurrency_safe,
                 is_read_only=is_read_only,
                 is_destructive=is_destructive,
+                available_when=available_when,
             )
             self.functions[f.name] = f
         except Exception as e:

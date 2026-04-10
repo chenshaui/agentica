@@ -17,7 +17,7 @@ from typing import List, Optional
 from agentica.skills.skill import Skill
 from agentica.skills.skill_registry import SkillRegistry, get_skill_registry
 from agentica.utils.string import truncate_if_too_long
-from agentica.config import AGENTICA_SKILL_DIR
+from agentica.config import AGENTICA_SKILL_DIR, AGENTICA_EXTRA_SKILL_PATHS
 from agentica.utils.log import logger
 
 
@@ -28,8 +28,9 @@ class SkillLoader:
     Search paths (in priority order):
     1. .claude/skills (project-level)
     2. .agentica/skills (project-level)
-    3. ~/.claude/skills (user-level)
-    4. ~/.agentica/skills (user-level)
+    3. AGENTICA_EXTRA_SKILL_PATH (external extra skill dirs)
+    4. ~/.claude/skills (user-level)
+    5. ~/.agentica/skills (user-level)
 
     Project-level skills override user-level skills with the same name.
 
@@ -80,6 +81,9 @@ class SkillLoader:
             skill_dir_path.mkdir(parents=True, exist_ok=True)
             paths.append((skill_dir_path, "user"))
 
+        for managed_skill_dir in AGENTICA_EXTRA_SKILL_PATHS:
+            paths.append((Path(managed_skill_dir), "managed"))
+
         # User-level paths (lower priority)
         for skill_dir in self.SKILL_DIRS:
             user_path = self.home_dir / skill_dir
@@ -101,6 +105,10 @@ class SkillLoader:
         """
         if not skills_dir.exists() or not skills_dir.is_dir():
             return []
+
+        direct_skill_md = skills_dir / self.SKILL_FILE
+        if direct_skill_md.exists():
+            return [direct_skill_md]
 
         skill_files = []
 

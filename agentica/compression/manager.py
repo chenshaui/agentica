@@ -135,6 +135,7 @@ class CompressionManager:
         """Reset per-run state. Call at the start of each agent run to prevent
         circuit breaker and stats from leaking across runs."""
         self._consecutive_auto_compact_failures = 0
+        self._previous_summary = None
 
     def __post_init__(self):
         # Default target: 60% of trigger threshold
@@ -571,9 +572,10 @@ class CompressionManager:
             prompt_parts.append("")
             prompt_parts.append(f"Additional instructions: {custom_instructions}")
 
-        prompt_parts.append("")
-        prompt_parts.append("Conversation to summarise:")
-        prompt_parts.append(text)
+        if not self._previous_summary:
+            prompt_parts.append("")
+            prompt_parts.append("Conversation to summarise:")
+            prompt_parts.append(text)
 
         try:
             resp = await active_model.invoke([

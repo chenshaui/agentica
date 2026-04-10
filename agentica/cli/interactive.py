@@ -6,6 +6,7 @@
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from typing import List, Optional
@@ -35,6 +36,14 @@ from agentica.model.message import Message
 from agentica.run_response import AgentCancelledError
 from agentica.utils.log import suppress_console_logging
 from agentica.workspace import Workspace
+from agentica.skills import (
+    get_skill_registry,
+    install_skills,
+    list_installed_skills,
+    load_skills,
+    remove_skill,
+)
+from agentica.skills.skill_registry import reset_skill_registry
 
 
 # ==================== Command Handlers ====================
@@ -387,19 +396,143 @@ def _cmd_debug(agent_config=None, current_agent=None, shell_mode=False,
 
 def _cmd_reload_skills(skills_registry=None, **kwargs):
     """Reload skills from disk (clears memoization caches)."""
-    if skills_registry is None:
-        console.print("Skills not enabled. Use --enable-skills to enable.", style="yellow")
-        return
     try:
-        from agentica.skills import load_skills
-        from agentica.skills.skill_registry import get_skill_registry, reset_skill_registry
-        reset_skill_registry()
-        load_skills()
-        new_registry = get_skill_registry()
-        console.print(f"Reloaded {len(new_registry)} skills from disk.", style="green")
-        return {"skills_registry": new_registry}
+        result = _refresh_skills_session(
+            agent_config=kwargs.get("agent_config"),
+            extra_tools=kwargs.get("extra_tools"),
+            workspace=kwargs.get("workspace"),
+        )
+        console.print(
+            f"Reloaded {len(result['skills_registry'])} skills from disk.",
+            style="green",
+        )
+        return result
     except Exception as e:
         console.print(f"Failed to reload skills: {e}", style="red")
+
+
+def _refresh_skills_session(agent_config=None, extra_tools=None, workspace=None):
+    """Reload skill registry from disk and rebuild the current agent."""
+    reset_skill_registry()
+    load_skills()
+    new_registry = get_skill_registry()
+    new_agent = create_agent(agent_config, extra_tools, workspace, new_registry)
+    return {
+        "skills_registry": new_registry,
+        "current_agent": new_agent,
+    }
+
+
+def _cmd_extensions(cmd_args="", agent_config=None, extra_tools=None, workspace=None, **kwargs):
+    """Manage external skill extensions inside the interactive CLI."""
+    parts = shlex.split(cmd_args)
+    if not parts:
+        console.print(
+            "Usage: /extensions <install|list|remove|reload> ...",
+            style="yellow",
+        )
+        return
+
+    subcommand = parts[0].lower()
+    args = parts[1:]
+
+    try:
+        if subcommand == "install":
+            if not args:
+                console.print(
+                    "Usage: /extensions install <git-url-or-local-path> [--target-dir DIR] [--force]",
+                    style="yellow",
+                )
+                return
+
+            source = None
+            target_dir = None
+            force = False
+            index = 0
+            while index < len(args):
+                arg = args[index]
+                if arg == "--force":
+                    force = True
+                    index += 1
+                elif arg == "--target-dir":
+                    if index + 1 >= len(args):
+                        console.print("--target-dir requires a path", style="red")
+                        return
+                    target_dir = args[index + 1]
+                    index += 2
+                elif source is None:
+                    source = arg
+                    index += 1
+                else:
+                    console.print(f"Unexpected argument: {arg}", style="red")
+                    return
+
+            if source is None:
+                console.print("Missing install source.", style="red")
+                return
+
+            replaced_symlinked_skills: list[str] = []
+            installed = install_skills(
+                source,
+                destination_dir=target_dir,
+                force=force,
+                replaced_symlinked_skills=replaced_symlinked_skills,
+            )
+            console.print(
+                f"Installed {len(installed)} skill(s) from {source}.",
+                style="green",
+            )
+            for skill_name in replaced_symlinked_skills:
+                console.print(
+                    f"replaced existing symlinked skill: {skill_name}",
+                    style="green",
+                )
+            if target_dir:
+                console.print(
+                    "Note: custom --target-dir is only auto-discovered when it is a standard skills path or included in AGENTICA_EXTRA_SKILL_PATH.",
+                    style="yellow",
+                )
+            return _refresh_skills_session(
+                agent_config=agent_config,
+                extra_tools=extra_tools,
+                workspace=workspace,
+            )
+
+        if subcommand == "list":
+            skills = list_installed_skills()
+            if not skills:
+                console.print("No installed external skills found.", style="yellow")
+                return
+            console.print("Installed skills:", style="cyan")
+            for skill in skills:
+                console.print(f"  - [bold]{skill.name}[/bold]: {skill.description}")
+            return
+
+        if subcommand in {"remove", "uninstall"}:
+            if not args:
+                console.print("Usage: /extensions remove <skill-name>", style="yellow")
+                return
+            removed_path = remove_skill(args[0])
+            console.print(f"Removed skill '{args[0]}' from {removed_path}", style="green")
+            return _refresh_skills_session(
+                agent_config=agent_config,
+                extra_tools=extra_tools,
+                workspace=workspace,
+            )
+
+        if subcommand == "reload":
+            return _cmd_reload_skills(
+                agent_config=agent_config,
+                extra_tools=extra_tools,
+                workspace=workspace,
+            )
+
+        console.print(
+            f"Unknown /extensions subcommand: {subcommand}",
+            style="red",
+        )
+    except Exception as e:
+        console.print(f"Extensions command failed: {e}", style="red")
 
 
 # Command dispatch table: {command: (handler, description)}
@@ -420,6 +553,7 @@ COMMAND_REGISTRY = {
     "/compact":       (_cmd_compact,       "Compact context with summary. Usage: /compact [custom instructions]"),
     "/debug":         (_cmd_debug,         "Show debug info"),
     "/reload-skills": (_cmd_reload_skills, "Reload skills from disk"),
+    "/extensions":    (_cmd_extensions,    "Manage external skills: install/list/remove/reload"),
 }
 
 # For backward compat / quick dispatch lookup

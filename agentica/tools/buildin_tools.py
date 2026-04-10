@@ -1537,6 +1537,7 @@ class BuiltinMemoryTool(Tool):
     def __init__(self):
         super().__init__(name="builtin_memory_tool")
         self._workspace = None
+        self._sync_memories_to_global_agent_md = False
 
         # Build system prompt from shared constants (avoids duplicating type defs)
         from agentica.hooks import MEMORY_TYPE_SPEC, MEMORY_EXCLUSION_SPEC
@@ -1574,6 +1575,10 @@ class BuiltinMemoryTool(Tool):
     def set_workspace(self, workspace) -> None:
         """Set the workspace reference for memory persistence."""
         self._workspace = workspace
+
+    def set_sync_global_agent_md(self, enabled: bool) -> None:
+        """Enable syncing user/feedback memories into ~/.agentica/AGENTS.md."""
+        self._sync_memories_to_global_agent_md = enabled
 
     def get_system_prompt(self) -> Optional[str]:
         return self.MEMORY_SYSTEM_PROMPT
@@ -1617,6 +1622,9 @@ class BuiltinMemoryTool(Tool):
             content=content.strip(),
             memory_type=memory_type,
             description=title.strip(),
+            sync_to_global_agent_md=(
+                self._sync_memories_to_global_agent_md and memory_type in {"user", "feedback"}
+            ),
         )
 
         logger.debug(f"Memory saved: {title} -> {filepath}")

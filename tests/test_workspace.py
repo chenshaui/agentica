@@ -10,6 +10,7 @@ import shutil
 from pathlib import Path
 import os
 import sys
+from unittest.mock import patch
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from agentica.workspace import Workspace, WorkspaceConfig
 
@@ -204,6 +205,32 @@ class TestWorkspace:
         # get_relevant_memories with a matching query returns relevant entry
         memory_prompt_python = asyncio.run(workspace.get_relevant_memories(query="python coding"))
         assert "Python preference" in memory_prompt_python or len(memory_prompt_python) > 0
+
+    def test_write_memory_entry_syncs_feedback_to_global_agent_md(self, temp_workspace_path):
+        """Confirmed user/feedback memories can be compiled into ~/.agentica/AGENTS.md."""
+        workspace = Workspace(temp_workspace_path)
+        workspace.initialize()
+
+        global_home = temp_workspace_path / "global-home"
+        global_home.mkdir()
+
+        with patch("agentica.workspace.AGENTICA_HOME", str(global_home)):
+            asyncio.run(
+                workspace.write_memory_entry(
+                    title="Python Style",
+                    content="Prefer concise, typed Python. Avoid unnecessary getattr.",
+                    memory_type="feedback",
+                    description="python style concise typed",
+                    sync_to_global_agent_md=True,
+                )
+            )
+
+        global_agent_md = global_home / "AGENTS.md"
+        assert global_agent_md.exists()
+        content = global_agent_md.read_text(encoding="utf-8")
+        assert "Learned Preferences" in content
+        assert "Python Style" in content
+        assert "Avoid unnecessary getattr" in content
 
     def test_get_skills_dir(self, temp_workspace_path):
         """Test getting skills directory."""

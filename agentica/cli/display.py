@@ -204,6 +204,8 @@ Tips:
     execute, web_search, fetch_url, write_todos, task
   - Use --tools to add extra tools, e.g.: --tools calculator shell wikipedia
   - Use --enable-skills to load skills, then /skills to list them
+  - Install skill packs before launch: agentica extensions install <git-url>
+  - Install skill packs in-session: /extensions install <git-url>
   - Say "remember this" or "save this" to trigger memory saving
 """
     console.print(help_text, style="yellow")
