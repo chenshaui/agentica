@@ -125,6 +125,12 @@ class CompressionManager:
     # Buffer tokens reserved for the compaction summary output (CC uses 13_000).
     _auto_compact_buffer_tokens: int = field(init=False, default=13_000)
 
+    # Iterative summary: stores the previous compression summary so that
+    # subsequent compressions UPDATE the summary instead of regenerating.
+    # This reduces information loss across multiple compressions.
+    # Pattern borrowed from hermes-agent ContextCompressor.
+    _previous_summary: Optional[str] = field(init=False, default=None, repr=False)
+
     def reset_run_state(self) -> None:
         """Reset per-run state. Call at the start of each agent run to prevent
         circuit breaker and stats from leaking across runs."""
@@ -523,10 +529,35 @@ class CompressionManager:
             ensure_ascii=False,
         )[:max_total_chars]
 
-        prompt_parts = [
-            "Create a detailed summary of the conversation so far for continuity.",
-            "",
-            "Your summary MUST include:",
+        prompt_parts = []
+
+        # Iterative summary: if we have a previous summary, ask LLM to UPDATE
+        # it with new turns rather than regenerating from scratch. This preserves
+        # accumulated knowledge across multiple compressions.
+        if self._previous_summary:
+            prompt_parts.extend([
+                "You are updating an existing conversation summary with new turns.",
+                "",
+                "## Previous Summary",
+                self._previous_summary,
+                "",
+                "## New Turns to Integrate",
+                text,
+                "",
+                "Update the summary to incorporate new information.",
+                "Preserve: key decisions, file paths, progress, next steps.",
+                "Remove: outdated progress, superseded decisions.",
+                "",
+                "Your updated summary MUST include:",
+            ])
+        else:
+            prompt_parts.extend([
+                "Create a detailed summary of the conversation so far for continuity.",
+                "",
+                "Your summary MUST include:",
+            ])
+
+        prompt_parts.extend([
             "1. Primary Request and Intent: the user's explicit goals and requirements",
             "2. Key Technical Concepts: important technical details, APIs, patterns discussed",
             "3. Files and Code: specific files, functions, code sections mentioned or modified",
@@ -535,7 +566,7 @@ class CompressionManager:
             "6. Important Facts: numbers, URLs, IDs, configurations, error messages discovered",
             "",
             "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.",
-        ]
+        ])
         if custom_instructions:
             prompt_parts.append("")
             prompt_parts.append(f"Additional instructions: {custom_instructions}")
@@ -552,16 +583,23 @@ class CompressionManager:
             logger.warning(f"Summarisation LLM call failed: {e}")
             return None
         # Extract text from common response shapes
+        summary: Optional[str] = None
         if hasattr(resp, "choices") and resp.choices:
             try:
-                return resp.choices[0].message.content
+                summary = resp.choices[0].message.content
             except (AttributeError, IndexError):
                 pass
-        if hasattr(resp, "content") and isinstance(resp.content, str):
-            return resp.content
-        if isinstance(resp, str):
-            return resp
-        return str(resp) if resp else None
+        if summary is None and hasattr(resp, "content") and isinstance(resp.content, str):
+            summary = resp.content
+        if summary is None and isinstance(resp, str):
+            summary = resp
+        if summary is None and resp:
+            summary = str(resp)
+
+        # Store for iterative updates on next compression
+        if summary:
+            self._previous_summary = summary
+        return summary
 
     async def auto_compact(
         self,

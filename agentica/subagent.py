@@ -15,6 +15,7 @@ Based on the subagent design pattern from modern AI coding assistants.
 from dataclasses import dataclass
 from enum import Enum
 from typing import (
+    Any,
     Callable,
     Dict,
     List,
@@ -123,10 +124,20 @@ class SubagentRun:
 class SubagentRegistry:
     """
     Registry for tracking and managing subagent runs.
-    
+
     This is a singleton-like class that tracks all subagent executions
     across the application lifetime.
     """
+
+    # Tools blocked for ALL subagent types (prevent recursion + privilege escalation).
+    # Pattern borrowed from hermes-agent delegate_tool.py.
+    BLOCKED_TOOLS = {"delegate_task", "spawn_subagent", "save_memory", "shell", "task"}
+
+    # Max subagent nesting depth (parent -> child -> grandchild = depth 2)
+    MAX_DEPTH = 2
+
+    # Max concurrent subagents in a single spawn_batch call
+    MAX_CONCURRENT = 3
     
     _instance: Optional["SubagentRegistry"] = None
     
@@ -227,8 +238,143 @@ class SubagentRegistry:
         
         if to_remove:
             logger.debug(f"Cleaned up {len(to_remove)} old subagent runs")
-        
+
         return len(to_remove)
+
+    # ================================================================
+    # Execution methods (spawn isolated subagents and run to completion)
+    # ================================================================
+
+    async def spawn(
+        self,
+        parent_agent: Any,
+        task: str,
+        agent_type: Union[str, SubagentType] = SubagentType.CODE,
+        context: str = "",
+        depth: int = 1,
+    ) -> Dict[str, Any]:
+        """Spawn an isolated subagent and run to completion.
+
+        Creates a child agent with restricted tools and isolated state,
+        executes the task, and returns a summary (not full trajectory).
+
+        Args:
+            parent_agent: The parent Agent instance.
+            task: Task description for the subagent.
+            agent_type: Type of subagent (determines tool permissions).
+            context: Optional context to inject into the subagent prompt.
+            depth: Current nesting depth (1 = direct child of user agent).
+
+        Returns:
+            Dict with keys: status, content, agent_type, error (if failed).
+        """
+        if depth > self.MAX_DEPTH:
+            return {
+                "status": "error",
+                "error": f"Max subagent depth exceeded ({self.MAX_DEPTH})",
+                "agent_type": str(agent_type),
+                "content": "",
+            }
+
+        config = get_subagent_config(agent_type)
+        if config is None:
+            return {
+                "status": "error",
+                "error": f"Unknown subagent type: {agent_type}",
+                "agent_type": str(agent_type),
+                "content": "",
+            }
+
+        # Tool filtering: parent tools intersected with config, minus BLOCKED_TOOLS
+        parent_tools = getattr(parent_agent, "tools", []) or []
+        child_tools = [
+            fn for fn in parent_tools
+            if getattr(fn, "name", "") not in self.BLOCKED_TOOLS
+            and (
+                config.allowed_tools is None
+                or getattr(fn, "name", "") in config.allowed_tools
+            )
+            and (
+                config.denied_tools is None
+                or getattr(fn, "name", "") not in config.denied_tools
+            )
+        ]
+
+        # Build focused prompt for child
+        prompt_parts = [config.system_prompt]
+        if context:
+            prompt_parts.append(f"\n## Context\n{context}")
+        prompt_parts.append(f"\n## Task\n{task}")
+        prompt_parts.append("\nBe direct and efficient. Complete the task and stop.")
+
+        try:
+            # Lazy import to avoid circular dependency
+            from agentica.agent import Agent
+
+            child = Agent(
+                name=f"{getattr(parent_agent, 'name', 'agent')}_sub_{config.name}",
+                model=getattr(parent_agent, "model", None),
+                instructions="\n".join(prompt_parts),
+                tools=child_tools,
+                # Controlled inheritance
+                workspace=(
+                    getattr(parent_agent, "workspace", None)
+                    if config.inherit_workspace else None
+                ),
+                knowledge=(
+                    getattr(parent_agent, "knowledge", None)
+                    if config.inherit_knowledge else None
+                ),
+            )
+
+            result = await child.run(task)
+            return {
+                "status": "completed",
+                "content": result.content if result else "",
+                "agent_type": config.type.value,
+            }
+        except Exception as e:
+            logger.error(f"Subagent execution failed: {e}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "agent_type": config.type.value,
+                "content": "",
+            }
+
+    async def spawn_batch(
+        self,
+        parent_agent: Any,
+        tasks: List[Dict[str, Any]],
+        max_concurrent: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Spawn multiple subagents concurrently with bounded parallelism.
+
+        Args:
+            parent_agent: The parent Agent instance.
+            tasks: List of task specs, each with keys:
+                - "task" (str, required): Task description
+                - "type" (str/SubagentType, optional): Agent type (default: CODE)
+                - "context" (str, optional): Additional context
+            max_concurrent: Max parallel subagents (default: MAX_CONCURRENT).
+
+        Returns:
+            List of result dicts in same order as input tasks.
+        """
+        import asyncio
+
+        sem = asyncio.Semaphore(max_concurrent or self.MAX_CONCURRENT)
+
+        async def _run_one(spec: Dict[str, Any]) -> Dict[str, Any]:
+            async with sem:
+                return await self.spawn(
+                    parent_agent=parent_agent,
+                    task=spec["task"],
+                    agent_type=spec.get("type", SubagentType.CODE),
+                    context=spec.get("context", ""),
+                )
+
+        return list(await asyncio.gather(*[_run_one(t) for t in tasks]))
 
 
 # ============== Default Subagent Configurations ==============

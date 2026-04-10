@@ -142,6 +142,11 @@ class Function(BaseModel):
     # Reduces per-call token cost when many tools are registered.
     # Mirrors CC's shouldDefer / isDeferredTool pattern.
     deferred: bool = False
+    # Optional availability check. If set, called before including this tool
+    # in the LLM schema. Return True = available, False = skip.
+    # Used for tools that require API keys, specific platforms, etc.
+    # Pattern borrowed from hermes-agent ToolRegistry.check_fn.
+    available_when: Optional[Callable[[], bool]] = None
 
     # --*-- FOR INTERNAL USE ONLY --*--
     # Weak reference to the agent that the function is associated with.
@@ -167,6 +172,20 @@ class Function(BaseModel):
 
     def to_dict(self) -> Dict[str, Any]:
         return self.model_dump(exclude_none=True, include={"name", "description", "parameters", "strict"})
+
+    def is_available(self) -> bool:
+        """Check if this tool is currently available.
+
+        If available_when is set, calls it and returns the result.
+        If available_when is None, the tool is always available.
+        Exceptions in available_when are caught and treated as unavailable.
+        """
+        if self.available_when is None:
+            return True
+        try:
+            return bool(self.available_when())
+        except Exception:
+            return False
 
     @staticmethod
     def _parse_parameters(entrypoint: Callable, strict: bool = False) -> Dict[str, Any]:
@@ -231,6 +250,7 @@ class Function(BaseModel):
                 is_destructive=metadata.get("is_destructive", False),
                 deferred=metadata.get("deferred", False),
                 interrupt_behavior=metadata.get("interrupt_behavior", "cancel"),
+                available_when=metadata.get("available_when", None),
             )
 
         return cls(
