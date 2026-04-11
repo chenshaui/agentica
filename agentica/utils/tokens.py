@@ -14,6 +14,8 @@ import math
 import unicodedata
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Type, Union
+
+import tiktoken
 from pydantic import BaseModel
 from agentica.media import Audio, Image, Video
 from agentica.model.message import Message
@@ -28,17 +30,10 @@ DEFAULT_IMAGE_HEIGHT = 1024
 @lru_cache(maxsize=16)
 def _get_tiktoken_encoding(model_id: str):
     """Get tiktoken encoding for a model, with caching."""
-    model_id = model_id.lower()
     try:
-        import tiktoken
-
-        try:
-            return tiktoken.encoding_for_model(model_id)
-        except KeyError:
-            return tiktoken.get_encoding("o200k_base")
-    except ImportError:
-        logger.warning("tiktoken not installed. Please install it using `pip install tiktoken`.")
-        return None
+        return tiktoken.encoding_for_model(model_id.lower())
+    except KeyError:
+        return tiktoken.get_encoding("o200k_base")
 
 
 def _estimate_tokens_by_chars(text: str) -> int:
@@ -365,16 +360,11 @@ def _to_tool_dict(tool: Union[Function, ModelTool, Dict[str, Any]]) -> Optional[
 
 
 def count_text_tokens(text: str, model_id: str = "gpt-4o") -> int:
-    """Count tokens in a text string.
-
-    Uses tiktoken when available, otherwise falls back to CJK-aware character estimation.
-    """
+    """Count tokens in a text string using tiktoken."""
     if not text:
         return 0
     encoding = _get_tiktoken_encoding(model_id)
-    if encoding is not None:
-        return len(encoding.encode(text, disallowed_special=()))
-    return _estimate_tokens_by_chars(text)
+    return len(encoding.encode(text, disallowed_special=()))
 
 
 def count_image_tokens(image: Union[Image, str, bytes]) -> int:

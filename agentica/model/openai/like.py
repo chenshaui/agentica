@@ -11,6 +11,7 @@ class OpenAILike(OpenAIChat):
     api_key: Optional[str] = "not-provided"
 
     def __post_init__(self):
+        super().__post_init__()
         # Warn early if api_key is still the placeholder — will fail at first API call with 401
         if self.api_key == "not-provided":
             logger.warning(

@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch, MagicMock
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from agentica.cost_tracker import CostTracker
 from agentica.cli import (
     TOOL_ICONS,
     TOOL_REGISTRY,
@@ -72,6 +73,159 @@ class TestCLIHelpers(unittest.TestCase):
         # Test default fallback
         icon = TOOL_ICONS.get("nonexistent_tool", TOOL_ICONS["default"])
         self.assertEqual(icon, TOOL_ICONS["default"])
+
+    def test_display_token_stats_shows_context_usage(self):
+        from agentica.cli.display import display_token_stats
+
+        tracker = CostTracker()
+        tracker.record("gpt-4o-mini", input_tokens=100, output_tokens=50)
+
+        fake_console = MagicMock()
+        display_token_stats(
+            fake_console, tracker,
+            context_window=128000,
+            session_total_tokens=64000,
+            tool_use_count=2,
+            elapsed_seconds=5.32,
+        )
+
+        rendered = fake_console.print.call_args[0][0]
+        self.assertIn("ctx 50.0%", rendered)
+        self.assertIn("64K / 128K", rendered)
+        self.assertIn("2 tools", rendered)
+        self.assertIn("5.32s", rendered)
+
+    def test_display_token_stats_singular_tool_use(self):
+        from agentica.cli.display import display_token_stats
+
+        tracker = CostTracker()
+        tracker.record("gpt-4o-mini", input_tokens=500, output_tokens=200)
+
+        fake_console = MagicMock()
+        display_token_stats(
+            fake_console, tracker,
+            context_window=128000,
+            session_total_tokens=700,
+            tool_use_count=1,
+            elapsed_seconds=1.0,
+        )
+
+        rendered = fake_console.print.call_args[0][0]
+        self.assertIn("1 tool", rendered)
+        self.assertNotIn("1 tools", rendered)
+
+    def test_display_token_stats_no_tools_no_tool_label(self):
+        from agentica.cli.display import display_token_stats
+
+        tracker = CostTracker()
+        tracker.record("gpt-4o-mini", input_tokens=100, output_tokens=50)
+
+        fake_console = MagicMock()
+        display_token_stats(
+            fake_console, tracker,
+            context_window=128000,
+            session_total_tokens=150,
+            tool_use_count=0,
+            elapsed_seconds=0.5,
+        )
+
+        rendered = fake_console.print.call_args[0][0]
+        self.assertNotIn("tool", rendered)
+
+    def test_display_token_stats_fallback_without_session_tokens(self):
+        """When session_total_tokens is 0, fall back to cost_tracker totals."""
+        from agentica.cli.display import display_token_stats
+
+        tracker = CostTracker()
+        tracker.record("gpt-4o-mini", input_tokens=2000, output_tokens=500)
+
+        fake_console = MagicMock()
+        display_token_stats(fake_console, tracker, context_window=128000)
+
+        rendered = fake_console.print.call_args[0][0]
+        self.assertIn("2.5K / 128K", rendered)
+
+    def test_format_tokens_short(self):
+        from agentica.cli.display import _format_tokens_short
+
+        self.assertEqual(_format_tokens_short(500), "500")
+        self.assertEqual(_format_tokens_short(1000), "1K")
+        self.assertEqual(_format_tokens_short(1500), "1.5K")
+        self.assertEqual(_format_tokens_short(64000), "64K")
+        self.assertEqual(_format_tokens_short(128000), "128K")
+        self.assertEqual(_format_tokens_short(1000000), "1M")
+        self.assertEqual(_format_tokens_short(1500000), "1.5M")
+
+    def test_context_pct_style(self):
+        from agentica.cli.display import context_pct_style
+        self.assertEqual(context_pct_style(30), "green")
+        self.assertEqual(context_pct_style(50), "yellow")
+        self.assertEqual(context_pct_style(80), "red")
+        self.assertEqual(context_pct_style(95), "bold red")
+
+    def test_build_context_bar(self):
+        from agentica.cli.display import build_context_bar
+        bar = build_context_bar(50.0, width=10)
+        self.assertEqual(bar.count("█"), 5)
+        self.assertEqual(bar.count("░"), 5)
+        bar0 = build_context_bar(0, width=10)
+        self.assertNotIn("█", bar0)
+        bar100 = build_context_bar(100, width=10)
+        self.assertNotIn("░", bar100)
+
+    def test_build_status_bar_fragments_narrow(self):
+        from agentica.cli.display import build_status_bar_fragments
+        frags = build_status_bar_fragments(
+            model_name="gpt-4o", context_tokens=64000,
+            context_window=128000, last_turn_seconds=12.3,
+            terminal_width=40,
+        )
+        text = "".join(v for _, v in frags)
+        self.assertIn("gpt-4o", text)
+        self.assertIn("⏱ 12.3s", text)
+        self.assertNotIn("64K", text)
+
+    def test_build_status_bar_fragments_wide(self):
+        from agentica.cli.display import build_status_bar_fragments
+        frags = build_status_bar_fragments(
+            model_name="gpt-4o", context_tokens=64000,
+            context_window=128000, cost_usd=0.05,
+            active_seconds=105.0, last_turn_seconds=12.3,
+            terminal_width=100,
+        )
+        text = "".join(v for _, v in frags)
+        self.assertIn("64K/128K", text)
+        self.assertIn("50%", text)
+        self.assertIn("$0.05", text)
+        self.assertIn("⏱ 12.3s", text)
+        self.assertIn("Σ 1m45s", text)
+
+    def test_build_status_bar_fragments_cost_in_medium(self):
+        from agentica.cli.display import build_status_bar_fragments
+        frags = build_status_bar_fragments(
+            model_name="gpt-4o", context_tokens=64000,
+            context_window=128000, cost_usd=0.002,
+            last_turn_seconds=5.0, terminal_width=60,
+        )
+        text = "".join(v for _, v in frags)
+        self.assertIn("$0.0020", text)
+        self.assertIn("50%", text)
+        self.assertIn("⏱ 5.0s", text)
+
+    def test_stream_display_manager_box_decorations(self):
+        from agentica.cli.display import StreamDisplayManager
+        fake = MagicMock()
+        fake.width = 80
+        dm = StreamDisplayManager(fake)
+        dm.start_response()
+        self.assertTrue(dm._box_opened)
+        dm.stream_response("hello")
+        dm.finalize()
+        calls = [str(c) for c in fake.print.call_args_list]
+        box_open = any("╭" in c for c in calls)
+        box_close = any("╰" in c for c in calls)
+        self.assertTrue(box_open, "Expected ╭ box opening")
+        self.assertTrue(box_close, "Expected ╰ box closing")
 
 
 class TestCLIImports(unittest.TestCase):

@@ -11,6 +11,7 @@ scikit-learn
 markdownify
 tqdm
 rich
+prompt_toolkit>=3.0
 pyyaml
 Pillow
 mcp>=1.9.4

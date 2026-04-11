@@ -372,21 +372,29 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
                 self._default_run_hooks = _CompositeRunHooks(auto_hooks)
 
     async def get_workspace_context_prompt(self) -> Optional[str]:
-        """Dynamically load workspace context for system prompt."""
+        """Dynamically load workspace context for system prompt.
+
+        Prefers frozen snapshot (if freeze_snapshots() was called) to keep
+        system prompt prefix stable across turns for prompt cache hits.
+        Falls back to live read if no snapshot exists.
+        """
         if not self.workspace or not self.long_term_memory_config.load_workspace_context:
             return None
         if not self.workspace.exists():
             return None
+        # Prefer frozen snapshot for prompt cache stability
+        frozen = self.workspace.get_frozen_context()
+        if frozen is not None:
+            return frozen
         context = await self.workspace.get_context_prompt()
         return context if context else None
 
     async def get_workspace_memory_prompt(self, query: str = "") -> Optional[str]:
         """Dynamically load relevant workspace memory for system prompt.
 
-        Uses CC-style relevance-based recall instead of loading all memory:
-        - Scores MEMORY.md index entries against the current query
-        - Loads only the top-k most relevant entry files
-        - Deduplicates entries already shown in this session
+        Prefers frozen snapshot (if freeze_snapshots() was called) to keep
+        system prompt prefix stable across turns for prompt cache hits.
+        Falls back to live relevance-based recall if no snapshot exists.
 
         Args:
             query: Current user query string for relevance scoring.
@@ -398,6 +406,10 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
             return None
         if not self.workspace or not self.long_term_memory_config.load_workspace_memory:
             return None
+        # Prefer frozen snapshot for prompt cache stability
+        frozen = self.workspace.get_frozen_memory()
+        if frozen is not None:
+            return frozen
         memory = await self.workspace.get_relevant_memories(
             query=query,
             limit=self.long_term_memory_config.max_memory_entries,

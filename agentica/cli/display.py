@@ -64,9 +64,12 @@ def print_header(model_provider: str, model_name: str, work_dir: Optional[str] =
     console.print("  [bright_green]Ctrl+J[/bright_green]      Insert newline (Alt+Enter also works)")
     console.print("  [bright_green]Ctrl+D[/bright_green]      Exit")
     console.print("  [bright_green]Ctrl+C[/bright_green]      Interrupt current operation")
+    console.print("  [bright_green]Alt+V[/bright_green]       Paste image from clipboard")
     console.print()
     # Input features
     console.print("  [bright_green]@filename[/bright_green]   Type @ to auto-complete files and inject content")
+    console.print("  [bright_green]/paste[/bright_green]      Paste image from clipboard")
+    console.print("  [bright_green]/image[/bright_green]      Attach local image: /image <path>")
     console.print("  [bright_green]/command[/bright_green]    Type / to see available commands (try /help)")
     console.print()
 
@@ -113,18 +116,45 @@ def inject_file_contents(prompt_text: str, mentioned_files: list[Path]) -> str:
     return "\n".join(context_parts)
 
 
-def display_user_message(text: str) -> None:
-    """Display user message with file mentions colored."""
-    pattern = r"(@[\w./-]+)"
-    parts = re.split(pattern, text)
-    rich_text = Text()
-    
-    for part in parts:
-        if part.startswith("@"):
-            rich_text.append(part, style="magenta")
-        else:
-            rich_text.append(part, style=COLORS["user"])
-    
+_PASTE_PATH_RE = re.compile(r"@\S*[\\/]pastes[\\/]paste_\S+\.txt")
+
+
+def display_user_message(text: str, *, pasted_blocks: int = 0, pasted_lines: int = 0) -> None:
+    """Display user message with file mentions colored.
+
+    For long pasted content, shows a trimmed preview with line count.
+    """
+    cleaned = _PASTE_PATH_RE.sub("", text).strip()
+    if not cleaned and pasted_blocks:
+        cleaned = f"[Pasted text: {pasted_lines} lines]"
+
+    # For very long content (from expanded paste), show a trimmed preview
+    lines = cleaned.split('\n')
+    if len(lines) > 5:
+        # Show first 3 lines + summary
+        preview_lines = lines[:3]
+        preview = '\n'.join(preview_lines)
+        remaining = len(lines) - 3
+        rich_text = Text()
+        rich_text.append(preview, style=COLORS["user"])
+        rich_text.append(f"\n... (+{remaining} more lines)", style="dim")
+    else:
+        pattern = r"(@[\w./-]+)"
+        parts = re.split(pattern, cleaned)
+        rich_text = Text()
+        for part in parts:
+            if part.startswith("@"):
+                rich_text.append(part, style="magenta")
+            else:
+                rich_text.append(part, style=COLORS["user"])
+
+    if pasted_blocks:
+        suffix = "s" if pasted_blocks > 1 else ""
+        rich_text.append(
+            f" ({pasted_blocks} pasted block{suffix}, {pasted_lines} lines total)",
+            style="dim",
+        )
+
     console.print(rich_text)
 
 
@@ -208,6 +238,7 @@ Permission Modes:
   allow-all          Auto-approve all tool executions (--allow-all flag)
   auto               Prompt for write/execute, auto-approve reads (default)
   strict             Prompt for every tool call
+  /yolo              Quick toggle between allow-all and auto
 
 Tips:
   - Type @ followed by a filename to reference files
@@ -386,13 +417,21 @@ def _display_tool_impl(console_instance, tool_name: str, tool_args: dict,
             console_instance.print()
 
 
+_BOX_COLOR = "bright_yellow"
+
+
 class StreamDisplayManager:
-    """Manages CLI output display state for streaming responses."""
-    
+    """Manages CLI output display state for streaming responses.
+
+    LLM response text is wrapped in a ``╭─ Response ─╮ … ╰───╯`` box.
+    Reasoning/thinking gets a separate ``╭─ Thinking ─╮`` box.
+    """
+
     def __init__(self, console_instance):
         self.console = console_instance
+        self._term_width = min(console_instance.width or 80, 120)
         self.reset()
-    
+
     def reset(self):
         """Reset state for a new response."""
         self.in_thinking = False
@@ -402,26 +441,41 @@ class StreamDisplayManager:
         self.response_started = False
         self.has_content_output = False
         self._response_buffer = []
-    
+        self._box_opened = False
+        self._thinking_box_opened = False
+
+    def _open_box(self, label: str = "Response"):
+        w = self._term_width
+        fill = max(0, w - len(label) - 5)
+        self.console.print(f"[{_BOX_COLOR}]╭─ {label} {'─' * fill}╮[/{_BOX_COLOR}]")
+
+    def _close_box(self):
+        w = self._term_width
+        self.console.print(f"[{_BOX_COLOR}]╰{'─' * (w - 2)}╯[/{_BOX_COLOR}]")
+
     def start_thinking(self):
-        """Start thinking section."""
+        """Start thinking section with a box."""
         if not self.thinking_shown:
             self.console.print()
-            self.console.print("[dim italic]💭 Thinking...[/dim italic]")
+            self._open_box("Thinking")
+            self._thinking_box_opened = True
             self.thinking_shown = True
             self.in_thinking = True
-    
+
     def stream_thinking(self, content: str):
         """Stream thinking content."""
         self.console.print(content, end="", style="dim")
-    
+
     def end_thinking(self):
-        """End thinking section."""
+        """End thinking section and close its box."""
         if self.in_thinking:
             self.console.print()
+            if self._thinking_box_opened:
+                self._close_box()
+                self._thinking_box_opened = False
             self.in_thinking = False
             self.response_started = False
-    
+
     def start_tool_section(self):
         """Start tool section."""
         if not self.in_tool_section:
@@ -430,9 +484,8 @@ class StreamDisplayManager:
             if self.has_content_output and not self.response_started:
                 self.console.print()
             self.console.print()
-            self.console.print("[bold cyan]🔧 Tool Calls[/bold cyan]")
             self.in_tool_section = True
-    
+
     def display_tool(self, tool_name: str, tool_args: dict):
         """Display a single tool call."""
         self.start_tool_section()
@@ -540,34 +593,41 @@ class StreamDisplayManager:
             self.response_started = False
     
     def start_response(self):
-        """Start response section."""
+        """Start response section with a box."""
         if not self.response_started:
             if self.in_thinking:
                 self.end_thinking()
             if self.in_tool_section:
                 self.end_tool_section()
             self.console.print()
+            self._open_box("Response")
+            self._box_opened = True
             self.response_started = True
-    
+
     def stream_response(self, content: str):
         """Stream response content (real-time plain text + buffer for Markdown re-render)."""
         self.start_response()
         self._response_buffer.append(content)
         self.console.print(content, end="", style=COLORS["agent"])
         self.has_content_output = True
-    
+
     def finalize(self):
-        """Finalize output, close any open sections. Re-render as Markdown if applicable."""
+        """Finalize output, close any open boxes. Re-render as Markdown if applicable."""
         if self.in_thinking:
             self.end_thinking()
         if self.in_tool_section:
             self.end_tool_section()
         if self.has_content_output:
-            self.console.print()  # newline after streaming
-            # Re-render full response as Markdown if it contains formatting
+            self.console.print()
+            if self._box_opened:
+                self._close_box()
+                self._box_opened = False
             full_response = "".join(self._response_buffer)
             if _has_markdown(full_response):
                 self.console.print(Markdown(full_response))
+        elif self._box_opened:
+            self._close_box()
+            self._box_opened = False
 
 
 def display_tool_call(tool_name: str, tool_args: dict) -> None:
@@ -603,20 +663,198 @@ def display_diff(console_instance, file_path: str, old_content: str, new_content
         console_instance.print(Syntax(diff_text, "diff", theme="monokai", line_numbers=False))
 
 
-def display_token_stats(console_instance, cost_tracker) -> None:
-    """Display token usage and cost after a response."""
+def _format_tokens_short(n: int) -> str:
+    """Format token count with K/M suffix for compact display."""
+    if n >= 1_000_000:
+        v = n / 1_000_000
+        return f"{int(v)}M" if v == int(v) else f"{v:.1f}M"
+    if n >= 1_000:
+        v = n / 1_000
+        return f"{int(v)}K" if v == int(v) else f"{v:.1f}K"
+    return str(n)
+
+
+def context_pct_style(pct: float) -> str:
+    """Return Rich style name based on context usage percentage."""
+    if pct >= 95:
+        return "bold red"
+    if pct >= 80:
+        return "red"
+    if pct >= 50:
+        return "yellow"
+    return "green"
+
+
+def build_context_bar(pct: float, width: int = 10) -> str:
+    """Build a visual context usage bar like [████░░░░░░]."""
+    safe = max(0.0, min(100.0, pct))
+    filled = round((safe / 100) * width)
+    return f"[{'█' * filled}{'░' * max(0, width - filled)}]"
+
+
+def display_token_stats(
+    console_instance,
+    cost_tracker,
+    *,
+    context_window: int = 128000,
+    session_total_tokens: int = 0,
+    tool_use_count: int = 0,
+    elapsed_seconds: float = 0.0,
+) -> None:
+    """Display compact per-response stats footer with color-graded context.
+
+    Format example::
+
+        ctx 50.0% (64K / 128K) [████░░░░░░] · 2 tools · 5.32s · $0.0034
+    """
     if cost_tracker is None:
         return
-    input_t = cost_tracker.total_input_tokens
-    output_t = cost_tracker.total_output_tokens
+
+    if session_total_tokens <= 0:
+        session_total_tokens = (
+            cost_tracker.total_input_tokens + cost_tracker.total_output_tokens
+        )
+
+    used_pct = (
+        session_total_tokens / context_window * 100 if context_window > 0 else 0.0
+    )
+    pct_style = context_pct_style(used_pct)
+    bar = build_context_bar(used_pct)
+
+    parts = [
+        f"[{pct_style}]ctx {used_pct:.1f}%[/{pct_style}] "
+        f"({_format_tokens_short(session_total_tokens)} / "
+        f"{_format_tokens_short(context_window)}) "
+        f"[{pct_style}]{bar}[/{pct_style}]"
+    ]
+
+    if tool_use_count > 0:
+        label = "tool" if tool_use_count == 1 else "tools"
+        parts.append(f"[dim]{tool_use_count} {label}[/dim]")
+
+    if elapsed_seconds > 0:
+        parts.append(f"[dim]{elapsed_seconds:.2f}s[/dim]")
+
     cost = cost_tracker.total_cost_usd
-    turns = cost_tracker.turns
+    cost_str = f"${cost:.4f}" if cost < 0.01 else f"${cost:.2f}"
+    parts.append(f"[dim]{cost_str}[/dim]")
 
-    parts = [f"{input_t:,} in", f"{output_t:,} out"]
-    if cost > 0:
-        parts.append(f"${cost:.4f}")
-    if turns > 1:
-        parts.append(f"{turns} calls")
+    console_instance.print(f"{'  ·  '.join(parts)}")
 
-    stats_str = " / ".join(parts)
-    console_instance.print(f"[dim]{stats_str}[/dim]")
+
+# ---------------------------------------------------------------------------
+# Persistent TUI status bar (prompt_toolkit fragments)
+# ---------------------------------------------------------------------------
+
+def _ctx_bar_ansi(pct: float, width: int = 10) -> str:
+    """Build a plain-text context usage bar for the status bar."""
+    safe = max(0.0, min(100.0, pct))
+    filled = round((safe / 100) * width)
+    return f"{'█' * filled}{'░' * max(0, width - filled)}"
+
+
+def _ctx_fg_style(pct: float) -> str:
+    """Return a prompt_toolkit style class for context usage percentage."""
+    if pct >= 95:
+        return "class:sb-critical"
+    if pct >= 80:
+        return "class:sb-bad"
+    if pct >= 50:
+        return "class:sb-warn"
+    return "class:sb-good"
+
+
+def format_duration_compact(seconds: float) -> str:
+    """Format seconds into compact human-readable duration."""
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    m, s = divmod(int(seconds), 60)
+    if m < 60:
+        return f"{m}m{s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h{m:02d}m"
+
+
+def build_status_bar_fragments(
+    *,
+    model_name: str = "",
+    context_tokens: int = 0,
+    context_window: int = 0,
+    cost_usd: float = 0.0,
+    active_seconds: float = 0.0,
+    last_turn_seconds: float = 0.0,
+    spinner_text: str = "",
+    terminal_width: int = 80,
+):
+    """Build prompt_toolkit formatted-text fragments for the persistent status bar.
+
+    Time display uses *agent active time* (sum of all LLM + tool
+    execution durations) rather than session wall-clock, plus the
+    most recent turn's latency.
+
+    Adapts to terminal width:
+      <52 cols:  ⚕ model · ⏱12.3s
+      <76 cols:  ⚕ model · 45% · $0.02 · ⏱12.3s
+      >=76 cols: ⚕ model │ 64K/128K │ [████░░] 45% │ $0.02 │ ⏱12.3s Σ1m45s
+    """
+    short = model_name.split("/")[-1] if "/" in model_name else model_name
+    if len(short) > 26:
+        short = short[:23] + "..."
+    pct = (context_tokens / context_window * 100) if context_window > 0 else 0.0
+    pct_label = f"{pct:.0f}%"
+    fg = _ctx_fg_style(pct)
+    cost_str = f"${cost_usd:.4f}" if cost_usd < 0.01 else f"${cost_usd:.2f}"
+
+    turn_str = f"⏱ {last_turn_seconds:.1f}s" if last_turn_seconds > 0 else ""
+    total_str = f"Σ {format_duration_compact(active_seconds)}" if active_seconds > 0 else ""
+
+    sep = ("class:sb-dim", " · ")
+
+    if terminal_width < 52:
+        frags = [
+            ("class:sb", " ⚕ "),
+            ("class:sb-strong", short),
+        ]
+        if turn_str:
+            frags.append(sep)
+            frags.append(("class:sb", turn_str))
+    elif terminal_width < 76:
+        frags = [
+            ("class:sb", " ⚕ "),
+            ("class:sb-strong", short),
+            sep,
+            (fg, pct_label),
+            sep,
+            ("class:sb-dim", cost_str),
+        ]
+        if turn_str:
+            frags.append(sep)
+            frags.append(("class:sb", turn_str))
+    else:
+        ctx_used = _format_tokens_short(context_tokens) if context_tokens else "0"
+        ctx_total = _format_tokens_short(context_window) if context_window else "?"
+        frags = [
+            ("class:sb", " ⚕ "),
+            ("class:sb-strong", short),
+            ("class:sb-dim", " │ "),
+            ("class:sb", f"{ctx_used}/{ctx_total}"),
+            ("class:sb-dim", " │ "),
+            (fg, _ctx_bar_ansi(pct)),
+            ("class:sb-dim", " "),
+            (fg, pct_label),
+            ("class:sb-dim", " │ "),
+            ("class:sb", cost_str),
+        ]
+        if turn_str:
+            frags.append(("class:sb-dim", " │ "))
+            frags.append(("class:sb", turn_str))
+        if total_str:
+            frags.append(("class:sb-dim", "  "))
+            frags.append(("class:sb-dim", total_str))
+
+    if spinner_text:
+        frags.append(("class:sb-dim", " │ "))
+        frags.append(("class:sb-spin", spinner_text))
+
+    frags.append(("class:sb", " "))
+    return frags

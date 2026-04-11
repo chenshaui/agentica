@@ -908,3 +908,46 @@ class TestOpenAIStreamFinishReason:
 
 
 # ===========================================================================
+# Guard: BuiltinFileTool functions MUST reach Model.get_tools_for_api()
+# ===========================================================================
+
+class TestFileToolRegistrationGuard:
+    """End-to-end guard: every BuiltinFileTool function must be visible in
+    the final tool schema sent to the LLM.
+
+    This test exists because a past bug placed self.register() calls outside
+    __init__(), causing read_file / ls / glob to silently disappear from the
+    model's tool list while execute remained available — the model then fell
+    back to shell commands.
+    """
+
+    EXPECTED_FUNCTIONS = {"ls", "read_file", "write_file", "edit_file",
+                          "multi_edit_file", "glob", "grep"}
+
+    def test_file_tool_functions_in_tool_dict(self):
+        """Tool.functions dict must contain all file operations after init."""
+        tool = BuiltinFileTool(work_dir="/tmp")
+        registered = set(tool.functions.keys())
+        missing = self.EXPECTED_FUNCTIONS - registered
+        assert not missing, f"Functions missing from Tool.functions: {missing}"
+
+    def test_file_tool_functions_reach_model_api_schema(self):
+        """After Agent.update_model(), every file function must appear in
+        Model.get_tools_for_api() — the payload actually sent to the LLM."""
+        from agentica.agent import Agent
+        from agentica.model.openai import OpenAIChat
+
+        file_tool = BuiltinFileTool(work_dir="/tmp")
+        agent = Agent(
+            model=OpenAIChat(id="gpt-4o-mini", api_key="fake_openai_key"),
+            tools=[file_tool],
+        )
+        agent.update_model()
+
+        api_tools = agent.model.get_tools_for_api()
+        api_names = {t["function"]["name"] for t in api_tools}
+        missing = self.EXPECTED_FUNCTIONS - api_names
+        assert not missing, (
+            f"Functions missing from Model.get_tools_for_api(): {missing}. "
+            f"Likely cause: self.register() not called in __init__."
+        )

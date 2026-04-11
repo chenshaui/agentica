@@ -16,6 +16,7 @@ rich
 prompt_toolkit>=3.0
 pyyaml
 mcp
+tiktoken
 puremagic
 qdrant-client
 langfuse

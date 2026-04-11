@@ -8,6 +8,9 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from agentica.run_response import RunResponse, RunEvent
+from agentica.model.message import Message
+from agentica.model.response import ModelResponse
+from agentica.model.usage import RequestUsage
 
 
 def _make_agent(name="test-agent"):
@@ -110,6 +113,38 @@ class TestRunnerStructuredOutputFallback(unittest.TestCase):
         with patch.object(agent._runner, 'run', new=AsyncMock(return_value=mock_run_response)):
             response = asyncio.run(agent.run(message="analyze"))
         self.assertIsInstance(response, RunResponse)
+
+
+class TestRunnerCostTracking(unittest.TestCase):
+    """Runner should not double-count model usage at end of run."""
+
+    def test_single_request_records_one_llm_call(self):
+        agent = _make_agent()
+
+        async def fake_response(messages):
+            assistant = Message(role="assistant", content="hi")
+            assistant.metrics["input_tokens"] = 10
+            assistant.metrics["output_tokens"] = 5
+            assistant.metrics["total_tokens"] = 15
+            messages.append(assistant)
+            agent.model.last_finish_reason = "stop"
+            agent.model.usage.add(
+                RequestUsage(input_tokens=10, output_tokens=5, total_tokens=15)
+            )
+            agent.model._cost_tracker.record(
+                model_id=agent.model.id,
+                input_tokens=10,
+                output_tokens=5,
+            )
+            return ModelResponse(content="hi")
+
+        with patch.object(agent.model, "response", new=fake_response):
+            response = agent.run_sync("hello")
+
+        self.assertIsNotNone(response.cost_tracker)
+        self.assertEqual(response.cost_tracker.turns, 1)
+        self.assertEqual(response.cost_tracker.total_input_tokens, 10)
+        self.assertEqual(response.cost_tracker.total_output_tokens, 5)
 
 
 if __name__ == "__main__":

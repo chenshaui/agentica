@@ -132,16 +132,6 @@ class Runner:
         return state.consecutive_all_error_turns >= state.death_spiral_threshold
 
     @staticmethod
-    def _clear_file_read_cache(agent: "Agent") -> None:
-        """Clear BuiltinFileTool read dedup cache after context compression."""
-        from agentica.tools.buildin_tools import BuiltinFileTool
-        if agent.tools:
-            for tool in agent.tools:
-                if isinstance(tool, BuiltinFileTool):
-                    tool.clear_read_cache()
-                    break
-
-    @staticmethod
     def _check_cost_budget(cost_tracker, max_cost_usd: Optional[float]) -> Optional[str]:
         """Check if the cost budget has been exceeded.
 
@@ -368,14 +358,11 @@ class Runner:
             logger.debug("Stage 3 (rule-based compress): truncating + dropping old messages")
             await cm.compress(messages, tools=model.tools, model=model)
             await _fire_compact_hooks('on_post_compact')
-            # Clear file read dedup cache — content is no longer in context
-            Runner._clear_file_read_cache(agent)
 
         # Stage 4: auto-compact via LLM summarisation
         compacted = await cm.auto_compact(messages, model=model)
         if compacted:
             logger.debug("Stage 4 (auto-compact): conversation summarised by LLM")
-            Runner._clear_file_read_cache(agent)
             await _fire_compact_hooks('on_post_compact')
 
     @staticmethod
@@ -589,6 +576,17 @@ class Runner:
                 # --- Initialise CostTracker for this run ---
                 _cost_tracker = CostTracker()
                 agent.run_response.cost_tracker = _cost_tracker
+
+                # --- Freeze workspace snapshots on first run (prompt cache stability) ---
+                # Hermes-style: freeze context + memory at session start so the
+                # system prompt prefix stays identical across turns.
+                if (
+                    agent.workspace is not None
+                    and agent.workspace.exists()
+                    and agent.workspace.get_frozen_context() is None
+                ):
+                    _query = message if isinstance(message, str) else ""
+                    await agent.workspace.freeze_snapshots(query=_query)
 
                 # Set query-level tool/skill filtering (cleared after run)
                 agent._enabled_tools = enabled_tools
@@ -900,21 +898,6 @@ class Runner:
                 agent.run_response.messages = run_messages
                 agent.run_response.metrics = self._aggregate_metrics_from_run_messages(run_messages)
                 agent.run_response.usage = agent.model.usage if agent.model else None
-
-                # --- Record cost from the last request's token usage ---
-                if agent.model and agent.model.usage and agent.model.usage.request_usage_entries:
-                    _last = agent.model.usage.request_usage_entries[-1]
-                    _cache_read = 0
-                    _cache_write = 0
-                    if _last.input_tokens_details:
-                        _cache_read = _last.input_tokens_details.cached_tokens
-                    agent.run_response.cost_tracker.record(
-                        model_id=agent.model.id,
-                        input_tokens=_last.input_tokens,
-                        output_tokens=_last.output_tokens,
-                        cache_read_tokens=_cache_read,
-                        cache_write_tokens=_cache_write,
-                    )
 
                 # v3: attach CostTracker to RunResponse
                 if agent.model is not None and agent.model._cost_tracker is not None:
@@ -1423,7 +1406,11 @@ class Runner:
 
             try:
                 while True:
-                    item = q.get()
+                    # Use timeout so KeyboardInterrupt can be delivered promptly
+                    try:
+                        item = q.get(timeout=0.1)
+                    except queue.Empty:
+                        continue
                     if item is sentinel:
                         break
                     if isinstance(item, BaseException):

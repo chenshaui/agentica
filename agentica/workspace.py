@@ -194,6 +194,9 @@ You are a helpful AI assistant.
         self._archive_locks: Dict[str, asyncio.Lock] = {}
         # Flag to avoid redundant _initialize_user_dir calls
         self._user_initialized: bool = False
+        # Frozen snapshots for prompt cache stability (Hermes-style)
+        self._context_snapshot: Optional[str] = None
+        self._memory_snapshot: Optional[str] = None
 
     @property
     def user_id(self) -> str:
@@ -394,6 +397,43 @@ You are a helpful AI assistant.
 
         return "\n\n---\n\n".join(contents) if contents else ""
 
+    async def freeze_snapshots(self, query: str = "") -> None:
+        """Freeze context + memory snapshots at session start.
+
+        Once frozen, get_frozen_context() and get_frozen_memory() return the
+        snapshot instead of re-reading from disk every turn. This keeps the
+        system prompt prefix stable across turns, enabling LLM prompt cache
+        hits (Hermes-style _system_prompt_snapshot pattern).
+
+        Call once at session start. Memory tool writes update the live files
+        on disk but do NOT mutate the frozen snapshot — the next session
+        will pick up changes.
+        """
+        self._context_snapshot = await self.get_context_prompt()
+        self._memory_snapshot = await self.get_relevant_memories(query=query)
+
+    def get_frozen_context(self) -> Optional[str]:
+        """Return frozen context snapshot, or None if not yet frozen."""
+        return self._context_snapshot
+
+    def get_frozen_memory(self) -> Optional[str]:
+        """Return frozen memory snapshot, or None if not yet frozen."""
+        return self._memory_snapshot
+
+    # =========================================================================
+    # Cross-product project config compatibility (Hermes-style)
+    # =========================================================================
+
+    # Project-level config files from other agent products, searched in CWD
+    # and git root. First-match-wins per directory (like Hermes).
+    # Only project-scoped files — we do NOT read ~/.claude/CLAUDE.md or
+    # other HOME-level global configs (that's each product's own business).
+    _PROJECT_CONFIG_NAMES: List[str] = [
+        "AGENTS.md", "AGENT.md",       # Agentica / generic
+        "CLAUDE.md", "claude.md",       # Claude Code
+        ".cursorrules",                 # Cursor
+    ]
+
     def _load_agent_md_chain(self) -> str:
         """Load prioritized AGENTS.md content with a 40K character budget."""
         sources = self._collect_agent_md_sources()
@@ -405,7 +445,14 @@ You are a helpful AI assistant.
         return "\n\n---\n\n".join(parts) if parts else ""
 
     def _collect_agent_md_sources(self) -> List[Tuple[str, str]]:
-        """Collect AGENTS.md sources from global, project, and workspace locations."""
+        """Collect agent config sources from global, project, and workspace locations.
+
+        Priority (lowest to highest):
+        1. Global ~/.agentica/AGENTS.md
+        2. Project directory chain (git root -> CWD), first-match-wins per dir
+           Recognizes: AGENTS.md, CLAUDE.md, .cursorrules (cross-product compat)
+        3. Workspace AGENTS.md
+        """
         cwd = Path(os.getcwd())
         found: List[Tuple[str, str]] = []
         seen_paths: set[Path] = set()
@@ -431,18 +478,19 @@ You are a helpful AI assistant.
                 break
             visited.add(resolved)
 
-            agent_md = resolved / "AGENTS.md"
-            if not agent_md.is_file():
-                agent_md = resolved / "AGENT.md"
-            if agent_md.is_file():
-                try:
-                    text = agent_md.read_text(encoding="utf-8").strip()
-                    source_path = agent_md.resolve()
-                    if text and source_path not in seen_paths:
-                        project_chain.append((str(agent_md), text))
-                        seen_paths.add(source_path)
-                except Exception:
-                    pass
+            # First-match-wins per directory (Hermes-style priority)
+            for name in self._PROJECT_CONFIG_NAMES:
+                candidate = resolved / name
+                if candidate.is_file():
+                    try:
+                        text = candidate.read_text(encoding="utf-8").strip()
+                        source_path = candidate.resolve()
+                        if text and source_path not in seen_paths:
+                            project_chain.append((str(candidate), text))
+                            seen_paths.add(source_path)
+                    except Exception:
+                        pass
+                    break  # first-match-wins: stop searching this directory
 
             if (resolved / ".git").exists():
                 break

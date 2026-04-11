@@ -22,7 +22,7 @@ from agentica.model.response import ModelResponse, ModelResponseEvent
 from agentica.model.usage import Usage, RequestUsage, TokenDetails
 from agentica.tools.base import ModelTool, Tool, Function, FunctionCall, ToolCallException, get_function_call_for_tool_call
 from agentica.utils.timer import Timer
-from agentica.cost_tracker import CostTracker
+from agentica.cost_tracker import CostTracker, get_model_context_window
 
 
 @dataclass
@@ -83,10 +83,17 @@ class Model(ABC):
     # Set by provider; consumed by Runner's agentic loop for max_tokens recovery.
     last_finish_reason: Optional[str] = field(init=False, repr=False, default=None)
 
+    _DEFAULT_CONTEXT_WINDOW: int = 128000
+
     def __post_init__(self):
         # Auto-set provider if not provided
         if self.provider is None:
             self.provider = f"{self.name} ({self.id})" if self.name else self.id
+
+        if self.context_window == self._DEFAULT_CONTEXT_WINDOW and self.id != "not-provided":
+            catalog_cw = get_model_context_window(self.id, default=0)
+            if catalog_cw > 0:
+                self.context_window = catalog_cw
 
     @property
     @abstractmethod

@@ -2,7 +2,6 @@
 import sys
 from setuptools import setup, find_packages
 
-# Avoids IDE errors, but actual version is read from version.py
 __version__ = ""
 exec(open('agentica/version.py').read())
 
@@ -58,6 +57,7 @@ setup(
         "rich",
         "prompt_toolkit>=3.0",
         "pyyaml",
+        "tiktoken",
         "mcp",
         "puremagic",
         "qdrant-client",
@@ -65,6 +65,6 @@ setup(
         "python-frontmatter",
     ],
     packages=find_packages(exclude=['tests', 'tests.*', 'examples', 'examples.*', 'docs']),
-    package_dir={'agentica': 'agentica'},
-    package_data={'agentica': ['**/*.py', '**/*.md', '**/*.js']},
+    # Runtime data files: prompt templates (.md) and browser page script (.js)
+    package_data={'agentica': ['**/*.md', '**/*.js']},
 )

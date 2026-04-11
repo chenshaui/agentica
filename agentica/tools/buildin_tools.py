@@ -70,11 +70,8 @@ class BuiltinFileTool(Tool):
         self._file_locks: Dict[str, asyncio.Lock] = {}
         self._sandbox_config = sandbox_config
 
-        # Session-level file state cache for:
-        # 1. Read dedup: skip re-reading unchanged files (CC saves ~18% of Read calls)
-        # 2. mtime check: detect external modifications before edit/write
-        # Key: resolved absolute path (str)
-        # Value: {"mtime": float, "offset": int, "limit": int|None, "dedup_count": int}
+        # mtime cache: detect external modifications before edit/write.
+        # Key: resolved absolute path (str), Value: {"mtime": float}
         self._file_read_state: Dict[str, Dict[str, Any]] = {}
 
         # Register all file operation functions.
@@ -87,11 +84,6 @@ class BuiltinFileTool(Tool):
         self.register(self.multi_edit_file, sanitize_arguments=False, is_destructive=True)
         self.register(self.glob, concurrency_safe=True, is_read_only=True)
         self.register(self.grep, concurrency_safe=True, is_read_only=True)
-
-    def clear_read_cache(self) -> None:
-        """Clear file read dedup cache. Call after context compression to prevent
-        stale sentinel responses when file content is no longer in LLM context."""
-        self._file_read_state.clear()
 
     def _resolve_path(self, path: str) -> Path:
         """Resolve path, supporting absolute, relative, and ~ paths.
@@ -273,31 +265,7 @@ class BuiltinFileTool(Tool):
             if not path.is_file():
                 return f"Error: Not a file: {file_path}"
 
-            # --- Read dedup: skip re-reading unchanged files ---
-            # CC saves ~18% of Read calls by detecting same-file re-reads.
             abs_path = str(path.resolve())
-            try:
-                current_mtime = path.stat().st_mtime
-            except OSError:
-                current_mtime = None
-
-            if current_mtime is not None and abs_path in self._file_read_state:
-                prev = self._file_read_state[abs_path]
-                if (
-                    prev.get("mtime") == current_mtime
-                    and prev.get("offset") == offset
-                    and prev.get("limit") == limit
-                ):
-                    dedup_count = prev.get("dedup_count", 0)
-                    if dedup_count < 1:
-                        # First repeat: content should still be in context, skip read
-                        prev["dedup_count"] = dedup_count + 1
-                        logger.debug(f"Read dedup ({dedup_count + 1}): file unchanged since last read: {file_path}")
-                        return "[File unchanged since last read — content identical to previous read_file result]"
-                    else:
-                        # Second+ repeat: LLM likely lost context, force re-read
-                        logger.debug(f"Read dedup bypass ({dedup_count + 1}): forcing re-read of {file_path}")
-                        prev["dedup_count"] = dedup_count + 1
 
             # --- Large-file guard (mirrors CC's maxSizeBytes) ---
             try:
@@ -338,14 +306,11 @@ class BuiltinFileTool(Tool):
             if actual_end < total_lines:
                 result += f"\n\n[Showing lines {offset + 1}-{actual_end} of {total_lines} total lines]"
 
-            # Update file read state for dedup and mtime tracking
-            if current_mtime is not None:
-                self._file_read_state[abs_path] = {
-                    "mtime": current_mtime,
-                    "offset": offset,
-                    "limit": limit,
-                    "dedup_count": 0,
-                }
+            # Record mtime so edit_file can detect external modifications
+            try:
+                self._file_read_state[abs_path] = {"mtime": path.stat().st_mtime}
+            except OSError:
+                pass
 
             logger.debug(f"Read file {file_path}: lines {offset + 1}-{actual_end}, total {total_lines} lines")
             return result
@@ -399,12 +364,8 @@ class BuiltinFileTool(Tool):
 
             # Return absolute path to help LLM use correct path in subsequent operations
             absolute_path = str(path.resolve())
-            # Update file read state so subsequent reads detect the new mtime
             try:
-                self._file_read_state[absolute_path] = {
-                    "mtime": path.stat().st_mtime,
-                    "offset": None, "limit": None,  # full write invalidates partial reads
-                }
+                self._file_read_state[absolute_path] = {"mtime": path.stat().st_mtime}
             except OSError:
                 self._file_read_state.pop(absolute_path, None)
             logger.debug(f"{action} file: {absolute_path}, file content length: {len(content)} characters")
@@ -514,12 +475,8 @@ class BuiltinFileTool(Tool):
                     raise
 
             logger.debug(f"Replaced {result['count']} occurrence(s) in {file_path}")
-            # Update file read state with new mtime after edit
             try:
-                self._file_read_state[abs_path] = {
-                    "mtime": path.stat().st_mtime,
-                    "offset": None, "limit": None,
-                }
+                self._file_read_state[abs_path] = {"mtime": path.stat().st_mtime}
             except OSError:
                 self._file_read_state.pop(abs_path, None)
             return f"Successfully replaced {result['count']} occurrence(s) in '{file_path}'"
