@@ -36,6 +36,7 @@ def main():
         "temperature": args.temperature,
         "debug": args.debug > 0,
         "work_dir": args.work_dir,
+        "permissions": "allow-all" if args.allow_all else args.permissions,
     }
     extra_tool_names = list(args.tools) if args.tools else None
 

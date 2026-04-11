@@ -65,6 +65,36 @@ class TestSandboxPathValidation:
         assert result == "/home/user/.ssh/id_rsa"
 
 
+class TestBuiltinFileToolDescriptions:
+    """Tests for builtin file-tool schema descriptions."""
+
+    def test_read_file_and_edit_file_descriptions_allow_relative_and_tilde_paths(self):
+        """read_file/edit_file prompt text should not imply absolute-only paths."""
+        from agentica.tools.buildin_tools import BuiltinFileTool
+
+        read_description = BuiltinFileTool.read_file.__doc__
+        edit_description = BuiltinFileTool.edit_file.__doc__
+
+        assert "~" in read_description
+        assert "relative" in read_description.lower()
+        assert "~" in edit_description
+        assert "relative" in edit_description.lower()
+
+    def test_file_tools_register_on_init(self):
+        """BuiltinFileTool must expose file functions immediately on init."""
+        from agentica.tools.buildin_tools import BuiltinFileTool
+
+        tool = BuiltinFileTool(work_dir="/tmp")
+
+        assert "ls" in tool.functions
+        assert "read_file" in tool.functions
+        assert "write_file" in tool.functions
+        assert "edit_file" in tool.functions
+        assert "multi_edit_file" in tool.functions
+        assert "glob" in tool.functions
+        assert "grep" in tool.functions
+
+
 class TestSandboxCommandBlocking:
     """Tests for C3: command blocking with boundary matching."""
 

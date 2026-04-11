@@ -56,6 +56,7 @@ setup(
         "markdownify",
         "tqdm",
         "rich",
+        "prompt_toolkit>=3.0",
         "pyyaml",
         "mcp",
         "puremagic",

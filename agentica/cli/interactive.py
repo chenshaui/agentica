@@ -31,7 +31,9 @@ from agentica.cli.display import (
     inject_file_contents,
     display_user_message,
     get_file_completions,
+    display_token_stats,
 )
+from agentica.cli.permissions import PermissionManager
 from agentica.model.message import Message
 from agentica.run_response import AgentCancelledError
 from agentica.utils.log import suppress_console_logging
@@ -535,6 +537,71 @@ def _cmd_extensions(cmd_args="", agent_config=None, extra_tools=None, workspace=
         console.print(f"Extensions command failed: {e}", style="red")
 
 
+def _cmd_cost(current_agent=None, **kwargs):
+    """Display cumulative token usage and cost for the current session."""
+    tracker = current_agent.run_response.cost_tracker if current_agent else None
+
+    if tracker is None or tracker.turns == 0:
+        console.print("[yellow]No cost data available yet. Cost is tracked after the first LLM call.[/yellow]")
+        return
+
+    console.print(f"[bold cyan]Session Cost Summary[/bold cyan]")
+    console.print(tracker.summary())
+
+
+def _cmd_export(cmd_args="", current_agent=None, **kwargs):
+    """Export conversation history to a Markdown file."""
+    if not (hasattr(current_agent, 'working_memory') and current_agent.working_memory):
+        console.print("[yellow]No conversation to export.[/yellow]")
+        return
+
+    messages = current_agent.working_memory.messages if hasattr(current_agent.working_memory, 'messages') else []
+    if not messages:
+        console.print("[yellow]No messages to export.[/yellow]")
+        return
+
+    filename = cmd_args.strip() if cmd_args.strip() else "conversation_export.md"
+    if not filename.endswith(".md"):
+        filename += ".md"
+
+    lines = ["# Conversation Export\n"]
+    for msg in messages:
+        role = msg.role or "unknown"
+        content = msg.content or ""
+        if isinstance(content, list):
+            content = str(content)
+        lines.append(f"## {role.capitalize()}\n")
+        lines.append(f"{content}\n")
+
+    Path(filename).write_text("\n".join(lines), encoding="utf-8")
+    console.print(f"[green]Exported {len(messages)} messages to {filename}[/green]")
+
+
+def _cmd_permissions(cmd_args="", permission_manager=None, **kwargs):
+    """View or change permission mode."""
+    if cmd_args.strip():
+        new_mode = cmd_args.strip().lower()
+        if new_mode not in ("allow-all", "auto", "strict"):
+            console.print(f"[red]Invalid mode: {new_mode}. Use: allow-all, auto, strict[/red]")
+            return
+        if permission_manager:
+            permission_manager.mode = new_mode
+            permission_manager.session_allowed.clear()
+            console.print(f"[green]Permission mode set to: {new_mode}[/green]")
+        return
+
+    if permission_manager:
+        console.print(f"[bold cyan]Permission Mode: {permission_manager.mode}[/bold cyan]")
+        if permission_manager.session_allowed:
+            console.print(f"  Session-allowed tools: {', '.join(sorted(permission_manager.session_allowed))}")
+        console.print()
+        console.print("  [dim]allow-all[/dim]  - auto-approve everything")
+        console.print("  [dim]auto[/dim]      - prompt for write/execute, auto-approve reads")
+        console.print("  [dim]strict[/dim]    - prompt for every tool call")
+        console.print()
+        console.print("Usage: /permissions <mode>", style="dim")
+
+
 # Command dispatch table: {command: (handler, description)}
 # Single source of truth for both dispatch and typeahead completion.
 COMMAND_REGISTRY = {
@@ -552,6 +619,9 @@ COMMAND_REGISTRY = {
     "/model":         (_cmd_model,         "View or switch model"),
     "/compact":       (_cmd_compact,       "Compact context with summary. Usage: /compact [custom instructions]"),
     "/debug":         (_cmd_debug,         "Show debug info"),
+    "/cost":          (_cmd_cost,          "Show token usage and cost"),
+    "/export":        (_cmd_export,        "Export conversation to Markdown. Usage: /export [filename]"),
+    "/permissions":   (_cmd_permissions,   "View or set permission mode (allow-all/auto/strict)"),
     "/reload-skills": (_cmd_reload_skills, "Reload skills from disk"),
     "/extensions":    (_cmd_extensions,    "Manage external skills: install/list/remove/reload"),
 }
@@ -666,6 +736,11 @@ def _process_stream_response(current_agent, final_input: str) -> None:
         
         # Finalize display
         display.finalize()
+
+        # Show token usage stats
+        cost_tracker = current_agent.run_response.cost_tracker
+        if cost_tracker and cost_tracker.turns > 0:
+            display_token_stats(console, cost_tracker)
         
         # Handle case of no output
         if not display.has_content_output and display.tool_count == 0 and not display.thinking_shown:
@@ -834,6 +909,10 @@ def run_interactive(agent_config: dict, extra_tool_names: Optional[List[str]] = 
     # Shell mode: use list as mutable reference for closures
     shell_mode_ref = [False]
 
+    # Initialize permission manager
+    perm_mode = agent_config.get("permissions", "auto")
+    permission_manager = PermissionManager(mode=perm_mode)
+
     # Configure extra tools
     extra_tools = configure_tools(extra_tool_names) if extra_tool_names else None
     current_agent = create_agent(agent_config, extra_tools, workspace, skills_registry)
@@ -854,6 +933,9 @@ def run_interactive(agent_config: dict, extra_tool_names: Optional[List[str]] = 
         if triggers:
             trigger_str = ", ".join(triggers.keys())
             console.print(f"  Skills: [cyan]{len(skills_registry)} loaded[/cyan] (triggers: {trigger_str})")
+    # Show permission mode
+    if perm_mode != "auto":
+        console.print(f"  Permissions: [yellow]{perm_mode}[/yellow]")
     console.print()
 
     get_input, use_prompt_toolkit = _setup_prompt_toolkit(shell_mode_ref, skills_registry)
@@ -925,6 +1007,7 @@ def run_interactive(agent_config: dict, extra_tool_names: Optional[List[str]] = 
                         workspace=workspace,
                         skills_registry=skills_registry,
                         shell_mode=shell_mode_ref[0],
+                        permission_manager=permission_manager,
                     )
                     if result == "EXIT":
                         break

@@ -69,7 +69,7 @@ class TestSkillToolEmpty(unittest.TestCase):
         prompt = skill_tool.get_system_prompt()
         
         self.assertIsNotNone(prompt)
-        self.assertIn("Skills Tool", prompt)
+        self.assertIn("# Skills", prompt)
         self.assertIn("No skills are currently available", prompt)
 
     def test_repr_empty(self):
@@ -145,7 +145,9 @@ Use this skill for testing.
         # Test get_system_prompt includes skill instructions
         prompt = skill_tool.get_system_prompt()
         self.assertIn("test-skill", prompt)
-        self.assertIn("instructions", prompt.lower())
+        self.assertIn("get_skill_info", prompt)
+        self.assertNotIn("specialized knowledge and workflows for specific tasks", prompt)
+        self.assertLess(len(prompt), 700)
 
     def test_custom_dir_nonexistent(self):
         """Test custom skill directory that doesn't exist."""

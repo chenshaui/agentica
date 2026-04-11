@@ -100,6 +100,20 @@ class PromptsMixin:
             return list(_instructions)
         return []
 
+    def _get_tool_policy_prompts(self) -> List[str]:
+        """Return static tool-usage policy prompts collected from tools."""
+        return list(self._tool_policy_prompts)
+
+    def _get_session_guidance_prompts(self) -> List[str]:
+        """Return dynamic per-session guidance prompts collected from tools or CLI."""
+        return list(self._session_guidance_prompts)
+
+    @staticmethod
+    def _render_xml_cdata_block(tag: str, content: str) -> str:
+        """Wrap markdown content in a lightweight XML container."""
+        escaped = content.replace("]]>", "]]]]><![CDATA[>")
+        return f"<{tag} format=\"markdown\"><![CDATA[\n{escaped}\n]]></{tag}>"
+
     def _get_config_directives(self) -> List[str]:
         """Return prompt directives from prompt_config flags.
 
@@ -239,6 +253,12 @@ class PromptsMixin:
                 system_message_lines.append(instructions[0])
             system_message_lines.append("")
 
+        tool_policy_prompts = self._get_tool_policy_prompts()
+        if tool_policy_prompts:
+            system_message_lines.append("## Tool Usage Guide")
+            system_message_lines.append("\n\n---\n\n".join(tool_policy_prompts))
+            system_message_lines.append("")
+
         if pc.guidelines is not None and len(pc.guidelines) > 0:
             system_message_lines.append("## Guidelines")
             if len(pc.guidelines) > 1:
@@ -255,7 +275,9 @@ class PromptsMixin:
         # ── SEMI-STATIC ZONE ─────────────────────────────────────────
         workspace_context = await self.get_workspace_context_prompt()
         if workspace_context:
-            system_message_lines.append(f"## Workspace Context\n\n{workspace_context}\n")
+            system_message_lines.append("## Workspace Context")
+            system_message_lines.append(self._render_xml_cdata_block("workspace_context", workspace_context))
+            system_message_lines.append("")
 
         # Git status injection (branch, uncommitted changes, recent commits)
         if self.workspace and self.workspace.exists():
@@ -271,10 +293,23 @@ class PromptsMixin:
             system_message_lines.append(f"{self.get_transfer_prompt()}\n")
 
         # ── DYNAMIC ZONE (at the very end for prefix-cache friendliness) ──
+        session_guidance_prompts = self._get_session_guidance_prompts()
+        if session_guidance_prompts:
+            system_message_lines.append("## Session Guidance")
+            system_message_lines.append(
+                self._render_xml_cdata_block(
+                    "session_guidance",
+                    "\n\n---\n\n".join(session_guidance_prompts),
+                )
+            )
+            system_message_lines.append("")
+
         _query = self.run_input if isinstance(self.run_input, str) else ""
         workspace_memory = await self.get_workspace_memory_prompt(query=_query)
         if workspace_memory:
-            system_message_lines.append(f"## Workspace Memory\n\n{workspace_memory}\n")
+            system_message_lines.append("## Workspace Memory")
+            system_message_lines.append(self._render_xml_cdata_block("workspace_memory", workspace_memory))
+            system_message_lines.append("")
 
         if self.working_memory.create_session_summary:
             if self.working_memory.summary is not None:
@@ -322,13 +357,7 @@ class PromptsMixin:
         elif self.name:
             identity = f"You are {self.name}, a helpful AI assistant."
 
-        workspace_context = None
-        if self.workspace and self.workspace.exists():
-            workspace_context = await self.workspace.get_context_prompt()
-            # Append git status to workspace context
-            git_context = self.workspace.get_git_context()
-            if git_context:
-                workspace_context = f"{workspace_context}\n\n## Git Status\n\n{git_context}" if workspace_context else git_context
+        workspace_context = await self.get_workspace_context_prompt()
 
         # Dynamic tool list + descriptions from built-in tools or None for plain Agent
         active_tools = None
@@ -342,7 +371,7 @@ class PromptsMixin:
 
         base_prompt = PromptBuilder.build_system_prompt(
             identity=identity,
-            workspace_context=workspace_context,
+            workspace_context=None,
             active_tools=active_tools,
             tool_descriptions=tool_descriptions,
             enable_heartbeat=True,
@@ -353,20 +382,12 @@ class PromptsMixin:
 
         system_message_lines: List[str] = [base_prompt]
 
-        # Separate tool/skill guide prompts from plain user instructions
-        guide_prompts = []
-        user_instructions = []
+        user_instructions = self._get_instructions_list()
 
-        raw_list = self._get_instructions_list()
-        for item in raw_list:
-            if item.startswith("## Tool Usage Guide") or item.startswith("# Skills"):
-                guide_prompts.append(item)
-            else:
-                user_instructions.append(item)
-
-        # Tool/skill guide prompts as top-level sections (not under User Instructions)
-        if guide_prompts:
-            system_message_lines.append("\n" + "\n\n---\n\n".join(guide_prompts))
+        tool_policy_prompts = self._get_tool_policy_prompts()
+        if tool_policy_prompts:
+            system_message_lines.append("\n## Tool Usage Guide")
+            system_message_lines.append("\n\n---\n\n".join(tool_policy_prompts))
 
         if user_instructions:
             system_message_lines.append("\n# User Instructions")
@@ -404,6 +425,17 @@ class PromptsMixin:
         if pc.additional_context is not None:
             system_message_lines.append(f"\n## Additional Context\n{pc.additional_context}")
 
+        if workspace_context:
+            system_message_lines.append("\n## Workspace Context")
+            system_message_lines.append(
+                self._render_xml_cdata_block("workspace_context", workspace_context)
+            )
+
+        if self.workspace and self.workspace.exists():
+            git_context = self.workspace.get_git_context()
+            if git_context:
+                system_message_lines.append(f"\n## Git Status\n\n{git_context}")
+
         # Config directives
         directives = self._get_config_directives()
         if directives:
@@ -416,10 +448,23 @@ class PromptsMixin:
             resolved_work_dir = os.path.abspath(work_dir)
             system_message_lines.append(f"\n**Working directory:** `{resolved_work_dir}`\n")
 
+        session_guidance_prompts = self._get_session_guidance_prompts()
+        if session_guidance_prompts:
+            system_message_lines.append("\n## Session Guidance")
+            system_message_lines.append(
+                self._render_xml_cdata_block(
+                    "session_guidance",
+                    "\n\n---\n\n".join(session_guidance_prompts),
+                )
+            )
+
         _query = self.run_input if isinstance(self.run_input, str) else ""
         workspace_memory = await self.get_workspace_memory_prompt(query=_query)
         if workspace_memory:
-            system_message_lines.append(f"\n## Workspace Memory\n\n{workspace_memory}")
+            system_message_lines.append("\n## Workspace Memory")
+            system_message_lines.append(
+                self._render_xml_cdata_block("workspace_memory", workspace_memory)
+            )
 
         if self.working_memory.create_session_summary and self.working_memory.summary is not None:
             system_message_lines.append("\n## Summary of Previous Interactions")

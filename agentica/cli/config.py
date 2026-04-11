@@ -217,6 +217,11 @@ def parse_args():
                         help='Disable workspace context injection')
     parser.add_argument('--enable-skills', action='store_true',
                         help='Enable skills loading (disabled by default)')
+    parser.add_argument('--allow-all', action='store_true',
+                        help='Auto-approve all tool executions without prompting')
+    parser.add_argument('--permissions', type=str, default='auto',
+                        choices=['allow-all', 'auto', 'strict'],
+                        help='Permission mode: allow-all (no prompts), auto (prompt for writes), strict (prompt for all)')
     parser.add_argument('command', nargs='?', choices=['acp'],
                         help='Run in ACP mode for IDE integration (agentica acp)')
     return parser.parse_args()
@@ -282,28 +287,26 @@ def create_agent(agent_config: dict, extra_tools: Optional[List] = None,
         temperature=agent_config.get("temperature"),
     )
 
-    # Build instructions with skills
-    instructions = []
-
-    # Add skills summary if available
-    if skills_registry and len(skills_registry) > 0:
-        skills_summary = skills_registry.get_skills_summary()
-        if skills_summary:
-            instructions.append(f"\n# Available Skills\n{skills_summary}")
-
     # Build extra tools list
     work_dir = agent_config.get("work_dir")
 
     # Use DeepAgent for full-featured CLI experience
     from agentica.agent.deep import DeepAgent
+    from agentica.tools.skill_tool import SkillTool
     new_agent = DeepAgent(
         model=model,
         tools=extra_tools or [],      # user-specified extra tools
         work_dir=work_dir,
         workspace=workspace,
         session_id=agent_config.get("session_id") or _generate_session_id(),
-        instructions="\n\n".join(instructions) if instructions else None,
         debug=agent_config["debug"],
         include_user_input=True,      # CLI is interactive, always enable human-in-the-loop
     )
+
+    if skills_registry and len(skills_registry) > 0:
+        has_skill_tool = any(isinstance(tool, SkillTool) for tool in (new_agent.tools or []))
+        if not has_skill_tool:
+            skills_summary = skills_registry.get_skills_summary()
+            if skills_summary:
+                new_agent.add_session_guidance(skills_summary)
     return new_agent

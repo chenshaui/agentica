@@ -68,26 +68,34 @@ class SkillLoader:
             List of (path, location_type) tuples
         """
         paths = []
+        seen_paths = set()
+
+        def add_path(path: Path, location_type: str) -> None:
+            resolved = path.expanduser().resolve()
+            if resolved in seen_paths:
+                return
+            seen_paths.add(resolved)
+            paths.append((path, location_type))
 
         # Project-level paths (higher priority)
         for skill_dir in self.SKILL_DIRS:
             project_path = self.project_root / skill_dir
-            paths.append((project_path, "project"))
+            add_path(project_path, "project")
 
         # add AGENTICA_SKILL_DIR from config
         if AGENTICA_SKILL_DIR:
             skill_dir_path = Path(AGENTICA_SKILL_DIR)
             # skill_dir_path is dir, mkdir if not exists
             skill_dir_path.mkdir(parents=True, exist_ok=True)
-            paths.append((skill_dir_path, "user"))
+            add_path(skill_dir_path, "user")
 
         for managed_skill_dir in AGENTICA_EXTRA_SKILL_PATHS:
-            paths.append((Path(managed_skill_dir), "managed"))
+            add_path(Path(managed_skill_dir), "managed")
 
         # User-level paths (lower priority)
         for skill_dir in self.SKILL_DIRS:
             user_path = self.home_dir / skill_dir
-            paths.append((user_path, "user"))
+            add_path(user_path, "user")
 
         return paths
 

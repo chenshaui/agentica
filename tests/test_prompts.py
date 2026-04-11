@@ -14,6 +14,8 @@ from agentica.agent import Agent
 from agentica.agent.config import PromptConfig
 from agentica.model.openai import OpenAIChat
 from agentica.model.response import ModelResponse
+from agentica.tools.base import Tool
+from agentica.tools.skill_tool import SkillTool
 
 
 def _mock_resp(content="OK"):
@@ -206,6 +208,94 @@ class TestGetSystemMessage:
         assert msg is not None
         # Agentic prompt adds more content from PromptBuilder
         assert len(msg.content) > 100
+
+    @pytest.mark.asyncio
+    async def test_system_message_separates_tool_policy_and_session_guidance(self):
+        class FakeTool(Tool):
+            def get_system_prompt(self):
+                return "STATIC TOOL POLICY"
+
+        skill_tool = SkillTool(auto_load=False)
+        skill_tool.get_system_prompt = lambda: "# Skills\n\nDYNAMIC SKILL GUIDANCE"
+
+        agent = Agent(
+            name="A",
+            model=OpenAIChat(id="gpt-4o-mini", api_key="fake_openai_key"),
+            tools=[FakeTool(name="fake"), skill_tool],
+        )
+        msg = await agent.get_system_message()
+
+        assert msg is not None
+        assert "## Tool Usage Guide" in msg.content
+        assert "STATIC TOOL POLICY" in msg.content
+        assert "## Session Guidance" in msg.content
+        assert "DYNAMIC SKILL GUIDANCE" in msg.content
+        assert msg.content.index("STATIC TOOL POLICY") < msg.content.index("DYNAMIC SKILL GUIDANCE")
+
+    @pytest.mark.asyncio
+    async def test_agentic_prompt_keeps_skill_guidance_dynamic(self):
+        class FakeTool(Tool):
+            def get_system_prompt(self):
+                return "STATIC TOOL POLICY"
+
+        skill_tool = SkillTool(auto_load=False)
+        skill_tool.get_system_prompt = lambda: "# Skills\n\nDYNAMIC SKILL GUIDANCE"
+
+        agent = Agent(
+            name="A",
+            model=OpenAIChat(id="gpt-4o-mini", api_key="fake_openai_key"),
+            tools=[FakeTool(name="fake"), skill_tool],
+            prompt_config=PromptConfig(enable_agentic_prompt=True),
+        )
+        msg = await agent.get_system_message()
+
+        assert msg is not None
+        assert "## Tool Usage Guide" in msg.content
+        assert "STATIC TOOL POLICY" in msg.content
+        assert "## Session Guidance" in msg.content
+        assert "DYNAMIC SKILL GUIDANCE" in msg.content
+        assert msg.content.index("STATIC TOOL POLICY") < msg.content.index("DYNAMIC SKILL GUIDANCE")
+
+    @pytest.mark.asyncio
+    async def test_default_prompt_wraps_dynamic_blocks_in_xml(self):
+        agent = Agent(
+            name="A",
+            model=OpenAIChat(id="gpt-4o-mini", api_key="fake_openai_key"),
+        )
+        agent.add_session_guidance("# Skills\n\nDYNAMIC SKILL GUIDANCE")
+        agent.get_workspace_context_prompt = AsyncMock(return_value="# Workspace Rules\n- rule")
+        agent.get_workspace_memory_prompt = AsyncMock(return_value="### Memory Rule\nPrefer concise responses.")
+
+        msg = await agent.get_system_message()
+
+        assert msg is not None
+        assert "<workspace_context format=\"markdown\"><![CDATA[" in msg.content
+        assert "# Workspace Rules" in msg.content
+        assert "<session_guidance format=\"markdown\"><![CDATA[" in msg.content
+        assert "DYNAMIC SKILL GUIDANCE" in msg.content
+        assert "<workspace_memory format=\"markdown\"><![CDATA[" in msg.content
+        assert "Prefer concise responses." in msg.content
+
+    @pytest.mark.asyncio
+    async def test_agentic_prompt_wraps_dynamic_blocks_in_xml(self):
+        agent = Agent(
+            name="A",
+            model=OpenAIChat(id="gpt-4o-mini", api_key="fake_openai_key"),
+            prompt_config=PromptConfig(enable_agentic_prompt=True),
+        )
+        agent.add_session_guidance("# Skills\n\nDYNAMIC SKILL GUIDANCE")
+        agent.get_workspace_context_prompt = AsyncMock(return_value="# Workspace Rules\n- rule")
+        agent.get_workspace_memory_prompt = AsyncMock(return_value="### Memory Rule\nPrefer concise responses.")
+
+        msg = await agent.get_system_message()
+
+        assert msg is not None
+        assert "<workspace_context format=\"markdown\"><![CDATA[" in msg.content
+        assert "# Workspace Rules" in msg.content
+        assert "<session_guidance format=\"markdown\"><![CDATA[" in msg.content
+        assert "DYNAMIC SKILL GUIDANCE" in msg.content
+        assert "<workspace_memory format=\"markdown\"><![CDATA[" in msg.content
+        assert "Prefer concise responses." in msg.content
 
 
 if __name__ == "__main__":

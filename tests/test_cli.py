@@ -184,6 +184,51 @@ class TestCLIConfiguration(unittest.TestCase):
             )
         )
 
+    def test_create_agent_moves_skills_summary_out_of_instructions(self):
+        """CLI should not stuff skill summaries into static instructions."""
+        from agentica.cli.config import create_agent
+        from agentica.skills.skill import Skill
+        from agentica.skills.skill_registry import SkillRegistry
+
+        registry = SkillRegistry()
+        registry.register(
+            Skill(
+                name="learn-from-experience",
+                description="Learn from feedback",
+                path=MagicMock(),
+                location="user",
+            )
+        )
+
+        class FakeDeepAgent:
+            def __init__(self, **kwargs):
+                self.instructions = kwargs.get("instructions")
+                self.tools = []
+                self.session_guidance = []
+
+            def add_session_guidance(self, text):
+                self.session_guidance.append(text)
+
+        with patch("agentica.cli.config.get_model", return_value=MagicMock()), patch(
+            "agentica.agent.deep.DeepAgent",
+            FakeDeepAgent,
+        ):
+            agent = create_agent(
+                {
+                    "model_provider": "zhipuai",
+                    "model_name": "glm-5",
+                    "debug": False,
+                    "work_dir": None,
+                },
+                extra_tools=[],
+                workspace=None,
+                skills_registry=registry,
+            )
+
+        self.assertIsNone(agent.instructions)
+        self.assertEqual(len(agent.session_guidance), 1)
+        self.assertIn("Available Skills", agent.session_guidance[0])
+
 
 class TestToolRegistryIntegrity(unittest.TestCase):
     """Test cases for tool registry integrity."""

@@ -21,9 +21,13 @@ from agentica.cli.display import (
     format_tool_display,
     display_tool_call,
     display_user_message,
+    display_token_stats,
+    display_diff,
+    render_markdown_response,
     show_help,
     print_header,
 )
+from agentica.cli.permissions import PermissionManager
 from agentica.cli.interactive import run_interactive
 from agentica.cli.main import main
 
@@ -43,8 +47,12 @@ __all__ = [
     "format_tool_display",
     "display_tool_call",
     "display_user_message",
+    "display_token_stats",
+    "display_diff",
+    "render_markdown_response",
     "show_help",
     "print_header",
+    "PermissionManager",
     "run_interactive",
     "main",
 ]

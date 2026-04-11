@@ -3,12 +3,15 @@
 @author:XuMing(xuming624@qq.com)
 @description: CLI display utilities - colors, formatting, stream display manager
 """
+import difflib
 import json
 import os
 import re
 from pathlib import Path
 from typing import List, Optional
 
+from rich.markdown import Markdown
+from rich.syntax import Syntax
 from rich.text import Text
 
 from agentica.cli.config import console, TOOL_ICONS
@@ -27,7 +30,7 @@ COLORS = {
 def print_header(model_provider: str, model_name: str, work_dir: Optional[str] = None,
                  extra_tools: Optional[List[str]] = None, shell_mode: bool = False):
     """Print the application header with version and model information"""
-    box_width = 70
+    box_width = min(console.width, 80)
     console.print("=" * box_width, style="bright_cyan")
     console.print("  Agentica CLI - Interactive AI Assistant")
     console.print(f"  Model: [bright_green]{model_provider}/{model_name}[/bright_green]")
@@ -172,10 +175,13 @@ Slash Commands:
   /help              Show this help message
   /clear, /reset     Clear screen and reset conversation
   /compact           Compact context (summarize history)
+  /cost              Show token usage and cost for this session
   /debug             Show debug info (model, history count)
+  /export [file]     Export conversation to Markdown file
   /model [p/m]       Show or switch model (e.g., /model deepseek/deepseek-chat)
   /newchat           Start a new chat session
   /resume            Resume a previous session
+  /permissions [m]   View or set permission mode (allow-all/auto/strict)
   /tools             List available additional tools
   /skills            List available skills and triggers
   /reload-skills     Reload skills from disk
@@ -197,6 +203,11 @@ Input Features:
 Shell Mode (Ctrl+X to toggle):
   When in shell mode ($ prompt), commands execute directly without AI.
   Useful for quick file operations, git commands, etc.
+
+Permission Modes:
+  allow-all          Auto-approve all tool executions (--allow-all flag)
+  auto               Prompt for write/execute, auto-approve reads (default)
+  strict             Prompt for every tool call
 
 Tips:
   - Type @ followed by a filename to reference files
@@ -390,6 +401,7 @@ class StreamDisplayManager:
         self.in_tool_section = False
         self.response_started = False
         self.has_content_output = False
+        self._response_buffer = []
     
     def start_thinking(self):
         """Start thinking section."""
@@ -538,21 +550,73 @@ class StreamDisplayManager:
             self.response_started = True
     
     def stream_response(self, content: str):
-        """Stream response content."""
+        """Stream response content (real-time plain text + buffer for Markdown re-render)."""
         self.start_response()
+        self._response_buffer.append(content)
         self.console.print(content, end="", style=COLORS["agent"])
         self.has_content_output = True
     
     def finalize(self):
-        """Finalize output, close any open sections."""
+        """Finalize output, close any open sections. Re-render as Markdown if applicable."""
         if self.in_thinking:
             self.end_thinking()
         if self.in_tool_section:
             self.end_tool_section()
         if self.has_content_output:
-            self.console.print()
+            self.console.print()  # newline after streaming
+            # Re-render full response as Markdown if it contains formatting
+            full_response = "".join(self._response_buffer)
+            if _has_markdown(full_response):
+                self.console.print(Markdown(full_response))
 
 
 def display_tool_call(tool_name: str, tool_args: dict) -> None:
     """Display a tool call with icon and colored tool name."""
     _display_tool_impl(console, tool_name, tool_args)
+
+
+def _has_markdown(text: str) -> bool:
+    """Detect if text contains Markdown formatting worth rendering."""
+    markers = ["```", "## ", "### ", "* ", "- [ ]", "| ", "**", "1. "]
+    return any(m in text for m in markers)
+
+
+def render_markdown_response(console_instance, text: str) -> None:
+    """Render a complete response as rich Markdown if it contains formatting."""
+    if _has_markdown(text):
+        console_instance.print(Markdown(text))
+    else:
+        console_instance.print(text, style=COLORS["agent"])
+
+
+def display_diff(console_instance, file_path: str, old_content: str, new_content: str) -> None:
+    """Display unified diff between old and new file content."""
+    diff_lines = list(difflib.unified_diff(
+        old_content.splitlines(keepends=True),
+        new_content.splitlines(keepends=True),
+        fromfile=f"a/{file_path}",
+        tofile=f"b/{file_path}",
+        n=3,
+    ))
+    if diff_lines:
+        diff_text = "".join(diff_lines)
+        console_instance.print(Syntax(diff_text, "diff", theme="monokai", line_numbers=False))
+
+
+def display_token_stats(console_instance, cost_tracker) -> None:
+    """Display token usage and cost after a response."""
+    if cost_tracker is None:
+        return
+    input_t = cost_tracker.total_input_tokens
+    output_t = cost_tracker.total_output_tokens
+    cost = cost_tracker.total_cost_usd
+    turns = cost_tracker.turns
+
+    parts = [f"{input_t:,} in", f"{output_t:,} out"]
+    if cost > 0:
+        parts.append(f"${cost:.4f}")
+    if turns > 1:
+        parts.append(f"{turns} calls")
+
+    stats_str = " / ".join(parts)
+    console_instance.print(f"[dim]{stats_str}[/dim]")

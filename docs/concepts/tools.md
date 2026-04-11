@@ -180,7 +180,11 @@ agent = Agent(
 )
 ```
 
-`get_system_prompt()` 返回的内容会被自动注入到 Agent 的 instructions，**无论 `enable_agentic_prompt` 是否开启**，确保工具使用规范始终生效。
+`get_system_prompt()` 返回的内容会被自动装配进 Agent 的 system prompt：
+- 工具策略类内容进入静态的 tool policy 区域
+- 技能类内容进入动态的 session guidance 区域
+
+因此它们仍然会生效，但不再一律直接拼进 `instructions`。
 
 ## 并发工具执行
 

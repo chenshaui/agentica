@@ -21,6 +21,26 @@ class TestDeepAgentDefaults(unittest.TestCase):
         self.assertTrue(any(isinstance(tool, SkillTool) for tool in agent.tools))
         load_mcp_tools.assert_called_once()
 
+    def test_deep_agent_model_exposes_file_tools(self):
+        from agentica.agent.deep import DeepAgent
+        from agentica.model.openai import OpenAIChat
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "agentica.agent.base.Agent._load_mcp_tools"
+        ):
+            agent = DeepAgent(
+                model=OpenAIChat(id="gpt-4o-mini", api_key="fake_openai_key"),
+                workspace=tmpdir,
+                include_skills=False,
+            )
+            agent.update_model()
+
+        self.assertIn("read_file", agent.model.functions)
+        self.assertIn("ls", agent.model.functions)
+        tool_names = {tool["function"]["name"] for tool in agent.model.tools}
+        self.assertIn("read_file", tool_names)
+        self.assertIn("ls", tool_names)
+
 
 if __name__ == "__main__":
     unittest.main()

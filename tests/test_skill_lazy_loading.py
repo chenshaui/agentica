@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import agentica.config as agentica_config
+import agentica.workspace as workspace_module
 from agentica.skills.skill import Skill
 from agentica.skills.skill_loader import SkillLoader
 from agentica.skills.skill_registry import SkillRegistry
@@ -118,6 +119,20 @@ class TestSkillWhenToUse(unittest.TestCase):
         )
         self.assertFalse(skill.matches_keywords("hello world"))
 
+
+class TestConfigurableMemoryBudget(unittest.TestCase):
+    """Workspace should consume the configurable AGENTS context budget."""
+
+    def test_memory_character_budget_can_be_configured(self):
+        with patch.dict(os.environ, {"AGENTICA_MAX_MEMORY_CHARACTER_COUNT": "12345"}, clear=False):
+            config = importlib.reload(agentica_config)
+            workspace = importlib.reload(workspace_module)
+            self.assertEqual(config.AGENTICA_MAX_MEMORY_CHARACTER_COUNT, 12345)
+            self.assertEqual(workspace.Workspace.MAX_MEMORY_CHARACTER_COUNT, 12345)
+
+        importlib.reload(agentica_config)
+        importlib.reload(workspace_module)
+
     def test_matches_keywords_short_words_ignored(self):
         skill = Skill(
             name="test", description="desc", path=Path("/tmp"),
@@ -216,6 +231,19 @@ class TestSkillWhenToUseDashFrontmatter(unittest.TestCase):
 
 class TestSkillLoaderManagedDirs(unittest.TestCase):
     """Managed skill dirs can point directly at a single external skill directory."""
+
+    def test_search_paths_deduplicate_same_user_skill_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            user_skill_dir = Path(tmpdir) / ".agentica" / "skills"
+            user_skill_dir.mkdir(parents=True)
+
+            with patch("agentica.skills.skill_loader.AGENTICA_SKILL_DIR", str(user_skill_dir)):
+                loader = SkillLoader(project_root=Path(tmpdir))
+                loader.home_dir = Path(tmpdir)
+                paths = loader.get_search_paths()
+
+            normalized = [path.resolve() for path, _location in paths]
+            assert normalized.count(user_skill_dir.resolve()) == 1
 
     def test_load_all_accepts_direct_skill_dir_from_managed_paths(self):
         tmpdir = tempfile.mkdtemp()

@@ -38,6 +38,12 @@ class TestWorkspaceConfig:
         assert config.agent_md == "CUSTOM_AGENT.md"
         assert config.memory_dir == "memories"
 
+    def test_default_global_templates_do_not_force_shell_for_validation(self):
+        """Default workspace prompt text should avoid shell-first validation guidance."""
+        agents_md = Workspace.DEFAULT_GLOBAL_FILES["AGENTS.md"]
+        assert "Use shell tool to run" not in agents_md
+        assert "Run the appropriate validation commands for the project" in agents_md
+
 
 class TestWorkspace:
     """Test Workspace class."""
@@ -231,6 +237,69 @@ class TestWorkspace:
         assert "Learned Preferences" in content
         assert "Python Style" in content
         assert "Avoid unnecessary getattr" in content
+
+    def test_write_memory_entry_sync_skips_non_durable_feedback(self, temp_workspace_path):
+        """Global AGENTS sync should keep durable rules and skip task-specific notes."""
+        workspace = Workspace(temp_workspace_path)
+        workspace.initialize()
+
+        global_home = temp_workspace_path / "global-home"
+        global_home.mkdir()
+
+        with patch("agentica.workspace.AGENTICA_HOME", str(global_home)):
+            asyncio.run(
+                workspace.write_memory_entry(
+                    title="Python Style",
+                    content="Prefer concise, typed Python. Avoid unnecessary getattr.",
+                    memory_type="feedback",
+                    description="durable python coding preference",
+                    sync_to_global_agent_md=True,
+                )
+            )
+            asyncio.run(
+                workspace.write_memory_entry(
+                    title="RAG Oracle Flow",
+                    content="RAG pipeline: inspect prediction samples first, then compare MRR / P@3 / R@3 / F1 before tuning.",
+                    memory_type="feedback",
+                    description="oracle style rag debugging note",
+                    sync_to_global_agent_md=True,
+                )
+            )
+
+        global_agent_md = global_home / "AGENTS.md"
+        content = global_agent_md.read_text(encoding="utf-8")
+        assert "Python Style" in content
+        assert "Avoid unnecessary getattr" in content
+        assert "RAG Oracle Flow" not in content
+        assert "MRR / P@3 / R@3 / F1" not in content
+
+    def test_get_context_prompt_prioritizes_high_priority_agents_with_budget(self, temp_workspace_path):
+        """AGENTS context should cap at 40K chars and preserve higher-priority files."""
+        repo_root = temp_workspace_path / "repo"
+        cwd = repo_root / "nested"
+        cwd.mkdir(parents=True)
+        (repo_root / ".git").mkdir()
+        (repo_root / "AGENTS.md").write_text("# Project\n" + ("B" * 19000), encoding="utf-8")
+        (cwd / "AGENTS.md").write_text("# Nested\n" + ("C" * 19000), encoding="utf-8")
+
+        global_home = temp_workspace_path / "global-home"
+        global_home.mkdir()
+        (global_home / "AGENTS.md").write_text("# Global\n" + ("A" * 30000), encoding="utf-8")
+
+        workspace = Workspace(repo_root)
+        previous_cwd = os.getcwd()
+        try:
+            os.chdir(cwd)
+            with patch("agentica.workspace.AGENTICA_HOME", str(global_home)):
+                context = asyncio.run(workspace.get_context_prompt())
+        finally:
+            os.chdir(previous_cwd)
+
+        assert "# Nested" in context
+        assert "# Project" in context
+        assert "# Global" not in context
+        assert "C" * 500 in context
+        assert "B" * 500 in context
 
     def test_get_skills_dir(self, temp_workspace_path):
         """Test getting skills directory."""

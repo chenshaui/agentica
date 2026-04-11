@@ -273,6 +273,8 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         self._enabled_skills = None
         self._transfer_caller = None
         self.todos = []
+        self._tool_policy_prompts: List[str] = []
+        self._session_guidance_prompts: List[str] = []
 
         # Session-level set of memory filenames already surfaced (dedup across turns).
         # Prevents the same memory entry from occupying system prompt slots every turn.
@@ -444,19 +446,25 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         except Exception as e:
             logger.warning(f"Failed to auto-load MCP tools: {e}")
 
-    def _merge_tool_system_prompts(self) -> None:
-        """Collect system prompts from all tools and merge into instructions.
+    def add_tool_policy_prompt(self, prompt: Optional[str]) -> None:
+        """Add a static tool-usage policy section to the system prompt."""
+        if prompt and prompt not in self._tool_policy_prompts:
+            self._tool_policy_prompts.append(prompt)
 
-        Separates skill-related prompts from tool usage prompts,
-        and formats them as markdown sections instead of XML tags.
-        """
+    def add_session_guidance(self, prompt: Optional[str]) -> None:
+        """Add a dynamic per-session guidance section to the system prompt."""
+        if prompt and prompt not in self._session_guidance_prompts:
+            self._session_guidance_prompts.append(prompt)
+
+    def _merge_tool_system_prompts(self) -> None:
+        """Collect tool prompts and split them into static vs dynamic sections."""
         if not self.tools:
             return
 
         from agentica.tools.skill_tool import SkillTool
 
-        tool_prompts = []
-        skill_prompts = []
+        self._tool_policy_prompts = []
+        self._session_guidance_prompts = []
 
         for tool in self.tools:
             if isinstance(tool, Tool) and hasattr(tool, 'get_system_prompt'):
@@ -465,31 +473,15 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
                     continue
                 if isinstance(tool, SkillTool):
                     tool._agent = self
-                    skill_prompts.append(prompt)
+                    self.add_session_guidance(prompt)
                 else:
-                    tool_prompts.append(prompt)
+                    self.add_tool_policy_prompt(prompt)
 
-        if not tool_prompts and not skill_prompts:
-            return
-
-        merged_parts = []
-
-        if tool_prompts:
-            merged_parts.append("## Tool Usage Guide\n\n" + "\n\n".join(tool_prompts))
-
-        if skill_prompts:
-            merged_parts.append("\n".join(skill_prompts))
-
-        merged_prompt = "\n\n---\n\n".join(merged_parts)
-
-        if self.instructions is None:
-            self.instructions = [merged_prompt]
-        elif isinstance(self.instructions, str):
-            self.instructions = [self.instructions, merged_prompt]
-        elif isinstance(self.instructions, list):
-            self.instructions = list(self.instructions) + [merged_prompt]
-
-        logger.debug(f"Merged {len(tool_prompts)} tool prompts and {len(skill_prompts)} skill prompts into instructions")
+        logger.debug(
+            "Collected %d tool prompts and %d session guidance prompts",
+            len(self._tool_policy_prompts),
+            len(self._session_guidance_prompts),
+        )
 
     def cancel(self):
         """Cancel the current run. Can be called from another thread/task."""

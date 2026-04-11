@@ -77,11 +77,6 @@ class BuiltinFileTool(Tool):
         # Value: {"mtime": float, "offset": int, "limit": int|None, "dedup_count": int}
         self._file_read_state: Dict[str, Dict[str, Any]] = {}
 
-    def clear_read_cache(self) -> None:
-        """Clear file read dedup cache. Call after context compression to prevent
-        stale sentinel responses when file content is no longer in LLM context."""
-        self._file_read_state.clear()
-
         # Register all file operation functions.
         # Read-only tools are concurrency_safe (can run in parallel with each other).
         # Write tools (write_file, edit_file, multi_edit_file) stay serialised.
@@ -92,6 +87,11 @@ class BuiltinFileTool(Tool):
         self.register(self.multi_edit_file, sanitize_arguments=False, is_destructive=True)
         self.register(self.glob, concurrency_safe=True, is_read_only=True)
         self.register(self.grep, concurrency_safe=True, is_read_only=True)
+
+    def clear_read_cache(self) -> None:
+        """Clear file read dedup cache. Call after context compression to prevent
+        stale sentinel responses when file content is no longer in LLM context."""
+        self._file_read_state.clear()
 
     def _resolve_path(self, path: str) -> Path:
         """Resolve path, supporting absolute, relative, and ~ paths.
@@ -242,7 +242,8 @@ class BuiltinFileTool(Tool):
         Assume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
 
         Usage:
-        - The file_path parameter must be an absolute path, not a relative path
+        - The file_path parameter may be absolute, relative to the working directory, or `~`-prefixed
+        - Relative paths are resolved relative to the base working directory
         - By default, it reads up to 500 lines starting from the beginning of the file
         - **IMPORTANT for large files and codebase exploration**: Use pagination with offset and limit parameters to avoid context overflow
         - First scan: read_file(path, limit=100) to see file structure
@@ -256,7 +257,7 @@ class BuiltinFileTool(Tool):
         - You should ALWAYS make sure a file has been read before editing it.
 
         Args:
-            file_path: File path, support md, txt, py, etc. absolute path
+            file_path: File path for md/txt/py/etc. Supports absolute paths, relative paths, and `~`
             offset: Starting line number (0-based)
             limit: Maximum number of lines to read, defaults to 500
 
@@ -438,10 +439,11 @@ class BuiltinFileTool(Tool):
         For multiple edits to the SAME file, prefer `multi_edit_file` to apply them
         atomically in one call. If you call `edit_file` multiple times on the same file
         in parallel, they will be serialized automatically to avoid race conditions.
+        File paths may be absolute, relative to the working directory, or `~`-prefixed.
 
         Args:
-            file_path: The path to the file to edit. Absolute paths required for files
-                      outside the working directory.
+            file_path: The path to the file to edit. Supports absolute paths, relative
+                      paths, and `~`. Relative paths resolve from the working directory.
             old_string: The existing text to find and replace. Must match exactly.
             new_string: The replacement text.
             replace_all: Whether to replace all occurrences. Default: False (replace first

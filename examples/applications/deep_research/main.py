@@ -61,7 +61,7 @@ async def main():
         print(f"{'=' * 60}\n")
 
         # Use cost budget to prevent runaway spending (Runner checks per loop iteration)
-        response = await agent.run(query, config=RunConfig(max_cost_usd=1.0))
+        response = await agent.run(query)
         print(f"\nResponse:\n{response.content}")
 
         # Show cost summary (CostTracker is always active in Runner)

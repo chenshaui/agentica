@@ -223,17 +223,11 @@ class SkillTool(Tool):
         skills = self._get_enabled_skills()
 
         if not skills:
-            return """# Skills Tool
+            return """# Skills
 
-No skills are currently available. Skills can be added to:
-- .claude/skills/ (project-level)
-- .agentica/skills/ (project-level)
-- ~/.claude/skills/ (user-level)
-- ~/.agentica/skills/ (user-level)
+No skills are currently available.
 
-Each skill directory should contain a SKILL.md file with:
-- YAML frontmatter (name, description)
-- Detailed usage instructions
+If a matching skill is later installed, load it with `get_skill_info(skill_name)` before acting on the task.
 """
 
         # Build skill summary list (name + description only)
@@ -246,24 +240,17 @@ Each skill directory should contain a SKILL.md file with:
 
         return f"""# Skills
 
-Skills provide specialized knowledge and workflows for specific tasks.
+Use a skill only when it clearly matches the current task.
 
-## Available Skills ({len(skills)}):
+## Available Skills ({len(skills)})
 {skills_summary}
 
-## How to Use Skills:
-1. Use `get_skill_info(skill_name)` to load detailed instructions for a specific skill
-2. Follow the skill's instructions to complete the task
-3. Skills are NOT callable tools — they provide guidance on HOW to do tasks
-
-## Important Rules:
-- When a user references a "slash command" or "/<something>" (e.g., "/commit", "/review-pr"),
-  they are referring to a skill. Use `get_skill_info` to load it.
-- BLOCKING REQUIREMENT: When a skill matches the user's request, invoke `get_skill_info`
-  BEFORE generating any other response about the task. Load the skill first, then follow
-  its instructions.
-- NEVER mention a skill without actually loading it via `get_skill_info`.
-- Do not load a skill that is already loaded in the current conversation turn.
+## Skill Workflow
+- Load the matching skill with `get_skill_info(skill_name)` before giving task guidance.
+- Treat slash commands like `/<something>` as skill references and load the matching skill first.
+- Skills provide instructions, not executable actions.
+- Do not mention a skill without loading it.
+- Do not reload the same skill within the current turn.
 """
 
     def __repr__(self) -> str:

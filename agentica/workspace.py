@@ -12,11 +12,15 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass
 from datetime import date, datetime
 
-from agentica.config import AGENTICA_WORKSPACE_DIR, AGENTICA_HOME
+from agentica.config import (
+    AGENTICA_WORKSPACE_DIR,
+    AGENTICA_HOME,
+    AGENTICA_MAX_MEMORY_CHARACTER_COUNT,
+)
 
 
 async def _async_read_text(path: Path, encoding: str = "utf-8") -> str:
@@ -111,7 +115,7 @@ You are a helpful AI assistant.
 1. **Find Commands**: Check project files for validation commands:
    - README.md, package.json, pyproject.toml, Makefile
 
-2. **Execute Validation**: Use shell tool to run:
+2. **Execute Validation**: Run the appropriate validation commands for the project:
    - Lint: `npm run lint`, `ruff check .`, etc.
    - Type check: `npm run typecheck`, `mypy .`, etc.
    - Test: `npm test`, `pytest`, etc.
@@ -366,14 +370,13 @@ You are a helpful AI assistant.
         """
         contents = []
 
-        # 1. Multi-level AGENTS.md chain (CWD upward)
+        # 1. Prioritized AGENTS.md chain (global -> project -> local) with 40K budget
         chain_contents = self._load_agent_md_chain()
         if chain_contents:
             contents.append(f"<!-- Project AGENTS.md chain -->\n{chain_contents}")
 
-        # 2. Workspace-level files (AGENTS.md, PERSONA.md, TOOLS.md)
+        # 2. Workspace-level files (PERSONA.md, TOOLS.md)
         global_files = [
-            self.config.agent_md,
             self.config.persona_md,
             self.config.tools_md,
         ]
@@ -392,51 +395,21 @@ You are a helpful AI assistant.
         return "\n\n---\n\n".join(contents) if contents else ""
 
     def _load_agent_md_chain(self) -> str:
-        """Load AGENTS.md files from CWD upward to root, plus global ~/.agentica/AGENTS.md.
+        """Load prioritized AGENTS.md content with a 40K character budget."""
+        sources = self._collect_agent_md_sources()
+        if not sources:
+            return ""
 
-        Mirrors CC's multi-level CLAUDE.md merge: knowledge files at higher
-        directories provide broad context, while those closer to CWD provide
-        project-specific instructions.
+        selected = self._apply_agent_md_budget(sources, self.MAX_MEMORY_CHARACTER_COUNT)
+        parts = [f"<!-- {path} -->\n{content}" for path, content in selected]
+        return "\n\n---\n\n".join(parts) if parts else ""
 
-        Merge order (earlier = lower priority, later = higher priority):
-            1. ~/.agentica/AGENTS.md  (user global preferences)
-            2. /repo-root/AGENTS.md   (project-level, checked into git)
-            3. /repo-root/src/AGENTS.md  (subdir-specific, if CWD is deeper)
-
-        Returns:
-            Merged content string, or empty string if no files found.
-        """
+    def _collect_agent_md_sources(self) -> List[Tuple[str, str]]:
+        """Collect AGENTS.md sources from global, project, and workspace locations."""
         cwd = Path(os.getcwd())
-        found: list[tuple[str, str]] = []  # (source_path, content)
+        found: List[Tuple[str, str]] = []
+        seen_paths: set[Path] = set()
 
-        # Walk from CWD upward, collecting AGENTS.md files
-        visited = set()
-        for dir_path in [cwd] + list(cwd.parents):
-            resolved = dir_path.resolve()
-            if resolved in visited:
-                break
-            visited.add(resolved)
-
-            # Prefer AGENTS.md, fallback to AGENT.md for backward compat
-            agent_md = resolved / "AGENTS.md"
-            if not agent_md.is_file():
-                agent_md = resolved / "AGENT.md"
-            if agent_md.is_file():
-                try:
-                    text = agent_md.read_text(encoding="utf-8").strip()
-                    if text:
-                        found.append((str(agent_md), text))
-                except Exception:
-                    pass
-
-            # Stop at git root (project boundary)
-            if (resolved / ".git").exists():
-                break
-
-        # Reverse so root-level comes first (lower priority)
-        found.reverse()
-
-        # Prepend user global AGENTS.md (~/.agentica/AGENTS.md, fallback AGENT.md)
         global_agent_md = Path(AGENTICA_HOME) / "AGENTS.md"
         if not global_agent_md.is_file():
             global_agent_md = Path(AGENTICA_HOME) / "AGENT.md"
@@ -444,21 +417,87 @@ You are a helpful AI assistant.
             try:
                 text = global_agent_md.read_text(encoding="utf-8").strip()
                 if text:
-                    found.insert(0, (str(global_agent_md), text))
+                    resolved = global_agent_md.resolve()
+                    found.append((str(global_agent_md), text))
+                    seen_paths.add(resolved)
             except Exception:
                 pass
 
-        # Deduplicate: skip workspace AGENTS.md if already in chain
-        workspace_agent_md = self.path / self.config.agent_md
-        workspace_content = None
-        if workspace_agent_md.is_file():
-            workspace_content = workspace_agent_md.read_text(encoding="utf-8").strip()
-        if workspace_content:
-            found = [(p, c) for p, c in found if c != workspace_content]
+        project_chain: List[Tuple[str, str]] = []
+        visited = set()
+        for dir_path in [cwd] + list(cwd.parents):
+            resolved = dir_path.resolve()
+            if resolved in visited:
+                break
+            visited.add(resolved)
 
-        # Format with source path annotations
-        parts = [f"<!-- {path} -->\n{content}" for path, content in found]
-        return "\n\n---\n\n".join(parts) if parts else ""
+            agent_md = resolved / "AGENTS.md"
+            if not agent_md.is_file():
+                agent_md = resolved / "AGENT.md"
+            if agent_md.is_file():
+                try:
+                    text = agent_md.read_text(encoding="utf-8").strip()
+                    source_path = agent_md.resolve()
+                    if text and source_path not in seen_paths:
+                        project_chain.append((str(agent_md), text))
+                        seen_paths.add(source_path)
+                except Exception:
+                    pass
+
+            if (resolved / ".git").exists():
+                break
+
+        project_chain.reverse()
+        found.extend(project_chain)
+
+        workspace_agent_md = self.path / self.config.agent_md
+        if workspace_agent_md.is_file():
+            try:
+                workspace_content = workspace_agent_md.read_text(encoding="utf-8").strip()
+                workspace_resolved = workspace_agent_md.resolve()
+                if workspace_content and workspace_resolved not in seen_paths:
+                    found.append((str(workspace_agent_md), workspace_content))
+            except Exception:
+                pass
+
+        return found
+
+    @staticmethod
+    def _truncate_agent_md_content(content: str, max_chars: int) -> str:
+        """Trim a single AGENTS.md file when it alone exceeds the remaining budget."""
+        if max_chars <= 0:
+            return ""
+        if len(content) <= max_chars:
+            return content
+        if max_chars <= 32:
+            return content[:max_chars]
+        return content[: max_chars - 15].rstrip() + "\n\n[truncated]"
+
+    def _apply_agent_md_budget(
+        self,
+        sources: List[Tuple[str, str]],
+        max_chars: int,
+    ) -> List[Tuple[str, str]]:
+        """Apply a character budget while preserving the highest-priority AGENTS files."""
+        selected_reversed: List[Tuple[str, str]] = []
+        remaining = max_chars
+
+        for path, content in reversed(sources):
+            formatted = f"<!-- {path} -->\n{content}"
+            if len(formatted) <= remaining:
+                selected_reversed.append((path, content))
+                remaining -= len(formatted)
+                continue
+            if not selected_reversed and remaining > 0:
+                prefix_length = len(f"<!-- {path} -->\n")
+                truncated = self._truncate_agent_md_content(content, remaining - prefix_length)
+                if truncated:
+                    selected_reversed.append((path, truncated))
+                break
+            break
+
+        selected_reversed.reverse()
+        return selected_reversed
 
     def get_git_context(self, max_status_lines: int = 30) -> Optional[str]:
         """Get git status context for system prompt injection.
@@ -527,6 +566,20 @@ You are a helpful AI assistant.
     _GLOBAL_AGENT_SYNC_END = "<!-- agentica:learned-preferences:end -->"
     _GLOBAL_AGENT_SYNC_HEADER = "## Learned Preferences"
     _GLOBAL_AGENT_SYNC_TYPES = {"user", "feedback"}
+    MAX_MEMORY_CHARACTER_COUNT: int = AGENTICA_MAX_MEMORY_CHARACTER_COUNT
+    _DURABLE_RULE_INCLUDE = re.compile(
+        r"(?:\balways\b|\bnever\b|\bprefer\b|\bavoid\b|\bmust\b|\bshould\b|\buse\b|\bkeep\b|\brule\b|"
+        r"\bstyle\b|\bpreference\b|\bformat\b|\bcommunication\b|"
+        r"总是|永远|不要|避免|优先|必须|应该|尽量|禁止|风格|偏好|规则|格式|沟通)",
+        re.IGNORECASE,
+    )
+    _DURABLE_RULE_EXCLUDE = re.compile(
+        r"(?:```|https?://|\btraceback\b|\bstack trace\b|\berror code\b|\bcurrent task\b|"
+        r"\bthis session\b|\btoday\b|\byesterday\b|\bcommit\b|"
+        r"\brag\b|\bpipeline\b|\boracle\b|\bmrr\b|\bp@\d\b|\br@\d\b|\bf1\b|"
+        r"\bprediction samples?\b|\btuning\b)",
+        re.IGNORECASE,
+    )
 
     def _get_global_agent_md_path(self) -> Path:
         """Return the user-global AGENTS.md path loaded into prompts."""
@@ -557,6 +610,20 @@ You are a helpful AI assistant.
             return normalized
         return normalized[: max_chars - 3].rstrip() + "..."
 
+    def _is_durable_global_preference(self, memory_type: str, metadata: Dict[str, str], content: str) -> bool:
+        """Keep only concise, reusable rules in user-global AGENTS.md."""
+        normalized = re.sub(r"\s+", " ", self._strip_frontmatter(content)).strip()
+        if not normalized or len(normalized) > 240:
+            return False
+        combined = " ".join(
+            part for part in [metadata.get("name", ""), metadata.get("description", ""), normalized] if part
+        )
+        if self._DURABLE_RULE_EXCLUDE.search(combined):
+            return False
+        if memory_type == "user":
+            return True
+        return bool(self._DURABLE_RULE_INCLUDE.search(combined))
+
     async def sync_memories_to_global_agent_md(self, limit: int = 30) -> str:
         """Compile user/feedback memories into ~/.agentica/AGENTS.md.
 
@@ -581,6 +648,8 @@ You are a helpful AI assistant.
                 metadata = self._parse_frontmatter(raw)
                 memory_type = metadata.get("type", "project")
                 if memory_type not in self._GLOBAL_AGENT_SYNC_TYPES:
+                    continue
+                if not self._is_durable_global_preference(memory_type, metadata, raw):
                     continue
 
                 title = metadata.get("name", memory_file.stem)
