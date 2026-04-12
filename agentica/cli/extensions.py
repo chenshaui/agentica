@@ -1,19 +1,23 @@
 # -*- coding: utf-8 -*-
 """
 @author:XuMing(xuming624@qq.com)
-@description: CLI handlers for extension installation.
+@description: CLI handlers for skill management (external subcommand).
+
+Handles both `agentica skills ...` and legacy `agentica extensions ...`.
 """
-from agentica.cli.config import console
+from agentica.cli.config import get_console
 from agentica.config import AGENTICA_SKILL_DIR
 from agentica.skills import get_skill_registry, load_skills, reset_skill_registry
 from agentica.skills.installer import install_skills, list_installed_skills, remove_skill
 
 
 def run_extensions_command(args) -> None:
-    """Execute `agentica extensions ...` subcommands."""
-    target_dir = args.target_dir or AGENTICA_SKILL_DIR
+    """Execute `agentica skills ...` (or legacy `agentica extensions ...`) subcommands."""
+    # Support both new 'skills_command' and legacy 'extensions_command' attr
+    subcmd = getattr(args, "skills_command", None) or getattr(args, "extensions_command", None)
+    target_dir = getattr(args, "target_dir", None) or AGENTICA_SKILL_DIR
 
-    if args.extensions_command == "install":
+    if subcmd == "install":
         replaced_symlinked_skills: list[str] = []
         installed = install_skills(
             args.source,
@@ -21,43 +25,44 @@ def run_extensions_command(args) -> None:
             force=args.force,
             replaced_symlinked_skills=replaced_symlinked_skills,
         )
-        console.print(
+        get_console().print(
             f"[green]Installed {len(installed)} skill(s) into {target_dir}[/green]"
         )
         for skill in installed:
-            console.print(f"  - [bold]{skill.name}[/bold]: {skill.description}")
+            get_console().print(f"  - [bold]{skill.name}[/bold]: {skill.description}")
         for skill_name in replaced_symlinked_skills:
-            console.print(f"[green]replaced existing symlinked skill: {skill_name}[/green]")
-        if args.target_dir:
-            console.print(
-                "[yellow]Note: custom --target-dir is only auto-discovered when it is a standard skills path or included in AGENTICA_EXTRA_SKILL_PATH.[/yellow]"
+            get_console().print(f"[green]replaced existing symlinked skill: {skill_name}[/green]")
+        if getattr(args, "target_dir", None):
+            get_console().print(
+                "[yellow]Note: custom --target-dir is only auto-discovered when it is "
+                "a standard skills path or included in AGENTICA_EXTRA_SKILL_PATH.[/yellow]"
             )
         return
 
-    if args.extensions_command == "list":
+    if subcmd == "list":
         skills = list_installed_skills(destination_dir=target_dir)
         if not skills:
-            console.print(f"[yellow]No skills installed in {target_dir}[/yellow]")
+            get_console().print(f"[yellow]No skills installed in {target_dir}[/yellow]")
             return
-        console.print(f"[green]Installed skills in {target_dir}[/green]")
+        get_console().print(f"[green]Installed skills in {target_dir}[/green]")
         for skill in skills:
-            console.print(f"  - [bold]{skill.name}[/bold]: {skill.description}")
+            get_console().print(f"  - [bold]{skill.name}[/bold]: {skill.description}")
         return
 
-    if args.extensions_command == "remove":
+    if subcmd == "remove":
         removed_path = remove_skill(args.skill_name, destination_dir=target_dir)
-        console.print(
+        get_console().print(
             f"[green]Removed skill {args.skill_name} from {removed_path}[/green]"
         )
         return
 
-    if args.extensions_command == "reload":
+    if subcmd == "reload":
         reset_skill_registry()
         load_skills()
         registry = get_skill_registry()
-        console.print(
+        get_console().print(
             f"[green]Reloaded {len(registry)} skill(s) from standard search paths[/green]"
         )
         return
 
-    raise ValueError(f"Unsupported extensions command: {args.extensions_command}")
+    raise ValueError(f"Unsupported skills command: {subcmd}")

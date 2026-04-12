@@ -16,7 +16,31 @@ from agentica.tools.buildin_tools import get_builtin_tools
 from agentica.config import AGENTICA_HOME
 from agentica.workspace import Workspace
 
-console = Console()
+# Plain Rich console — used outside TUI mode (non-interactive queries, startup).
+_plain_console = Console()
+
+# Active console — set to ChatConsole when TUI is running,
+# falls back to the plain Rich console for non-TUI usage.
+_active_console = None
+
+
+def get_console():
+    """Return the active console (ChatConsole during TUI, plain Rich otherwise)."""
+    if _active_console is not None:
+        return _active_console
+    return _plain_console
+
+
+def set_active_console(console_instance):
+    """Set the active console (call with ChatConsole when entering TUI, None when leaving)."""
+    global _active_console
+    _active_console = console_instance
+
+
+# Backward-compat alias — modules that imported `console` directly from config
+# now get the plain console. All runtime output should use get_console().
+console = _plain_console
+
 history_file = os.path.join(AGENTICA_HOME, "cli_history.txt")
 
 
@@ -25,83 +49,71 @@ def _generate_session_id() -> str:
     from uuid import uuid4
     return str(uuid4())
 
+
+# Builtin tools — single source of truth for all CLI display/listing.
+BUILTIN_TOOLS = [
+    "ls", "read_file", "write_file", "edit_file", "glob", "grep",
+    "execute", "web_search", "fetch_url", "task",
+]
+
 # Tool icons for CLI display
 TOOL_ICONS = {
-    # File tools
-    "ls": "📁",
-    "read_file": "📖",
-    "write_file": "✏️",
-    "edit_file": "✂️",
-    "glob": "🔍",
-    "grep": "🔎",
-    # Execution
-    "execute": "⚡",
-    # Web tools
-    "web_search": "🌐",
-    "fetch_url": "🔗",
-    # Task management
-    "write_todos": "📋",
-    # Subagent
-    "task": "🤖",
-    # Default
+    "ls": "📁", "read_file": "📖", "write_file": "✏️", "edit_file": "✂️",
+    "glob": "🔍", "grep": "🔎", "execute": "⚡",
+    "web_search": "🌐", "fetch_url": "🔗",
+    "write_todos": "📋", "task": "🤖",
     "default": "🔧",
 }
 
-# Tool registry - maps tool names to (module_name, class_name)
-# Format: 'tool_name': ('module_name', 'ClassName')
+# Tool registry - maps tool names to (module_name, class_name, category, description)
 # Module path: agentica.tools.{module_name}_tool.{ClassName}
 TOOL_REGISTRY = {
     # AI/ML Tools
-    'cogvideo':        ('cogvideo',        'CogVideoTool'),
-    'cogview':         ('cogview',         'CogViewTool'),
-    'dalle':           ('dalle',           'DalleTool'),
-    'image_analysis':  ('image_analysis',  'ImageAnalysisTool'),
-    'ocr':             ('ocr',             'OcrTool'),
-    'video_analysis':  ('video_analysis',  'VideoAnalysisTool'),
-    'volc_tts':        ('volc_tts',        'VolcTtsTool'),
-
+    'cogvideo':        ('cogvideo',        'CogVideoTool',       'AI/ML',        'Text-to-video generation with CogVideo'),
+    'cogview':         ('cogview',         'CogViewTool',        'AI/ML',        'Text-to-image generation with CogView'),
+    'dalle':           ('dalle',           'DalleTool',          'AI/ML',        'Image generation with DALL-E'),
+    'image_analysis':  ('image_analysis',  'ImageAnalysisTool',  'AI/ML',        'Image analysis and description'),
+    'ocr':             ('ocr',             'OcrTool',            'AI/ML',        'Optical character recognition'),
+    'video_analysis':  ('video_analysis',  'VideoAnalysisTool',  'AI/ML',        'Video content analysis'),
+    'volc_tts':        ('volc_tts',        'VolcTtsTool',        'AI/ML',        'Text-to-speech with Volcengine'),
     # Search Tools
-    'arxiv':           ('arxiv',           'ArxivTool'),
-    'baidu_search':    ('baidu_search',    'BaiduSearchTool'),
-    'dblp':            ('dblp',            'DblpTool'),
-    'duckduckgo':      ('duckduckgo',      'DuckDuckGoTool'),
-    'search_bocha':    ('search_bocha',    'SearchBochaTool'),
-    'search_exa':      ('search_exa',      'SearchExaTool'),
-    'search_serper':   ('search_serper',   'SearchSerperTool'),
-    'web_search_pro':  ('web_search_pro',  'WebSearchProTool'),
-    'wikipedia':       ('wikipedia',       'WikipediaTool'),
-
+    'arxiv':           ('arxiv',           'ArxivTool',          'Search',       'Search academic papers on arXiv'),
+    'baidu_search':    ('baidu_search',    'BaiduSearchTool',    'Search',       'Web search via Baidu'),
+    'dblp':            ('dblp',            'DblpTool',           'Search',       'Search computer science papers on DBLP'),
+    'duckduckgo':      ('duckduckgo',      'DuckDuckGoTool',     'Search',       'Web search via DuckDuckGo'),
+    'search_bocha':    ('search_bocha',    'SearchBochaTool',    'Search',       'Web search via Bocha'),
+    'search_exa':      ('search_exa',      'SearchExaTool',      'Search',       'Web search via Exa'),
+    'search_serper':   ('search_serper',   'SearchSerperTool',   'Search',       'Web search via Serper (Google)'),
+    'web_search_pro':  ('web_search_pro',  'WebSearchProTool',   'Search',       'Advanced web search with ZhipuAI'),
+    'wikipedia':       ('wikipedia',       'WikipediaTool',      'Search',       'Search and read Wikipedia articles'),
     # Web/Network Tools
-    'browser':         ('browser',         'BrowserTool'),
-    'jina':            ('jina',            'JinaTool'),
-    'newspaper':       ('newspaper',       'NewspaperTool'),
-    'url_crawler':     ('url_crawler',     'UrlCrawlerTool'),
-
+    'browser':         ('browser',         'BrowserTool',        'Web',          'Headless browser for web automation'),
+    'jina':            ('jina',            'JinaTool',           'Web',          'Web content extraction via Jina Reader'),
+    'newspaper':       ('newspaper',       'NewspaperTool',      'Web',          'Article extraction from news URLs'),
+    'url_crawler':     ('url_crawler',     'UrlCrawlerTool',     'Web',          'Recursive URL crawling'),
     # File/Code Tools
-    'calculator':      ('calculator',      'CalculatorTool'),
-    'code':            ('code',            'CodeTool'),
-    'edit':            ('edit',            'EditTool'),
-    'file':            ('file',            'FileTool'),
-    'run_nb_code':     ('run_nb_code',     'RunNbCodeTool'),
-    'run_python_code': ('run_python_code', 'RunPythonCodeTool'),
-    'shell':           ('shell',           'ShellTool'),
-    'string':          ('string',          'StringTool'),
-    'text_analysis':   ('text_analysis',   'TextAnalysisTool'),
-    'workspace':       ('workspace',       'WorkspaceTool'),
-
+    'calculator':      ('calculator',      'CalculatorTool',     'Code & Files', 'Mathematical expression evaluation'),
+    'code':            ('code',            'CodeTool',           'Code & Files', 'Code generation and execution'),
+    'edit':            ('edit',            'EditTool',           'Code & Files', 'File editing with diff patches'),
+    'file':            ('file',            'FileTool',           'Code & Files', 'File system operations'),
+    'run_nb_code':     ('run_nb_code',     'RunNbCodeTool',      'Code & Files', 'Execute Jupyter notebook code'),
+    'run_python_code': ('run_python_code', 'RunPythonCodeTool',  'Code & Files', 'Execute Python code snippets'),
+    'shell':           ('shell',           'ShellTool',          'Code & Files', 'Shell command execution'),
+    'string':          ('string',          'StringTool',         'Code & Files', 'String manipulation utilities'),
+    'text_analysis':   ('text_analysis',   'TextAnalysisTool',   'Code & Files', 'Text analysis and NLP'),
+    'workspace':       ('workspace',       'WorkspaceTool',      'Code & Files', 'Workspace file management'),
     # Data Tools
-    'hackernews':      ('hackernews',      'HackerNewsTool'),
-    'sql':             ('sql',             'SqlTool'),
-    'weather':         ('weather',         'WeatherTool'),
-    'yfinance':        ('yfinance',        'YFinanceTool'),
-
+    'hackernews':      ('hackernews',      'HackerNewsTool',     'Data',         'Fetch Hacker News stories'),
+    'sql':             ('sql',             'SqlTool',            'Data',         'SQL database queries'),
+    'weather':         ('weather',         'WeatherTool',        'Data',         'Weather information'),
+    'yfinance':        ('yfinance',        'YFinanceTool',       'Data',         'Financial data from Yahoo Finance'),
     # Integration Tools
-    'airflow':         ('airflow',         'AirflowTool'),
-    'apify':           ('apify',           'ApifyTool'),
-    'mcp':             ('mcp',             'MCPTool'),
-    'memori':          ('memori',          'MemoriTool'),
-    'skill':           ('skill',           'SkillTool'),
-    'video_download':  ('video_download',  'VideoDownloadTool'),
+    'airflow':         ('airflow',         'AirflowTool',        'Integration',  'Apache Airflow DAG management'),
+    'apify':           ('apify',           'ApifyTool',          'Integration',  'Web scraping via Apify'),
+    'mcp':             ('mcp',             'MCPTool',            'Integration',  'Model Context Protocol integration'),
+    'memori':          ('memori',          'MemoriTool',         'Integration',  'Long-term memory management'),
+    'skill':           ('skill',           'SkillTool',          'Integration',  'Skill document management'),
+    'video_download':  ('video_download',  'VideoDownloadTool',  'Integration',  'Video download from URLs'),
 }
 
 # Model provider registry - maps provider name to model class
@@ -129,7 +141,7 @@ EXAMPLE_MODELS = {
 
 def _get_tool_import_path(tool_name: str) -> str:
     """Get full import path for a tool."""
-    module_name, class_name = TOOL_REGISTRY[tool_name]
+    module_name, class_name, _cat, _desc = TOOL_REGISTRY[tool_name]
     return f"agentica.tools.{module_name}_tool.{class_name}"
 
 
@@ -138,9 +150,9 @@ def parse_args():
     if len(sys.argv) > 1 and sys.argv[1] == 'acp':
         return None  # Signal to run in ACP mode
 
-    if len(sys.argv) > 1 and sys.argv[1] == "extensions":
-        parser = argparse.ArgumentParser(description="Manage Agentica skill extensions")
-        subparsers = parser.add_subparsers(dest="extensions_command", required=True)
+    if len(sys.argv) > 1 and sys.argv[1] in ("skills", "extensions"):
+        parser = argparse.ArgumentParser(description="Manage Agentica skills")
+        subparsers = parser.add_subparsers(dest="skills_command", required=True)
 
         install_parser = subparsers.add_parser(
             "install",
@@ -190,11 +202,11 @@ def parse_args():
         )
 
         args = parser.parse_args(sys.argv[2:])
-        args.command = "extensions"
+        args.command = "skills"
         return args
 
     parser = argparse.ArgumentParser(description='CLI for agentica')
-    
+
     parser.add_argument('--query', type=str, help='Question to ask the LLM', default=None)
     parser.add_argument('--model_provider', type=str,
                         choices=list(MODEL_REGISTRY.keys()),
@@ -232,10 +244,11 @@ def configure_tools(tool_names: Optional[List[str]] = None) -> List[Any]:
     if not tool_names:
         return []
 
+    con = get_console()
     tools = []
     for name in tool_names:
         if name not in TOOL_REGISTRY:
-            console.print(f"[yellow]Warning: Tool '{name}' not recognized. Skipping.[/yellow]")
+            con.print(f"[yellow]Warning: Tool '{name}' not recognized. Skipping.[/yellow]")
             continue
 
         try:
@@ -245,11 +258,11 @@ def configure_tools(tool_names: Optional[List[str]] = None) -> List[Any]:
             tool_class = getattr(module, class_name)
             tool_instance = tool_class()
             tools.append(tool_instance)
-            console.print(f"[green]Loaded additional tool: {name}[/green]")
+            con.print(f"[green]Loaded additional tool: {name}[/green]")
         except ImportError as e:
-            console.print(f"[red]Error: Could not import tool '{name}'. Missing dependencies? {str(e)}[/red]")
+            con.print(f"[red]Error: Could not import tool '{name}'. Missing dependencies? {str(e)}[/red]")
         except Exception as e:
-            console.print(f"[red]Error: Failed to initialize tool '{name}': {str(e)}[/red]")
+            con.print(f"[red]Error: Failed to initialize tool '{name}': {str(e)}[/red]")
 
     return tools
 

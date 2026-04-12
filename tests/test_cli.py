@@ -49,10 +49,12 @@ class TestToolRegistry(unittest.TestCase):
 
     def test_registry_format(self):
         """Test registry entries have correct format."""
-        for tool_name, (module_name, class_name) in TOOL_REGISTRY.items():
+        for tool_name, (module_name, class_name, category, description) in TOOL_REGISTRY.items():
             self.assertIsInstance(tool_name, str)
             self.assertIsInstance(module_name, str)
             self.assertIsInstance(class_name, str)
+            self.assertIsInstance(category, str)
+            self.assertIsInstance(description, str)
 
     def test_common_tools_registered(self):
         """Test common tools are registered."""
@@ -268,8 +270,8 @@ class TestCLIConfiguration(unittest.TestCase):
         ):
             args = parse_args()
 
-        self.assertEqual(args.command, "extensions")
-        self.assertEqual(args.extensions_command, "remove")
+        self.assertEqual(args.command, "skills")
+        self.assertEqual(args.skills_command, "remove")
         self.assertEqual(args.skill_name, "learn-from-experience")
 
     def test_parse_extensions_install_command(self):
@@ -283,13 +285,14 @@ class TestCLIConfiguration(unittest.TestCase):
         ):
             args = parse_args()
 
-        self.assertEqual(args.command, "extensions")
-        self.assertEqual(args.extensions_command, "install")
+        self.assertEqual(args.command, "skills")
+        self.assertEqual(args.skills_command, "install")
         self.assertEqual(args.source, "/tmp/mock-skill-repo")
 
     def test_interactive_extensions_install_reports_replaced_symlinked_skill(self):
         """Interactive install prints when it replaces a symlinked skill."""
-        import agentica.cli.interactive as interactive
+        import agentica.cli.commands as commands
+        from agentica.cli.commands import CommandContext
         from agentica.skills.skill import Skill
         from agentica.skills.skill_registry import SkillRegistry
 
@@ -315,27 +318,33 @@ class TestCLIConfiguration(unittest.TestCase):
             replaced_symlinked_skills.append("learn-from-experience")
             return [installed_skill]
 
-        with patch.object(interactive, "install_skills", side_effect=fake_install_skills), patch.object(
-            interactive, "reset_skill_registry"
-        ), patch.object(interactive, "load_skills"), patch.object(
-            interactive, "get_skill_registry", return_value=refreshed_registry
-        ), patch.object(
-            interactive, "create_agent", return_value=MagicMock()
-        ), patch.object(interactive.console, "print") as console_print:
-            interactive._cmd_extensions(
-                cmd_args="install /tmp/mock-skill-repo --force",
-                agent_config={"model_provider": "zhipuai", "model_name": "glm-5", "debug": False, "work_dir": None},
-                extra_tools=[],
-                workspace=None,
-                skills_registry=SkillRegistry(),
-            )
+        ctx = CommandContext(
+            agent_config={"model_provider": "zhipuai", "model_name": "glm-5", "debug": False, "work_dir": None},
+            current_agent=MagicMock(),
+            extra_tools=[],
+            workspace=None,
+            skills_registry=SkillRegistry(),
+        )
+
+        printed = []
+        def mock_print(*args, **kwargs):
+            if args:
+                printed.append(str(args[0]))
+
+        with patch.object(commands, "install_skills", side_effect=fake_install_skills), \
+             patch.object(commands, "reset_skill_registry"), \
+             patch.object(commands, "load_skills"), \
+             patch.object(commands, "get_skill_registry", return_value=refreshed_registry), \
+             patch.object(commands, "create_agent", return_value=MagicMock()), \
+             patch("agentica.cli.commands.get_console") as mock_get_console:
+            mock_console = MagicMock()
+            mock_console.print = mock_print
+            mock_get_console.return_value = mock_console
+            commands._cmd_skills(ctx, cmd_args="install /tmp/mock-skill-repo --force")
 
         self.assertTrue(
-            any(
-                "replaced existing symlinked skill" in str(call.args[0])
-                for call in console_print.call_args_list
-                if call.args
-            )
+            any("replaced existing" in msg.lower() for msg in printed),
+            f"Expected 'replaced existing' in output, got: {printed}",
         )
 
     def test_create_agent_moves_skills_summary_out_of_instructions(self):
@@ -389,7 +398,7 @@ class TestToolRegistryIntegrity(unittest.TestCase):
 
     def test_all_tools_have_valid_module_names(self):
         """Test all tools have valid module names."""
-        for tool_name, (module_name, class_name) in TOOL_REGISTRY.items():
+        for tool_name, (module_name, class_name, category, description) in TOOL_REGISTRY.items():
             # Module name should not be empty
             self.assertTrue(len(module_name) > 0, f"Empty module name for {tool_name}")
             # Class name should not be empty

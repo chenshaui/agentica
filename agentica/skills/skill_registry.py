@@ -277,6 +277,33 @@ class SkillRegistry:
 
         return "\n".join(lines)
 
+    def auto_commands(self) -> Dict[str, "Skill"]:
+        """Build a mapping of auto-generated slash commands to skills.
+
+        For every user-invocable, non-hidden skill:
+        - If it has an explicit ``trigger`` like ``/commit``, use that.
+        - Otherwise, generate ``/slug`` from the skill name
+          (e.g. "My Cool Skill" -> ``/my-cool-skill``).
+
+        Returns:
+            Dict mapping ``/slug`` -> Skill
+        """
+        import re as _re
+        cmds: Dict[str, "Skill"] = {}
+        for skill in self._skills.values():
+            if not skill.user_invocable or skill.is_hidden:
+                continue
+            if skill.trigger:
+                slug = skill.trigger if skill.trigger.startswith("/") else f"/{skill.trigger}"
+            else:
+                slug = skill.name.lower().replace(" ", "-").replace("_", "-")
+                slug = _re.sub(r"[^a-z0-9\-]", "", slug)
+                slug = _re.sub(r"-+", "-", slug).strip("-")
+                slug = f"/{slug}"
+            if slug and slug != "/":
+                cmds[slug] = skill
+        return cmds
+
     def __len__(self) -> int:
         return len(self._skills)
 

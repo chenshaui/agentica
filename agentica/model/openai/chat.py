@@ -305,9 +305,12 @@ class OpenAIChat(Model):
             response_usage: Optional[CompletionUsage],
     ) -> Message:
         """Create an assistant message from the response."""
+        content = response_message.content
+        if isinstance(content, str):
+            content = content.lstrip("\n")
         assistant_message = Message(
             role=response_message.role or "assistant",
-            content=response_message.content,
+            content=content,
         )
         if response_message.tool_calls is not None and len(response_message.tool_calls) > 0:
             try:
@@ -466,7 +469,7 @@ class OpenAIChat(Model):
 
         assistant_message = Message(role="assistant")
         if stream_data.response_content:
-            assistant_message.content = stream_data.response_content
+            assistant_message.content = stream_data.response_content.lstrip("\n")
 
         if stream_data.response_reasoning_content:
             assistant_message.reasoning_content = stream_data.response_reasoning_content

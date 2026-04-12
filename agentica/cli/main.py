@@ -3,7 +3,7 @@
 @author:XuMing(xuming624@qq.com)
 @description: CLI main entry point
 """
-from agentica.cli.config import console, parse_args, configure_tools, create_agent
+from agentica.cli.config import get_console, parse_args, configure_tools, create_agent
 from agentica.cli.interactive import run_interactive
 from agentica.utils.log import suppress_console_logging
 from agentica.workspace import Workspace
@@ -20,9 +20,8 @@ def main():
         server.run()
         return
 
-    if hasattr(args, "command") and args.command == "extensions":
+    if hasattr(args, "command") and args.command in ("skills", "extensions"):
         from agentica.cli.extensions import run_extensions_command
-
         run_extensions_command(args)
         return
 
@@ -62,9 +61,10 @@ def main():
 
     if args.query:
         # Non-interactive mode
-        console.print(f"Running query: {args.query}", style="cyan")
+        con = get_console()
+        con.print(f"Running query: {args.query}", style="cyan")
         tools_info = f", Extra Tools: {', '.join(extra_tool_names)}" if extra_tool_names else ""
-        console.print(
+        con.print(
             f"Model: {agent_config['model_provider']}/{agent_config['model_name']}{tools_info}",
             style="magenta")
 
@@ -74,12 +74,12 @@ def main():
             response = agent_instance.run_stream_sync(args.query)
             for chunk in response:
                 if chunk and chunk.content:
-                    console.print(chunk.content, end="")
-            console.print()  # final newline
+                    con.print(chunk.content, end="")
+            con.print()  # final newline
         except KeyboardInterrupt:
-            console.print("\n[yellow]Interrupted.[/yellow]")
+            con.print("\n[yellow]Interrupted.[/yellow]")
         except Exception as e:
-            console.print(f"\n[bold red]Error: {str(e)}[/bold red]")
+            con.print(f"\n[bold red]Error: {str(e)}[/bold red]")
     else:
         # Interactive mode
         run_interactive(agent_config, extra_tool_names, workspace, skills_registry)

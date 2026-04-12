@@ -14,7 +14,7 @@ from rich.markdown import Markdown
 from rich.syntax import Syntax
 from rich.text import Text
 
-from agentica.cli.config import console, TOOL_ICONS
+from agentica.cli.config import get_console, TOOL_ICONS, BUILTIN_TOOLS
 
 
 # Rich console color scheme (unified - no separate ANSI codes)
@@ -30,10 +30,10 @@ COLORS = {
 def print_header(model_provider: str, model_name: str, work_dir: Optional[str] = None,
                  extra_tools: Optional[List[str]] = None, shell_mode: bool = False):
     """Print the application header with version and model information"""
-    box_width = min(console.width, 80)
-    console.print("=" * box_width, style="bright_cyan")
-    console.print("  Agentica CLI - Interactive AI Assistant")
-    console.print(f"  Model: [bright_green]{model_provider}/{model_name}[/bright_green]")
+    box_width = min(get_console().width, 80)
+    get_console().print("=" * box_width, style="bright_cyan")
+    get_console().print("  Agentica CLI - Interactive AI Assistant")
+    get_console().print(f"  Model: [bright_green]{model_provider}/{model_name}[/bright_green]")
 
     # Working directory
     cwd = work_dir or os.getcwd()
@@ -42,36 +42,34 @@ def print_header(model_provider: str, model_name: str, work_dir: Optional[str] =
         cwd = "~" + cwd[len(home):]
     if len(cwd) > 50:
         cwd = "..." + cwd[-47:]
-    console.print(f"  Working Directory: {cwd}")
+    get_console().print(f"  Working Directory: {cwd}")
 
     # Built-in tools (always shown)
-    builtin_tools = ["ls", "read_file", "write_file", "edit_file", "glob", "grep",
-                     "execute", "web_search", "fetch_url", "write_todos", "task"]
-    console.print(f"  Built-in Tools: [white]{', '.join(builtin_tools)}[/white]")
+    get_console().print(f"  Built-in Tools: [white]{', '.join(BUILTIN_TOOLS)}[/white]")
 
     # Extra tools info
     if extra_tools:
         tools_str = ", ".join(extra_tools)
         if len(tools_str) > 55:
             tools_str = tools_str[:52] + "..."
-        console.print(f"  Extra Tools: [bright_green]{tools_str}[/bright_green]")
+        get_console().print(f"  Extra Tools: [bright_green]{tools_str}[/bright_green]")
 
-    console.print("=" * box_width, style="bright_cyan")
-    console.print()
+    get_console().print("=" * box_width, style="bright_cyan")
+    get_console().print()
     # Keyboard shortcuts
-    console.print("  [bright_green]Enter[/bright_green]       Submit your message")
-    console.print("  [bright_green]Ctrl+X[/bright_green]      Toggle Agent/Shell mode")
-    console.print("  [bright_green]Ctrl+J[/bright_green]      Insert newline (Alt+Enter also works)")
-    console.print("  [bright_green]Ctrl+D[/bright_green]      Exit")
-    console.print("  [bright_green]Ctrl+C[/bright_green]      Interrupt current operation")
-    console.print("  [bright_green]Alt+V[/bright_green]       Paste image from clipboard")
-    console.print()
+    get_console().print("  [bright_green]Enter[/bright_green]       Submit your message")
+    get_console().print("  [bright_green]Ctrl+X[/bright_green]      Toggle Agent/Shell mode")
+    get_console().print("  [bright_green]Ctrl+J[/bright_green]      Insert newline (Alt+Enter also works)")
+    get_console().print("  [bright_green]Ctrl+D[/bright_green]      Exit")
+    get_console().print("  [bright_green]Ctrl+C[/bright_green]      Interrupt current operation")
+    get_console().print("  [bright_green]Alt+V[/bright_green]       Paste image from clipboard")
+    get_console().print()
     # Input features
-    console.print("  [bright_green]@filename[/bright_green]   Type @ to auto-complete files and inject content")
-    console.print("  [bright_green]/paste[/bright_green]      Paste image from clipboard")
-    console.print("  [bright_green]/image[/bright_green]      Attach local image: /image <path>")
-    console.print("  [bright_green]/command[/bright_green]    Type / to see available commands (try /help)")
-    console.print()
+    get_console().print("  [bright_green]@filename[/bright_green]   Type @ to auto-complete files and inject content")
+    get_console().print("  [bright_green]/paste[/bright_green]      Paste image from clipboard")
+    get_console().print("  [bright_green]/image[/bright_green]      Attach local image: /image <path>")
+    get_console().print("  [bright_green]/command[/bright_green]    Type / to see available commands (try /help)")
+    get_console().print()
 
 
 def parse_file_mentions(text: str) -> tuple[str, list[Path]]:
@@ -155,7 +153,7 @@ def display_user_message(text: str, *, pasted_blocks: int = 0, pasted_lines: int
             style="dim",
         )
 
-    console.print(rich_text)
+    get_console().print(rich_text)
 
 
 def get_file_completions(document_text: str) -> List[str]:
@@ -199,58 +197,80 @@ def get_file_completions(document_text: str) -> List[str]:
 
 
 def show_help():
-    """Display help information."""
-    help_text = """
-Slash Commands:
-  /help              Show this help message
-  /clear, /reset     Clear screen and reset conversation
-  /compact           Compact context (summarize history)
-  /cost              Show token usage and cost for this session
-  /debug             Show debug info (model, history count)
-  /export [file]     Export conversation to Markdown file
-  /model [p/m]       Show or switch model (e.g., /model deepseek/deepseek-chat)
-  /newchat           Start a new chat session
-  /resume            Resume a previous session
-  /permissions [m]   View or set permission mode (allow-all/auto/strict)
-  /tools             List available additional tools
-  /skills            List available skills and triggers
-  /reload-skills     Reload skills from disk
-  /memory            Show conversation history
-  /workspace         Show workspace status and files
-  /exit, /quit       Exit the CLI
+    """Display categorized help information."""
+    categories = {
+        "Session": {
+            "/new":             "Start a new chat session",
+            "/clear, /reset":   "Clear screen and reset conversation",
+            "/resume [name]":   "Resume a previous session",
+            "/history":         "Show conversation history",
+            "/save, /export":   "Save conversation to JSON (no system prompts)",
+            "/retry":           "Retry the last message (resend to agent)",
+            "/undo":            "Remove the last user/assistant exchange",
+            "/compact":         "Compact context (summarize history)",
+            "/btw <question>":  "Ephemeral side question (no tools, not saved)",
+            "/queue":           "Queue: <prompt> | list | clear | remove <n>",
+            "/background":      "Run prompt in background (/bg alias)",
+            "/stop":            "Kill all running background tasks",
+        },
+        "Configure": {
+            "/model [p/m]":     "Show or switch model",
+            "/config":          "Show current configuration",
+            "/cost, /usage":    "Show detailed token usage and cost",
+            "/debug":           "Show debug info (model, history count)",
+            "/reasoning":       "Toggle reasoning display: on | off",
+            "/statusbar, /sb":  "Toggle the status bar",
+        },
+        "Tools & Skills": {
+            "/tools":           "List available tools",
+            "/skills":          "Manage skills: list | install | remove | inspect | reload",
+        },
+        "Permissions": {
+            "/permissions":     "View or set mode (allow-all/auto/strict)",
+            "/yolo":            "Toggle YOLO mode (auto-approve all)",
+        },
+        "Media": {
+            "/paste":           "Paste image from clipboard",
+            "/image <path>":    "Attach a local image file",
+        },
+        "Other": {
+            "/help":            "Show this help message",
+            "/exit, /quit":     "Exit the CLI",
+        },
+    }
 
-Keyboard Shortcuts:
-  Enter              Submit your message
-  Ctrl+X             Toggle Agent/Shell mode ($ = shell, > = agent)
-  Ctrl+J, Alt+Enter  Insert newline for multi-line input
-  Ctrl+D             Exit
-  Ctrl+C             Interrupt current operation
+    get_console().print()
+    get_console().print("  [bold]Available Commands[/bold]")
+    get_console().print()
 
-Input Features:
-  @filename          Reference a file - content will be injected into prompt
-  /command           Type / to trigger slash commands (auto-complete with descriptions)
+    for category, commands in categories.items():
+        get_console().print(f"  [bold]-- {category} --[/bold]")
+        for cmd, desc in commands.items():
+            get_console().print(f"    [bright_green]{cmd:<18}[/bright_green] [dim]{desc}[/dim]")
+        get_console().print()
 
-Shell Mode (Ctrl+X to toggle):
-  When in shell mode ($ prompt), commands execute directly without AI.
-  Useful for quick file operations, git commands, etc.
+    get_console().print("  [bold]Keyboard Shortcuts[/bold]")
+    get_console().print()
+    shortcuts = {
+        "Enter":             "Submit your message",
+        "Ctrl+X":            "Toggle Agent/Shell mode ($ = shell, > = agent)",
+        "Ctrl+J, Alt+Enter": "Insert newline for multi-line input",
+        "Ctrl+D":            "Exit",
+        "Ctrl+C":            "Interrupt current operation",
+        "Tab, Right Arrow":  "Accept completion / auto-suggestion",
+        "Alt+V":             "Paste image from clipboard",
+    }
+    for key, desc in shortcuts.items():
+        get_console().print(f"    [bright_green]{key:<20}[/bright_green] [dim]{desc}[/dim]")
+    get_console().print()
 
-Permission Modes:
-  allow-all          Auto-approve all tool executions (--allow-all flag)
-  auto               Prompt for write/execute, auto-approve reads (default)
-  strict             Prompt for every tool call
-  /yolo              Quick toggle between allow-all and auto
-
-Tips:
-  - Type @ followed by a filename to reference files
-  - Agent has built-in tools: ls, read_file, write_file, edit_file, glob, grep,
-    execute, web_search, fetch_url, write_todos, task
-  - Use --tools to add extra tools, e.g.: --tools calculator shell wikipedia
-  - Use --enable-skills to load skills, then /skills to list them
-  - Install skill packs before launch: agentica extensions install <git-url>
-  - Install skill packs in-session: /extensions install <git-url>
-  - Say "remember this" or "save this" to trigger memory saving
-"""
-    console.print(help_text, style="yellow")
+    get_console().print("  [bold]Input Features[/bold]")
+    get_console().print()
+    get_console().print("    [bright_green]@filename[/bright_green]           Reference a file - content injected into prompt")
+    get_console().print("    [bright_green]/command[/bright_green]            Type / to see slash commands with auto-complete")
+    get_console().print()
+    get_console().print("  [dim]Tip: type your message and press Enter to chat![/dim]")
+    get_console().print()
 
 
 def _extract_filename(file_path: str) -> str:
@@ -397,24 +417,19 @@ def _display_tool_impl(console_instance, tool_name: str, tool_args: dict,
     """Shared implementation for displaying a tool call."""
     icon = TOOL_ICONS.get(tool_name, TOOL_ICONS["default"])
     display_str = format_tool_display(tool_name, tool_args)
-    
+
     # Add blank line between tools for readability
     if tool_count > 1:
         console_instance.print()
-    
+
     # Special handling for write_todos - multi-line display
     if tool_name == "write_todos" and "\n" in display_str:
-        console_instance.print(f"  {icon} ", end="")
-        console_instance.print(f"{tool_name}", end="", style="bold magenta")
-        console_instance.print(" tasks:", style="dim")
+        console_instance.print(f"  {icon} [bold magenta]{tool_name}[/bold magenta] tasks:")
         console_instance.print(f"    {display_str}", style="dim")
+    elif display_str:
+        console_instance.print(f"  {icon} [bold magenta]{tool_name}[/bold magenta] [dim]{display_str}[/dim]")
     else:
-        console_instance.print(f"  {icon} ", end="")
-        console_instance.print(f"{tool_name}", end="", style="bold magenta")
-        if display_str:
-            console_instance.print(f" {display_str}", style="dim")
-        else:
-            console_instance.print()
+        console_instance.print(f"  {icon} [bold magenta]{tool_name}[/bold magenta]")
 
 
 _BOX_COLOR = "bright_yellow"
@@ -443,6 +458,7 @@ class StreamDisplayManager:
         self._response_buffer = []
         self._box_opened = False
         self._thinking_box_opened = False
+        self._line_buffer = ""  # accumulates tokens until newline for line-buffered output
 
     def _open_box(self, label: str = "Response"):
         w = self._term_width
@@ -452,6 +468,23 @@ class StreamDisplayManager:
     def _close_box(self):
         w = self._term_width
         self.console.print(f"[{_BOX_COLOR}]╰{'─' * (w - 2)}╯[/{_BOX_COLOR}]")
+
+    def _flush_line_buffer(self):
+        """Flush any accumulated partial line to output."""
+        if self._line_buffer:
+            self.console.print(self._line_buffer, highlight=False, markup=False)
+            self._line_buffer = ""
+
+    def _stream_text(self, content: str):
+        """Buffer tokens and output complete lines.
+
+        Accumulate tokens and flush on each newline through the same
+        console path used by box drawing, ensuring correct ordering.
+        """
+        self._line_buffer += content
+        while "\n" in self._line_buffer:
+            line, self._line_buffer = self._line_buffer.split("\n", 1)
+            self.console.print(line, highlight=False, markup=False)
 
     def start_thinking(self):
         """Start thinking section with a box."""
@@ -463,13 +496,13 @@ class StreamDisplayManager:
             self.in_thinking = True
 
     def stream_thinking(self, content: str):
-        """Stream thinking content."""
-        self.console.print(content, end="", style="dim")
+        """Stream thinking content with line-buffered output."""
+        self._stream_text(content)
 
     def end_thinking(self):
         """End thinking section and close its box."""
         if self.in_thinking:
-            self.console.print()
+            self._flush_line_buffer()
             if self._thinking_box_opened:
                 self._close_box()
                 self._thinking_box_opened = False
@@ -605,26 +638,23 @@ class StreamDisplayManager:
             self.response_started = True
 
     def stream_response(self, content: str):
-        """Stream response content (real-time plain text + buffer for Markdown re-render)."""
+        """Stream response content with line-buffered output."""
         self.start_response()
         self._response_buffer.append(content)
-        self.console.print(content, end="", style=COLORS["agent"])
+        self._stream_text(content)
         self.has_content_output = True
 
     def finalize(self):
-        """Finalize output, close any open boxes. Re-render as Markdown if applicable."""
+        """Finalize output: flush buffered text and close open boxes."""
         if self.in_thinking:
             self.end_thinking()
         if self.in_tool_section:
             self.end_tool_section()
         if self.has_content_output:
-            self.console.print()
+            self._flush_line_buffer()
             if self._box_opened:
                 self._close_box()
                 self._box_opened = False
-            full_response = "".join(self._response_buffer)
-            if _has_markdown(full_response):
-                self.console.print(Markdown(full_response))
         elif self._box_opened:
             self._close_box()
             self._box_opened = False
@@ -632,7 +662,7 @@ class StreamDisplayManager:
 
 def display_tool_call(tool_name: str, tool_args: dict) -> None:
     """Display a tool call with icon and colored tool name."""
-    _display_tool_impl(console, tool_name, tool_args)
+    _display_tool_impl(get_console(), tool_name, tool_args)
 
 
 def _has_markdown(text: str) -> bool:
@@ -793,9 +823,9 @@ def build_status_bar_fragments(
     most recent turn's latency.
 
     Adapts to terminal width:
-      <52 cols:  ⚕ model · ⏱12.3s
-      <76 cols:  ⚕ model · 45% · $0.02 · ⏱12.3s
-      >=76 cols: ⚕ model │ 64K/128K │ [████░░] 45% │ $0.02 │ ⏱12.3s Σ1m45s
+      <52 cols:  ▸ model · ⏱12.3s
+      <76 cols:  ▸ model · 45% · $0.02 · ⏱12.3s
+      >=76 cols: ▸ model │ 64K/128K │ [████░░] 45% │ $0.02 │ ⏱12.3s Σ1m45s
     """
     short = model_name.split("/")[-1] if "/" in model_name else model_name
     if len(short) > 26:
@@ -812,7 +842,7 @@ def build_status_bar_fragments(
 
     if terminal_width < 52:
         frags = [
-            ("class:sb", " ⚕ "),
+            ("class:sb", " ▸ "),
             ("class:sb-strong", short),
         ]
         if turn_str:
@@ -820,7 +850,7 @@ def build_status_bar_fragments(
             frags.append(("class:sb", turn_str))
     elif terminal_width < 76:
         frags = [
-            ("class:sb", " ⚕ "),
+            ("class:sb", " ▸ "),
             ("class:sb-strong", short),
             sep,
             (fg, pct_label),
@@ -834,7 +864,7 @@ def build_status_bar_fragments(
         ctx_used = _format_tokens_short(context_tokens) if context_tokens else "0"
         ctx_total = _format_tokens_short(context_window) if context_window else "?"
         frags = [
-            ("class:sb", " ⚕ "),
+            ("class:sb", " ▸ "),
             ("class:sb-strong", short),
             ("class:sb-dim", " │ "),
             ("class:sb", f"{ctx_used}/{ctx_total}"),
@@ -851,10 +881,6 @@ def build_status_bar_fragments(
         if total_str:
             frags.append(("class:sb-dim", "  "))
             frags.append(("class:sb-dim", total_str))
-
-    if spinner_text:
-        frags.append(("class:sb-dim", " │ "))
-        frags.append(("class:sb-spin", spinner_text))
 
     frags.append(("class:sb", " "))
     return frags
