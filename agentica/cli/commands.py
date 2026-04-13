@@ -25,6 +25,7 @@ from agentica.cli.config import (
     TOOL_REGISTRY,
     MODEL_REGISTRY,
     EXAMPLE_MODELS,
+    configure_tools,
     create_agent,
     get_model,
     _generate_session_id,
@@ -203,7 +204,7 @@ def _run_async_safe(coro):
 
 def _cmd_help(ctx: CommandContext, cmd_args: str = ""):
     _cmd_title("/help")
-    show_help()
+    show_help(skills_registry=ctx.skills_registry)
 
 
 def _cmd_exit(ctx: CommandContext, cmd_args: str = ""):
@@ -211,39 +212,89 @@ def _cmd_exit(ctx: CommandContext, cmd_args: str = ""):
 
 
 def _cmd_tools(ctx: CommandContext, cmd_args: str = ""):
-    """List available tools with categories and descriptions."""
+    """List available tools, or dynamically add tools with '/tools add <name>'."""
     _cmd_title("/tools")
     con = get_console()
+    args_str = cmd_args.strip()
 
-    active_set = set(ctx.extra_tool_names) if ctx.extra_tool_names else set()
+    # /tools add <name> — dynamically load and attach tool to current agent
+    if args_str.startswith("add "):
+        tool_names = args_str[4:].split()
+        if not tool_names:
+            con.print("  [dim]Usage: /tools add <name> [name2 ...][/dim]")
+            return
+        agent = ctx.current_agent
+        if not agent:
+            con.print("  [red]No active agent.[/red]")
+            return
+        for name in tool_names:
+            if name not in TOOL_REGISTRY:
+                con.print(f"  [red]Unknown tool: {name}[/red]")
+                continue
+            # Check if already loaded
+            active_names = _get_active_tool_names(agent)
+            if name in active_names:
+                con.print(f"  [dim]{name} is already active.[/dim]")
+                continue
+            try:
+                new_tools = configure_tools([name])
+                if new_tools:
+                    if agent.tools is None:
+                        agent.tools = []
+                    agent.tools.extend(new_tools)
+                    # Also track in extra_tool_names for display consistency
+                    if ctx.extra_tool_names is None:
+                        ctx.extra_tool_names = []
+                    if name not in ctx.extra_tool_names:
+                        ctx.extra_tool_names.append(name)
+                    con.print(f"  [green]✓ {name} loaded and active.[/green]")
+            except Exception as e:
+                con.print(f"  [red]Failed to load {name}: {e}[/red]")
+        return {"extra_tool_names": ctx.extra_tool_names}
 
-    # Built-in tools
+    # /tools (no args) — list all tools
+    active_names = set()
+    agent = ctx.current_agent
+    if agent:
+        active_names = _get_active_tool_names(agent)
+    if ctx.extra_tool_names:
+        active_names.update(ctx.extra_tool_names)
+
+    # Merge builtin + registry into a flat list
+    all_tools = {}
+    for name in BUILTIN_TOOLS:
+        all_tools[name] = ("built-in", True)
+    for name, (_mod, _cls, _cat, desc) in TOOL_REGISTRY.items():
+        is_active = name in active_names
+        all_tools[name] = (desc, is_active)
+
     con.print()
-    con.print(f"  [bold cyan]Built-in Tools ({len(BUILTIN_TOOLS)})[/bold cyan]  [dim]always active[/dim]")
-    con.print(f"    {', '.join(BUILTIN_TOOLS)}")
+    for name in sorted(all_tools.keys()):
+        desc, is_active = all_tools[name]
+        if is_active:
+            con.print(f"    [green]●[/green] [bold]{name:<20}[/bold] {desc}")
+        else:
+            con.print(f"    [dim]○[/dim] [dim]{name:<20}[/dim] [dim]{desc}[/dim]")
+    con.print()
+    active_count = sum(1 for _, (_, a) in all_tools.items() if a)
+    con.print(f"  [green]● = active ({active_count})[/green]  [dim]○ = available ({len(all_tools) - active_count})[/dim]")
+    con.print(f"  [dim]Dynamic load: /tools add <name>  |  Startup: agentica --tools <name>[/dim]")
     con.print()
 
-    # Extra tools — grouped by category from TOOL_REGISTRY
-    categories: Dict[str, Dict[str, str]] = {}
-    for name, (_mod, _cls, category, description) in TOOL_REGISTRY.items():
-        categories.setdefault(category, {})[name] = description
 
-    con.print("  [bold cyan]Extra Tools[/bold cyan]  [dim]enable with --tools <name>[/dim]")
-    con.print()
-    for category in sorted(categories.keys()):
-        tools = categories[category]
-        active_in_cat = [t for t in tools if t in active_set]
-        marker = " [green]*[/green]" if active_in_cat else ""
-        con.print(f"  [bold]{category}[/bold]{marker}  [dim]({len(tools)} tools)[/dim]")
-        for name, desc in sorted(tools.items()):
-            active = "[green](*)[/green] " if name in active_set else "    "
-            con.print(f"    {active}[dim]{name:<20}[/dim] {desc}")
-        con.print()
-
-    if active_set:
-        con.print(f"  [green](*) = currently enabled[/green]")
-    con.print(f"  [dim]Example: agentica --tools browser duckduckgo[/dim]")
-    con.print()
+def _get_active_tool_names(agent) -> set:
+    """Get names of tools currently active on the agent."""
+    names = set()
+    if not agent or not agent.tools:
+        return names
+    for tool in agent.tools:
+        cls_name = type(tool).__name__
+        # Match against TOOL_REGISTRY class names
+        for reg_name, (_mod, reg_cls, _cat, _desc) in TOOL_REGISTRY.items():
+            if cls_name == reg_cls:
+                names.add(reg_name)
+                break
+    return names
 
 
 def _cmd_skills(ctx: CommandContext, cmd_args: str = ""):
@@ -470,9 +521,10 @@ def _cmd_workspace(ctx: CommandContext, cmd_args: str = ""):
 
     con.print()
     con.print("  [bold]-- Agent --[/bold]")
-    con.print(f"  Built-in:    {', '.join(BUILTIN_TOOLS)}")
+    all_active = list(BUILTIN_TOOLS)
     if ctx.extra_tool_names:
-        con.print(f"  Extra:       {', '.join(ctx.extra_tool_names)}")
+        all_active.extend(ctx.extra_tool_names)
+    con.print(f"  Tools:       {', '.join(all_active)}")
     if ctx.skills_registry and len(ctx.skills_registry) > 0:
         con.print(f"  Skills:      {len(ctx.skills_registry)} loaded")
     show_reasoning = ctx.tui_state.get("show_reasoning", True) if ctx.tui_state else True

@@ -958,7 +958,7 @@ def run_interactive(agent_config: dict, extra_tool_names: Optional[List[str]] = 
 
     def _apply_command_result(result: dict):
         """Apply side effects from command handler results."""
-        nonlocal skills_registry
+        nonlocal skills_registry, extra_tool_names
         if "current_agent" in result:
             state.current_agent = result["current_agent"]
             tui_state["model_name"] = agent_config.get("model_name", "")
@@ -975,6 +975,8 @@ def run_interactive(agent_config: dict, extra_tool_names: Optional[List[str]] = 
             )
         if "skills_registry" in result:
             skills_registry = result["skills_registry"]
+        if "extra_tool_names" in result:
+            extra_tool_names = result["extra_tool_names"]
 
     app = _setup_tui(
         state, skills_registry, tui_state,

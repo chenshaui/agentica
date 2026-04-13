@@ -196,7 +196,7 @@ def get_file_completions(document_text: str) -> List[str]:
     return completions
 
 
-def show_help():
+def show_help(skills_registry=None):
     """Display categorized help information."""
     categories = {
         "Session": {
@@ -222,7 +222,7 @@ def show_help():
             "/statusbar, /sb":  "Toggle the status bar",
         },
         "Tools & Skills": {
-            "/tools":           "List available tools",
+            "/tools":           "List tools | /tools add <name> to load",
             "/skills":          "Manage skills: list | install | remove | inspect | reload",
         },
         "Permissions": {
@@ -248,6 +248,16 @@ def show_help():
         for cmd, desc in commands.items():
             get_console().print(f"    [bright_green]{cmd:<18}[/bright_green] [dim]{desc}[/dim]")
         get_console().print()
+
+    # Skill auto-commands
+    if skills_registry and len(skills_registry) > 0:
+        skill_cmds = skills_registry.auto_commands()
+        if skill_cmds:
+            get_console().print("  [bold]-- Skill Commands --[/bold]")
+            for slug, skill in skill_cmds.items():
+                desc = skill.description[:50] if skill.description else ""
+                get_console().print(f"    [bright_green]{slug:<18}[/bright_green] [dim]{desc}[/dim]")
+            get_console().print()
 
     get_console().print("  [bold]Keyboard Shortcuts[/bold]")
     get_console().print()
