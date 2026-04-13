@@ -320,6 +320,7 @@ def _run_btw_concurrent(agent, question: str, tui_state: dict):
                          "Answer concisely based on your knowledge only.",
             session_id=_generate_session_id(),
             debug=False,
+            add_history_to_messages=True,
         )
         response = btw_agent.run_sync(question)
         result_text = response.content if response else "(no answer)"
