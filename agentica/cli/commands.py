@@ -212,14 +212,17 @@ def _cmd_exit(ctx: CommandContext, cmd_args: str = ""):
 
 
 def _cmd_tools(ctx: CommandContext, cmd_args: str = ""):
-    """List available tools, or dynamically add tools with '/tools add <name>'."""
+    """Manage tools: list, add, remove, info, search."""
     _cmd_title("/tools")
     con = get_console()
     args_str = cmd_args.strip()
+    parts = args_str.split(None, 1) if args_str else []
+    subcmd = parts[0].lower() if parts else ""
+    sub_args = parts[1].strip() if len(parts) > 1 else ""
 
-    # /tools add <name> — dynamically load and attach tool to current agent
-    if args_str.startswith("add "):
-        tool_names = args_str[4:].split()
+    # ── /tools add <name> ──
+    if subcmd == "add":
+        tool_names = sub_args.split()
         if not tool_names:
             con.print("  [dim]Usage: /tools add <name> [name2 ...][/dim]")
             return
@@ -231,28 +234,112 @@ def _cmd_tools(ctx: CommandContext, cmd_args: str = ""):
             if name not in TOOL_REGISTRY:
                 con.print(f"  [red]Unknown tool: {name}[/red]")
                 continue
-            # Check if already loaded
             active_names = _get_active_tool_names(agent)
             if name in active_names:
                 con.print(f"  [dim]{name} is already active.[/dim]")
                 continue
-            try:
-                new_tools = configure_tools([name])
-                if new_tools:
-                    if agent.tools is None:
-                        agent.tools = []
-                    agent.tools.extend(new_tools)
-                    # Also track in extra_tool_names for display consistency
-                    if ctx.extra_tool_names is None:
-                        ctx.extra_tool_names = []
-                    if name not in ctx.extra_tool_names:
-                        ctx.extra_tool_names.append(name)
-                    con.print(f"  [green]✓ {name} loaded and active.[/green]")
-            except Exception as e:
-                con.print(f"  [red]Failed to load {name}: {e}[/red]")
+            new_tools = configure_tools([name])
+            if new_tools:
+                if agent.tools is None:
+                    agent.tools = []
+                agent.tools.extend(new_tools)
+                if ctx.extra_tool_names is None:
+                    ctx.extra_tool_names = []
+                if name not in ctx.extra_tool_names:
+                    ctx.extra_tool_names.append(name)
+                con.print(f"  [green]{name} loaded.[/green]")
         return {"extra_tool_names": ctx.extra_tool_names}
 
-    # /tools (no args) — list all tools
+    # ── /tools remove <name> ──
+    if subcmd in ("remove", "rm"):
+        tool_names = sub_args.split()
+        if not tool_names:
+            con.print("  [dim]Usage: /tools remove <name> [name2 ...][/dim]")
+            return
+        agent = ctx.current_agent
+        if not agent:
+            con.print("  [red]No active agent.[/red]")
+            return
+        builtin_set = set(BUILTIN_TOOLS)
+        for name in tool_names:
+            if name in builtin_set:
+                con.print(f"  [yellow]{name} is a built-in tool and cannot be removed.[/yellow]")
+                continue
+            # Find and remove the tool instance from agent.tools
+            removed = False
+            if agent.tools:
+                for i, tool in enumerate(agent.tools):
+                    cls_name = type(tool).__name__
+                    reg_entry = TOOL_REGISTRY.get(name)
+                    if reg_entry and cls_name == reg_entry[1]:
+                        agent.tools.pop(i)
+                        removed = True
+                        break
+            if removed:
+                if ctx.extra_tool_names and name in ctx.extra_tool_names:
+                    ctx.extra_tool_names.remove(name)
+                con.print(f"  [green]{name} removed.[/green]")
+            else:
+                con.print(f"  [dim]{name} is not currently active.[/dim]")
+        return {"extra_tool_names": ctx.extra_tool_names}
+
+    # ── /tools info <name> ──
+    if subcmd == "info":
+        name = sub_args.strip()
+        if not name:
+            con.print("  [dim]Usage: /tools info <name>[/dim]")
+            return
+        if name in set(BUILTIN_TOOLS):
+            con.print(f"  [bold]{name}[/bold]  [green]built-in, always active[/green]")
+            return
+        reg_entry = TOOL_REGISTRY.get(name)
+        if not reg_entry:
+            con.print(f"  [red]Unknown tool: {name}[/red]")
+            return
+        _mod, _cls, _cat, desc = reg_entry
+        agent = ctx.current_agent
+        is_active = name in _get_active_tool_names(agent) if agent else False
+        status = "[green]active[/green]" if is_active else "[dim]inactive[/dim]"
+        con.print(f"  [bold]{name}[/bold]  {status}")
+        con.print(f"  Category:  {_cat}")
+        con.print(f"  Class:     {_cls}")
+        con.print(f"  Module:    agentica.tools.{_mod}_tool")
+        con.print(f"  {desc}")
+        # Show registered functions if tool is active
+        if is_active and agent and agent.tools:
+            for tool in agent.tools:
+                if type(tool).__name__ == _cls:
+                    funcs = tool.functions if hasattr(tool, 'functions') else {}
+                    if funcs:
+                        con.print(f"  Functions: {', '.join(funcs.keys())}")
+                    break
+        return
+
+    # ── /tools search <keyword> ──
+    if subcmd in ("search", "find"):
+        keyword = sub_args.lower()
+        if not keyword:
+            con.print("  [dim]Usage: /tools search <keyword>[/dim]")
+            return
+        matches = []
+        for name in BUILTIN_TOOLS:
+            if keyword in name:
+                matches.append((name, "built-in", True))
+        for name, (_mod, _cls, _cat, desc) in TOOL_REGISTRY.items():
+            if keyword in name or keyword in desc.lower() or keyword in _cat.lower():
+                agent = ctx.current_agent
+                is_active = name in _get_active_tool_names(agent) if agent else False
+                matches.append((name, desc, is_active))
+        if matches:
+            con.print(f"  Found {len(matches)} tool(s):")
+            for name, desc, is_active in matches:
+                marker = "[green]●[/green]" if is_active else "[dim]○[/dim]"
+                con.print(f"    {marker} [bold]{name:<20}[/bold] {desc}")
+        else:
+            con.print(f"  [dim]No tools matching '{keyword}'.[/dim]")
+        return
+
+    # ── /tools (no args) — list all ──
     active_names = set()
     agent = ctx.current_agent
     if agent:
@@ -260,7 +347,6 @@ def _cmd_tools(ctx: CommandContext, cmd_args: str = ""):
     if ctx.extra_tool_names:
         active_names.update(ctx.extra_tool_names)
 
-    # Merge builtin + registry into a flat list
     all_tools = {}
     for name in BUILTIN_TOOLS:
         all_tools[name] = ("built-in", True)
@@ -278,7 +364,7 @@ def _cmd_tools(ctx: CommandContext, cmd_args: str = ""):
     con.print()
     active_count = sum(1 for _, (_, a) in all_tools.items() if a)
     con.print(f"  [green]● = active ({active_count})[/green]  [dim]○ = available ({len(all_tools) - active_count})[/dim]")
-    con.print(f"  [dim]Dynamic load: /tools add <name>  |  Startup: agentica --tools <name>[/dim]")
+    con.print(f"  [dim]Commands: /tools add <name> | remove <name> | info <name> | search <keyword>[/dim]")
     con.print()
 
 
@@ -1275,7 +1361,7 @@ COMMAND_REGISTRY = {
     "/statusbar":     (_cmd_statusbar,     "Toggle the status bar visibility"),
     "/sb":            (_cmd_statusbar,     "Toggle the status bar (alias)"),
     # Tools & Skills
-    "/tools":         (_cmd_tools,         "List available tools"),
+    "/tools":         (_cmd_tools,         "Manage tools: add | remove | info | search"),
     "/skills":        (_cmd_skills,        "Manage skills: list | install | remove | inspect | reload"),
     "/extensions":    (_cmd_skills,        "Manage skills (alias for /skills)"),
     # Permissions

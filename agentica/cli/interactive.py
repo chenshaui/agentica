@@ -1193,7 +1193,12 @@ def run_interactive(agent_config: dict, extra_tool_names: Optional[List[str]] = 
                 handler = COMMAND_HANDLERS.get(cmd)
                 if handler:
                     ctx = _build_ctx()
-                    result = handler(ctx, cmd_args)
+                    try:
+                        result = handler(ctx, cmd_args)
+                    except Exception as e:
+                        con.print(f"  [red]Command error: {e}[/red]")
+                        app.invalidate()
+                        continue
                     if result == "EXIT":
                         state.should_exit = True
                         if app.is_running:

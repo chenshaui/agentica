@@ -222,7 +222,7 @@ def show_help(skills_registry=None):
             "/statusbar, /sb":  "Toggle the status bar",
         },
         "Tools & Skills": {
-            "/tools":           "List tools | /tools add <name> to load",
+            "/tools":           "Manage tools: add | remove | info | search",
             "/skills":          "Manage skills: list | install | remove | inspect | reload",
         },
         "Permissions": {
