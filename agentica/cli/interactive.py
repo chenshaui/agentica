@@ -502,11 +502,11 @@ def _process_stream_response(
 
 def _setup_tui(state: SessionState, skills_registry, tui_state: dict,
                pending_queue: PendingQueue,
+               image_counter_ref: list,
                dispatch_cmd=None):
     """Build the prompt_toolkit Application with fixed-bottom input area."""
 
-    # Mutable wrappers for prompt_toolkit closures (need list for mutation)
-    _image_counter_ref = [state.image_counter]
+    _image_counter_ref = image_counter_ref
 
     class AgenticaCompleter(Completer):
         def get_completions(self, document, complete_event):
@@ -979,6 +979,7 @@ def run_interactive(agent_config: dict, extra_tool_names: Optional[List[str]] = 
     app = _setup_tui(
         state, skills_registry, tui_state,
         pending_queue,
+        image_counter_ref=_image_counter_ref,
         dispatch_cmd=_dispatch_concurrent_cmd,
     )
 

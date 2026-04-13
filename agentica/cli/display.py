@@ -8,7 +8,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from rich.markdown import Markdown
 from rich.syntax import Syntax
@@ -72,7 +72,7 @@ def print_header(model_provider: str, model_name: str, work_dir: Optional[str] =
     get_console().print()
 
 
-def parse_file_mentions(text: str) -> tuple[str, list[Path]]:
+def parse_file_mentions(text: str) -> Tuple[str, List[Path]]:
     """Parse @file mentions and return text with mentioned files.
     
     Uses lookbehind to avoid matching email addresses.
@@ -93,7 +93,7 @@ def parse_file_mentions(text: str) -> tuple[str, list[Path]]:
     return processed_text, mentioned_files
 
 
-def inject_file_contents(prompt_text: str, mentioned_files: list[Path]) -> str:
+def inject_file_contents(prompt_text: str, mentioned_files: List[Path]) -> str:
     """Inject file contents into the prompt."""
     if not mentioned_files:
         return prompt_text

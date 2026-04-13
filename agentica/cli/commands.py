@@ -269,7 +269,7 @@ def _cmd_skills(ctx: CommandContext, cmd_args: str = ""):
         if source is None:
             con.print("  [dim]Missing install source.[/dim]")
             return
-        replaced: list[str] = []
+        replaced = []
         installed = install_skills(source, force=force, replaced_symlinked_skills=replaced)
         con.print(f"  [green]Installed {len(installed)} skill(s) from {source}.[/green]")
         for name in replaced:
@@ -332,7 +332,7 @@ def _cmd_skills(ctx: CommandContext, cmd_args: str = ""):
         for skill in ctx.skills_registry.list_all():
             all_skills.append(("loaded", skill))
 
-    if ctx.current_agent and hasattr(ctx.current_agent, 'tools') and ctx.current_agent.tools:
+    if ctx.current_agent and ctx.current_agent.tools:
         from agentica.tools.skill_tool import SkillTool
         for tool in ctx.current_agent.tools:
             if isinstance(tool, SkillTool):
@@ -375,15 +375,15 @@ def _cmd_skills(ctx: CommandContext, cmd_args: str = ""):
     con.print("  [dim]Commands: /skills install <src> | remove <name> | inspect <name> | reload[/dim]")
 
 
-def _cmd_memory(ctx: CommandContext, cmd_args: str = ""):
+def _cmd_history(ctx: CommandContext, cmd_args: str = ""):
     """Display conversation history in compact format."""
     _cmd_title("/history")
     con = get_console()
     agent = ctx.current_agent
-    if not agent or not hasattr(agent, 'working_memory'):
+    if not agent:
         con.print("[yellow]No conversation history yet.[/yellow]")
         return
-    messages = agent.working_memory.messages if hasattr(agent.working_memory, 'messages') else []
+    messages = agent.working_memory.messages
     if not messages:
         con.print("[yellow]No conversation history yet.[/yellow]")
         return
@@ -480,15 +480,14 @@ def _cmd_workspace(ctx: CommandContext, cmd_args: str = ""):
 
     con.print()
     con.print("  [bold]-- Session --[/bold]")
-    if ctx.current_agent and hasattr(ctx.current_agent, 'session_id'):
+    if ctx.current_agent:
         con.print(f"  Session ID:  {ctx.current_agent.session_id}")
     started = ctx.tui_state.get("session_start") if ctx.tui_state else None
     if started:
         con.print(f"  Started:     {started}")
     msg_count = 0
-    if ctx.current_agent and hasattr(ctx.current_agent, 'working_memory'):
-        wm = ctx.current_agent.working_memory
-        msg_count = len(wm.messages) if hasattr(wm, 'messages') else 0
+    if ctx.current_agent:
+        msg_count = len(ctx.current_agent.working_memory.messages)
     con.print(f"  Messages:    {msg_count}")
 
     if ctx.workspace and ctx.workspace.exists():
@@ -654,22 +653,22 @@ def _cmd_model(ctx: CommandContext, cmd_args: str = ""):
 def _cmd_compact(ctx: CommandContext, cmd_args: str = ""):
     con = get_console()
     agent = ctx.current_agent
-    if not (hasattr(agent, 'working_memory') and agent.working_memory):
+    if not agent or not agent.working_memory:
         con.print("[yellow]No conversation history to compact.[/yellow]")
         return
 
-    messages = agent.working_memory.messages if hasattr(agent.working_memory, 'messages') else []
+    messages = agent.working_memory.messages
     msg_count = len(messages)
     if msg_count == 0:
         con.print("[yellow]No messages to compact.[/yellow]")
         return
 
     custom_instructions = cmd_args.strip() if cmd_args else None
-    cm = agent.tool_config.compression_manager if hasattr(agent, 'tool_config') else None
+    cm = agent.tool_config.compression_manager if agent.tool_config else None
 
     if cm is not None:
         con.print(f"[dim]Compacting {msg_count} messages with LLM summary...[/dim]")
-        model = agent.model if hasattr(agent, 'model') else None
+        model = agent.model
         wm = agent.working_memory
 
         compacted = _run_async_safe(cm.auto_compact(
@@ -725,10 +724,10 @@ def _cmd_debug(ctx: CommandContext, cmd_args: str = ""):
     con.print(f"  Shell Mode: {'[green]ON[/green]' if ctx.shell_mode else '[dim]OFF[/dim]'}")
     con.print(f"  Work Dir: {ctx.agent_config.get('work_dir') or os.getcwd()}")
     agent = ctx.current_agent
-    if hasattr(agent, 'working_memory') and agent.working_memory:
-        msg_count = len(agent.working_memory.messages) if hasattr(agent.working_memory, 'messages') else 0
+    if agent and agent.working_memory:
+        msg_count = len(agent.working_memory.messages)
         con.print(f"  History Messages: {msg_count}")
-    if hasattr(agent, 'tools') and agent.tools:
+    if agent and agent.tools:
         con.print(f"  Extra Tools: {len(agent.tools)}")
     if ctx.workspace:
         con.print(f"  Workspace: {ctx.workspace.path}")
@@ -771,9 +770,8 @@ def _cmd_cost(ctx: CommandContext, cmd_args: str = ""):
     active_secs = ts.get("active_seconds", 0)
 
     msg_count = 0
-    if ctx.current_agent and hasattr(ctx.current_agent, 'working_memory'):
-        wm = ctx.current_agent.working_memory
-        msg_count = len(wm.messages) if hasattr(wm, 'messages') else 0
+    if ctx.current_agent:
+        msg_count = len(ctx.current_agent.working_memory.messages)
 
     if active_secs < 60:
         duration_str = f"{active_secs:.0f}s"
@@ -814,11 +812,11 @@ def _cmd_export(ctx: CommandContext, cmd_args: str = ""):
     """Save conversation history to a JSON file (excludes system prompts)."""
     con = get_console()
     agent = ctx.current_agent
-    if not agent or not hasattr(agent, 'working_memory'):
+    if not agent:
         con.print("[yellow]No conversation to save.[/yellow]")
         return
 
-    messages = agent.working_memory.messages if hasattr(agent.working_memory, 'messages') else []
+    messages = agent.working_memory.messages
     export_msgs = []
     for msg in messages:
         if msg.role == "system":
@@ -845,7 +843,7 @@ def _cmd_export(ctx: CommandContext, cmd_args: str = ""):
 
     data = {
         "model": model_name,
-        "session_id": agent.session_id if hasattr(agent, 'session_id') else "",
+        "session_id": agent.session_id,
         "exported_at": datetime.now().isoformat(),
         "messages": export_msgs,
     }
@@ -1024,7 +1022,7 @@ def _cmd_reasoning(ctx: CommandContext, cmd_args: str = ""):
 def _cmd_retry(ctx: CommandContext, cmd_args: str = ""):
     con = get_console()
     agent = ctx.current_agent
-    if not agent or not hasattr(agent, 'working_memory'):
+    if not agent:
         con.print("[yellow]No conversation to retry.[/yellow]")
         return
     wm = agent.working_memory
@@ -1052,7 +1050,7 @@ def _cmd_retry(ctx: CommandContext, cmd_args: str = ""):
 def _cmd_undo(ctx: CommandContext, cmd_args: str = ""):
     con = get_console()
     agent = ctx.current_agent
-    if not agent or not hasattr(agent, 'working_memory'):
+    if not agent:
         con.print("[yellow]No conversation history.[/yellow]")
         return
     wm = agent.working_memory
@@ -1202,7 +1200,7 @@ COMMAND_REGISTRY = {
     "/new":           (_cmd_newchat,       "Start a new chat session"),
     "/clear":         (_cmd_clear,         "Clear screen and reset"),
     "/reset":         (_cmd_clear,         "Clear screen and reset (alias)"),
-    "/history":       (_cmd_memory,        "Show conversation history"),
+    "/history":       (_cmd_history,       "Show conversation history"),
     "/export":        (_cmd_export,        "Save conversation to JSON"),
     "/save":          (_cmd_export,        "Save conversation to JSON (alias)"),
     "/retry":         (_cmd_retry,         "Retry the last message (resend to agent)"),
