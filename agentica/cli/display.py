@@ -533,6 +533,11 @@ class StreamDisplayManager:
                 self.console.print(f"    [dim]completed in {elapsed:.1f}s[/dim]")
             return
 
+        # Tools whose results are noisy / low-value — only show on error
+        _QUIET_TOOLS = {"read_file", "ls", "glob", "write_file", "fetch_url", "web_search"}
+        if tool_name in _QUIET_TOOLS and not is_error:
+            return
+
         # Special handling for task (subagent) - show inner tool calls
         if tool_name == "task":
             self._display_task_result(result_content, is_error)

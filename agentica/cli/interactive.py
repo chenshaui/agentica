@@ -88,6 +88,7 @@ class SessionState:
     paste_counter: int = 0
     attached_images: List = field(default_factory=list)
     pasted_files: List = field(default_factory=list)
+    _last_ctrl_c: float = 0.0
     # Background tasks — owned by session, not module-global
     bg_tasks: Dict[str, dict] = field(default_factory=dict)
     bg_task_counter: int = 0
@@ -306,22 +307,44 @@ def _print_boxed_result(label: str, question: str, result_text: str, color: str 
 def _run_btw_concurrent(agent, question: str, tui_state: dict):
     """Run a BTW side question in a background thread.
 
-    Uses a fresh agent with NO tools and NO context to avoid interfering
-    with the main agent. Also injects a system prompt telling the model
-    it has no tool access, to prevent hallucinated tool descriptions.
+    Uses a fresh agent with NO tools but WITH a snapshot of the main agent's
+    conversation history, so it can answer side questions in context.
     """
     try:
         from agentica import Agent
+        from agentica.memory.models import AgentRun
+        from agentica.model.message import Message
+        from agentica.run_response import RunResponse
+
+        # Snapshot conversation context from the main agent (same as /bg)
+        context_snapshot = []
+        if agent and agent.working_memory and agent.working_memory.messages:
+            for msg in agent.working_memory.messages:
+                if msg.role in ("user", "assistant") and msg.content:
+                    content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                    if len(content) > 500:
+                        content = content[:500] + "..."
+                    context_snapshot.append(Message(role=msg.role, content=content))
+            context_snapshot = context_snapshot[-10:]
+
         btw_agent = Agent(
             model=agent.model,
             tools=[],
             instructions="You are a helpful assistant answering a quick side question. "
                          "You have NO tools, NO skills, NO file access. "
-                         "Answer concisely based on your knowledge only.",
+                         "Answer concisely based on your knowledge and conversation context.",
             session_id=_generate_session_id(),
             debug=False,
             add_history_to_messages=True,
         )
+
+        # Inject context snapshot so the BTW agent can see prior conversation
+        if context_snapshot:
+            synthetic_run = AgentRun(
+                response=RunResponse(messages=context_snapshot),
+            )
+            btw_agent.working_memory.runs.append(synthetic_run)
+
         response = btw_agent.run_sync(question)
         result_text = response.content if response else "(no answer)"
     except Exception as e:
@@ -343,16 +366,7 @@ def _process_stream_response(
     def _set_spinner(text: str = ""):
         tui_state["spinner_text"] = text
 
-    _THINKING_FRAMES = [
-        "(´･_･`) brainstorming...",
-        "(  . .) pondering...",
-        "(.   .) ruminating...",
-        "(´-ω-`) contemplating...",
-        "( ˘ ˘ ) reflecting...",
-        "(・∀・) scheming...",
-        "( ._.) cogitating...",
-        "(°-°)  deliberating...",
-    ]
+    _THINKING_FRAMES = ["✦ thinking...", "✧ thinking..."]
     tui_state["_thinking"] = True
     tui_state["spinner_text"] = _THINKING_FRAMES[0]
     request_start = perf_counter()
@@ -551,8 +565,16 @@ def _setup_tui(state: SessionState, skills_registry, tui_state: dict,
             state.attached_images.clear()
             event.app.invalidate()
         else:
-            state.should_exit = True
-            event.app.exit()
+            # Double Ctrl+C to exit — first press shows hint, second press exits
+            now = time.time()
+            last = getattr(state, '_last_ctrl_c', 0.0)
+            if now - last < 2.0:
+                state.should_exit = True
+                event.app.exit()
+            else:
+                state._last_ctrl_c = now
+                tui_state["spinner_text"] = "Press Ctrl+C again to exit (or Ctrl+D)"
+                event.app.invalidate()
 
     @kb.add("c-x")
     def _toggle_shell(event):
@@ -1125,24 +1147,16 @@ def run_interactive(agent_config: dict, extra_tool_names: Optional[List[str]] = 
     process_thread.start()
 
     # ── Spinner refresh thread ──
-    _SPIN_FRAMES = [
-        "(´･_･`) brainstorming...",
-        "(  . .) pondering...",
-        "(.   .) ruminating...",
-        "(´-ω-`) contemplating...",
-        "( ˘ ˘ ) reflecting...",
-        "(・∀・) scheming...",
-        "( ._.) cogitating...",
-        "(°-°)  deliberating...",
-    ]
+    _SPIN_ICONS = ["✦", "✧", "✦", "✧", "⊹", "✦", "✧", "⊹"]
     _frame_idx = [0]
 
     def spinner_loop():
         while not state.should_exit:
             if state.agent_running and app.is_running:
                 if tui_state.get("_thinking"):
-                    _frame_idx[0] = (_frame_idx[0] + 1) % len(_SPIN_FRAMES)
-                    tui_state["spinner_text"] = _SPIN_FRAMES[_frame_idx[0]]
+                    _frame_idx[0] = (_frame_idx[0] + 1) % len(_SPIN_ICONS)
+                    icon = _SPIN_ICONS[_frame_idx[0]]
+                    tui_state["spinner_text"] = f"{icon} thinking..."
                 app.invalidate()
                 time.sleep(0.4)
             else:
