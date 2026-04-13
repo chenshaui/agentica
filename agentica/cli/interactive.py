@@ -353,6 +353,65 @@ def _run_btw_concurrent(agent, question: str, tui_state: dict):
     _print_boxed_result("BTW", question, result_text, color="cyan")
 
 
+# ==================== Image OCR fallback ====================
+
+# Per-image and total limits for OCR text injection
+_OCR_PER_IMAGE_CHARS = 50_000
+_OCR_TOTAL_CHARS = 200_000
+_OCR_TIMEOUT_SECS = 30
+
+
+def _ocr_single_image(image_path: str) -> str:
+    """OCR a single image, returning extracted text (truncated to limit)."""
+    try:
+        from imgocr import ImgOcr
+        ocr = ImgOcr()
+        result = ocr.ocr(image_path)
+        text = " ".join(item["text"] for item in result if "text" in item)
+        if len(text) > _OCR_PER_IMAGE_CHARS:
+            text = text[:_OCR_PER_IMAGE_CHARS] + f"\n... (truncated, {len(text)} chars total)"
+        return text
+    except ImportError:
+        return ""
+    except Exception:
+        return ""
+
+
+def _ocr_images_parallel(image_paths: list) -> str:
+    """OCR multiple images in parallel with timeout. Returns combined text."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    results = []
+    total_len = 0
+    with ThreadPoolExecutor(max_workers=min(len(image_paths), 4)) as pool:
+        futures = {pool.submit(_ocr_single_image, p): p for p in image_paths}
+        for future in futures:
+            path = futures[future]
+            name = Path(path).name
+            try:
+                text = future.result(timeout=_OCR_TIMEOUT_SECS)
+            except Exception:
+                text = ""
+
+            if not text:
+                continue
+
+            if total_len + len(text) > _OCR_TOTAL_CHARS:
+                remaining = _OCR_TOTAL_CHARS - total_len
+                if remaining > 100:
+                    text = text[:remaining] + "\n..."
+                else:
+                    break
+
+            if len(image_paths) > 1:
+                results.append(f"[{name}]\n{text}")
+            else:
+                results.append(text)
+            total_len += len(text)
+
+    return "\n\n".join(results)
+
+
 # ==================== Stream response ====================
 
 def _process_stream_response(
@@ -381,8 +440,70 @@ def _process_stream_response(
             run_config.enabled_tools = list(READ_ONLY_TOOLS)
 
         run_kwargs = {"config": run_config}
+
+        # When images are attached, run LLM vision API and OCR in parallel.
+        # Both results are merged into the prompt for the final agent call.
+        # If one fails, the other provides a fallback.
         if images:
-            run_kwargs["images"] = [str(p) for p in images]
+            image_paths = [str(p) for p in images]
+            _set_spinner("analyzing images...")
+
+            ocr_future = None
+            vision_result = None
+            vision_error = None
+
+            from concurrent.futures import ThreadPoolExecutor
+
+            def _run_vision():
+                """Call LLM API with images (blocking, runs in thread)."""
+                kwargs = dict(run_kwargs)
+                kwargs["images"] = image_paths
+                chunks = []
+                for chunk in current_agent.run_stream_sync(final_input, **kwargs):
+                    if chunk and chunk.content:
+                        chunks.append(chunk.content)
+                return "".join(chunks)
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                # Start OCR and vision API in parallel
+                ocr_future = pool.submit(_ocr_images_parallel, image_paths)
+                vision_future = pool.submit(_run_vision)
+
+                # Collect results (both may succeed, one may fail)
+                try:
+                    vision_result = vision_future.result(timeout=120)
+                except Exception as e:
+                    vision_error = str(e)
+
+                try:
+                    ocr_text = ocr_future.result(timeout=_OCR_TIMEOUT_SECS + 10)
+                except Exception:
+                    ocr_text = ""
+
+            # Build combined image context — keep it concise, focus on user's query
+            extra_parts = []
+            if vision_result:
+                extra_parts.append(f"[Image description]\n{vision_result}")
+            if ocr_text and ocr_text.strip():
+                extra_parts.append(f"[Text extracted from image]\n{ocr_text}")
+
+            if extra_parts:
+                final_input += "\n\n" + "\n\n".join(extra_parts)
+
+            # Clean up: remove messages from the vision trial run (if any were added)
+            wm = current_agent.working_memory
+            if vision_result or vision_error:
+                # The vision run added messages to working memory; remove them
+                # so the combined re-run starts clean
+                if wm.runs:
+                    wm.runs.pop()
+                while wm.messages and wm.messages[-1].role in ("assistant", "tool"):
+                    wm.messages.pop()
+                if wm.messages and wm.messages[-1].role == "user":
+                    wm.messages.pop()
+
+            _set_spinner("")
+
         response_stream = current_agent.run_stream_sync(final_input, **run_kwargs)
 
         display = StreamDisplayManager(con)
