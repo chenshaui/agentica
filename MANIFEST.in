@@ -1,1 +1,2 @@
 exclude tests/*
+recursive-include agentica/gateway/static *

@@ -23,7 +23,12 @@ setup(
     license="Apache License 2.0",
     zip_safe=False,
     python_requires=">=3.10.0",
-    entry_points={"console_scripts": ["agentica = agentica.cli:main"]},
+    entry_points={
+        "console_scripts": [
+            "agentica = agentica.cli:main",
+            "agentica-gateway = agentica.gateway.main:main",
+        ],
+    },
     classifiers=[
         "Development Status :: 5 - Production/Stable",
         "Intended Audience :: Developers",
@@ -65,6 +70,17 @@ setup(
         "python-frontmatter",
     ],
     packages=find_packages(exclude=['tests', 'tests.*', 'examples', 'examples.*', 'docs']),
-    # Runtime data files: prompt templates (.md) and browser page script (.js)
-    package_data={'agentica': ['**/*.md', '**/*.js']},
+    # Runtime data files: prompt templates (.md), browser page script (.js), static assets
+    package_data={'agentica': ['**/*.md', '**/*.js', '**/*.html', '**/*.css']},
+    extras_require={
+        "gateway": [
+            "fastapi>=0.109.0",
+            "uvicorn>=0.27.0",
+            "websockets>=12.0",
+            "lark-oapi>=1.0.0",
+            "apscheduler>=3.10.0",
+        ],
+        "telegram": ["python-telegram-bot>=20.0"],
+        "discord": ["discord.py>=2.0"],
+    },
 )
