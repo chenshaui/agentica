@@ -223,7 +223,7 @@ def show_help(skills_registry=None):
         },
         "Tools & Skills": {
             "/tools":           "Manage tools: add | remove | info | search",
-            "/skills":          "Manage skills: list | install | remove | inspect | reload",
+            "/skills":          "Manage skills: search | browse | install | remove | inspect | tap",
         },
         "Permissions": {
             "/permissions":     "View or set mode (allow-all/auto/strict)",

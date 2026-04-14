@@ -22,6 +22,7 @@ nbformat
 ipython
 ipykernel~=6.27.0
 docling
+tiktoken
 pytest
 qdrant-client
 langfuse

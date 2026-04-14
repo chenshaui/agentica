@@ -203,7 +203,7 @@ def _run_async_safe(coro):
 # ==================== Command Handlers ====================
 
 def _cmd_help(ctx: CommandContext, cmd_args: str = ""):
-    _cmd_title("/help")
+    _cmd_title(f"/help {cmd_args.strip()}" if cmd_args.strip() else "/help")
     show_help(skills_registry=ctx.skills_registry)
 
 
@@ -213,12 +213,13 @@ def _cmd_exit(ctx: CommandContext, cmd_args: str = ""):
 
 def _cmd_tools(ctx: CommandContext, cmd_args: str = ""):
     """Manage tools: list, add, remove, info, search."""
-    _cmd_title("/tools")
     con = get_console()
     args_str = cmd_args.strip()
     parts = args_str.split(None, 1) if args_str else []
     subcmd = parts[0].lower() if parts else ""
     sub_args = parts[1].strip() if len(parts) > 1 else ""
+
+    _cmd_title(f"/tools {args_str}" if args_str else "/tools")
 
     # ── /tools add <name> ──
     if subcmd == "add":
@@ -384,36 +385,167 @@ def _get_active_tool_names(agent) -> set:
 
 
 def _cmd_skills(ctx: CommandContext, cmd_args: str = ""):
-    """Unified skill management: list, install, remove, reload, inspect."""
-    _cmd_title("/skills")
+    """Unified skill management: list, search, browse, install, remove, inspect, reload, tap."""
     con = get_console()
     args_str = cmd_args.strip()
     parts = shlex.split(args_str) if args_str else []
     subcommand = parts[0].lower() if parts else ""
     sub_args = parts[1:]
 
+    # Title shows the full command as user typed it
+    _cmd_title(f"/skills {args_str}" if args_str else "/skills")
+
+    # ── /skills search <query> — search hub registries ──
+    if subcommand == "search":
+        query = " ".join(sub_args)
+        if not query:
+            con.print("  [dim]Usage: /skills search <query>[/dim]")
+            return
+        from agentica.skills.hub import unified_search
+        con.print(f"  Searching for: {query}...")
+        results = unified_search(query, limit=15, deduplicate=False)
+        if not results:
+            con.print("  [dim]No skills found matching your query.[/dim]")
+            return
+        con.print(f"  [bold cyan]Found {len(results)} skill(s)[/bold cyan]")
+        con.print()
+        for r in results:
+            trust_style = {"trusted": "green"}.get(r.trust_level, "yellow")
+            con.print(f"    [bold]{r.name:<25}[/bold] [{trust_style}]{r.trust_level:<10}[/{trust_style}] [dim]{r.source}[/dim]")
+            if r.description:
+                con.print(f"      [dim]{r.description[:70]}{'...' if len(r.description) > 70 else ''}[/dim]")
+            con.print(f"      [dim]identifier: {r.identifier}[/dim]")
+        con.print()
+        con.print("  [dim]Install: /skills install <name-or-identifier>  |  Preview: /skills inspect <name>[/dim]")
+        return
+
+    # ── /skills browse [query] — paginated listing, optional filter ──
+    if subcommand == "browse":
+        page = 1
+        page_size = 20
+        query_parts = []
+        for i, a in enumerate(sub_args):
+            if a == "--page" and i + 1 < len(sub_args):
+                page = int(sub_args[i + 1])
+            elif a == "--size" and i + 1 < len(sub_args):
+                page_size = int(sub_args[i + 1])
+            elif not a.startswith("--") and (i == 0 or sub_args[i - 1] not in ("--page", "--size")):
+                query_parts.append(a)
+        query = " ".join(query_parts)
+
+        from agentica.skills.hub import unified_search
+        con.print(f"  Loading skills from all sources{f' (filter: {query})' if query else ''}...")
+        results = unified_search(query, limit=500)
+        if not results:
+            con.print("  [dim]No skills found.[/dim]")
+            return
+
+        # If query is given, score and filter by relevance
+        if query:
+            query_lower = query.lower()
+
+            def _relevance(r):
+                name = r.name.lower()
+                if name == query_lower:
+                    return 100
+                if name.startswith(query_lower):
+                    return 80
+                if query_lower in name:
+                    return 60
+                desc = (r.description or "").lower()
+                if query_lower in desc:
+                    return 20
+                tags = " ".join(r.tags).lower() if r.tags else ""
+                if query_lower in tags:
+                    return 10
+                return 0
+
+            scored = [(r, _relevance(r)) for r in results]
+            scored = [(r, s) for r, s in scored if s > 0]
+            scored.sort(key=lambda x: (-x[1], x[0].name.lower()))
+            results = [r for r, _ in scored]
+
+        total = len(results)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = max(1, min(page, total_pages))
+        start = (page - 1) * page_size
+        page_items = results[start:start + page_size]
+        con.print(f"  [bold cyan]Skills Hub ({total} skills, page {page}/{total_pages})[/bold cyan]")
+        con.print()
+        for i, r in enumerate(page_items, start=start + 1):
+            trust_style = {"trusted": "green"}.get(r.trust_level, "yellow")
+            con.print(f"    {i:>3}. [bold]{r.name:<25}[/bold] [{trust_style}]{r.trust_level:<10}[/{trust_style}] [dim]{r.source}[/dim]")
+        con.print()
+        nav = []
+        browse_cmd = f"/skills browse {query}" if query else "/skills browse"
+        if page > 1:
+            nav.append(f"{browse_cmd} --page {page - 1}")
+        if page < total_pages:
+            nav.append(f"{browse_cmd} --page {page + 1}")
+        if nav:
+            con.print(f"  [dim]{' | '.join(nav)}[/dim]")
+        return
+
+    # ── /skills install — supports hub identifier, short name, git URL, local path ──
     if subcommand == "install":
         if not sub_args:
-            con.print("  [dim]Usage: /skills install <git-url-or-local-path> [--force][/dim]")
+            con.print("  [dim]Usage: /skills install <name-or-identifier> [--force][/dim]")
             return
         source = None
         force = False
-        for arg in sub_args:
+        category = ""
+        for i, arg in enumerate(sub_args):
             if arg == "--force":
                 force = True
-            elif source is None:
+            elif arg == "--category" and i + 1 < len(sub_args):
+                category = sub_args[i + 1]
+            elif source is None and not arg.startswith("--"):
                 source = arg
         if source is None:
             con.print("  [dim]Missing install source.[/dim]")
             return
-        replaced = []
-        installed = install_skills(source, force=force, replaced_symlinked_skills=replaced)
-        con.print(f"  [green]Installed {len(installed)} skill(s) from {source}.[/green]")
-        for name in replaced:
-            con.print(f"  [green]Replaced existing: {name}[/green]")
+
+        # Determine source type
+        is_git_url = source.startswith(("http://", "https://", "git@"))
+        is_local = Path(source).expanduser().exists()
+
+        if is_git_url or is_local:
+            replaced = []
+            installed = install_skills(source, force=force, replaced_symlinked_skills=replaced)
+            for skill in installed:
+                con.print(f"  [green]Installed '{skill.name}' (user-level)[/green]")
+                con.print(f"  Path: {skill.path}")
+            for name in replaced:
+                con.print(f"  [green]Replaced existing: {name}[/green]")
+            return _refresh_skills_session(ctx)
+
+        # Hub identifier or short name: use hub pipeline
+        from agentica.skills.hub import hub_install
+        con.print(f"  Fetching: {source}...")
+        success, msg = hub_install(source, category=category, force=force)
+        if success:
+            con.print(f"  [green]{msg}[/green]")
+            return _refresh_skills_session(ctx)
+        con.print(f"  [red]{msg}[/red]")
+        return
+
+    # ── /skills uninstall <name> — hub-aware uninstall ──
+    if subcommand == "uninstall":
+        if not sub_args:
+            con.print("  [dim]Usage: /skills uninstall <name>[/dim]")
+            return
+        from agentica.skills.hub import uninstall_skill as hub_uninstall
+        success, msg = hub_uninstall(sub_args[0])
+        if success:
+            con.print(f"  [green]{msg}[/green]")
+            return _refresh_skills_session(ctx)
+        # Fallback to local remove
+        removed_path = remove_skill(sub_args[0])
+        con.print(f"  [green]Removed skill '{sub_args[0]}' from {removed_path}[/green]")
         return _refresh_skills_session(ctx)
 
-    if subcommand in ("remove", "uninstall"):
+    # ── /skills remove <name> — local remove ──
+    if subcommand == "remove":
         if not sub_args:
             con.print("  [dim]Usage: /skills remove <skill-name>[/dim]")
             return
@@ -424,20 +556,23 @@ def _cmd_skills(ctx: CommandContext, cmd_args: str = ""):
     if subcommand == "reload":
         return _cmd_reload_skills(ctx)
 
+    # ── /skills inspect <name-or-identifier> — local or hub preview ──
     if subcommand == "inspect":
-        query = " ".join(sub_args).lower() if sub_args else ""
+        query = " ".join(sub_args).strip()
         if not query:
-            con.print("  [dim]Usage: /skills inspect <skill-name>[/dim]")
+            con.print("  [dim]Usage: /skills inspect <skill-name-or-identifier>[/dim]")
             return
+        # Try local first
         found = None
+        query_lower = query.lower()
         if ctx.skills_registry:
             for skill in ctx.skills_registry.list_all():
-                if skill.name.lower() == query:
+                if skill.name.lower() == query_lower:
                     found = skill
                     break
         if not found:
             for skill in list_installed_skills():
-                if skill.name.lower() == query:
+                if skill.name.lower() == query_lower:
                     found = skill
                     break
         if found:
@@ -458,13 +593,66 @@ def _cmd_skills(ctx: CommandContext, cmd_args: str = ""):
                     con.print(f"  [dim]{line}[/dim]")
                 if len(content.splitlines()) > 10:
                     con.print(f"  [dim]... ({len(content.splitlines()) - 10} more lines)[/dim]")
-        else:
-            con.print(f"  [yellow]Skill '{query}' not found.[/yellow]")
+            return
+
+        # Try hub inspect
+        from agentica.skills.hub import create_source_router, resolve_short_name
+        sources = create_source_router()
+        identifier = query
+        if "/" not in identifier:
+            identifier = resolve_short_name(identifier, sources) or query
+        for src in sources:
+            meta = src.inspect(identifier)
+            if meta:
+                con.print(f"  [bold cyan]{meta.name}[/bold cyan]  [dim]({meta.source})[/dim]")
+                con.print(f"  {meta.description}")
+                con.print(f"  Identifier: [dim]{meta.identifier}[/dim]")
+                con.print(f"  Trust: {meta.trust_level}")
+                if meta.tags:
+                    con.print(f"  Tags: {', '.join(meta.tags)}")
+                con.print()
+                con.print(f"  [dim]Install: /skills install {meta.identifier}[/dim]")
+                return
+        con.print(f"  [yellow]Skill '{query}' not found locally or in hub.[/yellow]")
         return
 
-    # /skills list (or /skills with no subcommand)
-    all_skills = []
+    # ── /skills tap — manage custom GitHub sources ──
+    if subcommand == "tap":
+        from agentica.skills.hub import TapsManager
+        mgr = TapsManager()
+        tap_action = sub_args[0].lower() if sub_args else "list"
+        tap_repo = sub_args[1] if len(sub_args) > 1 else ""
 
+        if tap_action == "list":
+            taps = mgr.list_taps()
+            if not taps:
+                con.print("  [dim]No custom taps. Using default sources only.[/dim]")
+            else:
+                con.print(f"  [bold cyan]Taps ({len(taps)})[/bold cyan]")
+                for t in taps:
+                    con.print(f"    {t.get('repo', 'unknown')}  [dim]{t.get('path', 'skills/')}[/dim]")
+            con.print()
+            con.print("  [dim]Commands: /skills tap add <owner/repo> | remove <owner/repo>[/dim]")
+        elif tap_action == "add":
+            if not tap_repo:
+                con.print("  [dim]Usage: /skills tap add <owner/repo>[/dim]")
+                return
+            if mgr.add(tap_repo):
+                con.print(f"  [green]Added tap: {tap_repo}[/green]")
+            else:
+                con.print(f"  [dim]Tap already exists: {tap_repo}[/dim]")
+        elif tap_action == "remove":
+            if not tap_repo:
+                con.print("  [dim]Usage: /skills tap remove <owner/repo>[/dim]")
+                return
+            if mgr.remove(tap_repo):
+                con.print(f"  [green]Removed tap: {tap_repo}[/green]")
+            else:
+                con.print(f"  [red]Tap not found: {tap_repo}[/red]")
+        return
+
+    # ── /skills list (or /skills with no subcommand) — show installed ──
+    all_skills = []
     if ctx.skills_registry and len(ctx.skills_registry) > 0:
         for skill in ctx.skills_registry.list_all():
             all_skills.append(("loaded", skill))
@@ -483,19 +671,12 @@ def _cmd_skills(ctx: CommandContext, cmd_args: str = ""):
         if skill.name not in loaded_names:
             all_skills.append(("installed", skill))
 
-    if not all_skills and subcommand != "list":
+    if not all_skills and subcommand not in ("list", ""):
         con.print("  No skills found.")
         con.print()
-        con.print("  [dim]Usage:[/dim]")
-        con.print("    [dim]/skills                   List all skills[/dim]")
-        con.print("    [dim]/skills install <source>   Install from git URL or local path[/dim]")
-        con.print("    [dim]/skills remove <name>      Remove an installed skill[/dim]")
-        con.print("    [dim]/skills inspect <name>     Preview skill details[/dim]")
-        con.print("    [dim]/skills reload             Reload skills from disk[/dim]")
-        return
 
     if all_skills:
-        con.print(f"  [bold cyan]Skills ({len(all_skills)})[/bold cyan]")
+        con.print(f"  [bold cyan]Installed Skills ({len(all_skills)})[/bold cyan]")
         con.print()
         for source_type, skill in all_skills:
             trigger_str = f" [green]{skill.trigger}[/green]" if skill.trigger else ""
@@ -506,15 +687,15 @@ def _cmd_skills(ctx: CommandContext, cmd_args: str = ""):
                 con.print(f"      [dim]{desc}[/dim]")
         con.print()
     else:
-        con.print("  No skills found.")
+        con.print("  No installed skills.")
         con.print()
 
-    con.print("  [dim]Commands: /skills install <src> | remove <name> | inspect <name> | reload[/dim]")
+    con.print("  [dim]Commands: search <q> | browse | install <name> | remove <name> | inspect <name> | tap | reload[/dim]")
 
 
 def _cmd_history(ctx: CommandContext, cmd_args: str = ""):
     """Display conversation history in compact format."""
-    _cmd_title("/history")
+    _cmd_title(f"/history {cmd_args.strip()}" if cmd_args.strip() else "/history")
     con = get_console()
     agent = ctx.current_agent
     if not agent:
@@ -583,7 +764,7 @@ def _cmd_history(ctx: CommandContext, cmd_args: str = ""):
 
 def _cmd_workspace(ctx: CommandContext, cmd_args: str = ""):
     """Display current configuration and workspace status."""
-    _cmd_title("/config")
+    _cmd_title(f"/config {cmd_args.strip()}" if cmd_args.strip() else "/config")
     con = get_console()
 
     con.print()
@@ -855,7 +1036,7 @@ def _rule_based_compact(current_agent, messages, msg_count):
 
 
 def _cmd_debug(ctx: CommandContext, cmd_args: str = ""):
-    _cmd_title("/debug")
+    _cmd_title(f"/debug {cmd_args.strip()}" if cmd_args.strip() else "/debug")
     con = get_console()
     con.print("[bold cyan]Debug Info[/bold cyan]")
     con.print(f"  Model: {ctx.agent_config['model_provider']}/{ctx.agent_config['model_name']}")
@@ -882,7 +1063,7 @@ def _cmd_reload_skills(ctx: CommandContext, cmd_args: str = ""):
 
 def _cmd_cost(ctx: CommandContext, cmd_args: str = ""):
     """Display detailed token usage and cost for the current session."""
-    _cmd_title("/usage")
+    _cmd_title(f"/usage {cmd_args.strip()}" if cmd_args.strip() else "/usage")
     con = get_console()
     tracker = ctx.current_agent.run_response.cost_tracker if ctx.current_agent else None
 
@@ -1362,7 +1543,7 @@ COMMAND_REGISTRY = {
     "/sb":            (_cmd_statusbar,     "Toggle the status bar (alias)"),
     # Tools & Skills
     "/tools":         (_cmd_tools,         "Manage tools: add | remove | info | search"),
-    "/skills":        (_cmd_skills,        "Manage skills: list | install | remove | inspect | reload"),
+    "/skills":        (_cmd_skills,        "Manage skills: search | browse | install | remove | inspect | tap"),
     "/extensions":    (_cmd_skills,        "Manage skills (alias for /skills)"),
     # Permissions
     "/permissions":   (_cmd_permissions,   "View or set permission mode"),

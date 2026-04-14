@@ -424,6 +424,11 @@ def _process_stream_response(
 
     def _set_spinner(text: str = ""):
         tui_state["spinner_text"] = text
+        if text:
+            tui_state["_spinner_base"] = text
+            tui_state["_tool_start"] = time.monotonic()
+        else:
+            tui_state["_spinner_base"] = ""
 
     _THINKING_FRAMES = ["✦ thinking...", "✧ thinking..."]
     tui_state["_thinking"] = True
@@ -446,7 +451,7 @@ def _process_stream_response(
         # If one fails, the other provides a fallback.
         if images:
             image_paths = [str(p) for p in images]
-            _set_spinner("analyzing images...")
+            _set_spinner("analyzing images")
 
             ocr_future = None
             vision_result = None
@@ -537,6 +542,7 @@ def _process_stream_response(
                                 con.print(f"  [yellow]! {tool_name} (write)[/yellow]")
 
                         display.display_tool(tool_name, tool_args)
+                        tui_state["_thinking"] = False
                         _set_spinner(f"🔧 {tool_name}")
                     shown_tool_count = len(chunk.tools)
                 continue
@@ -1277,6 +1283,7 @@ def run_interactive(agent_config: dict, extra_tool_names: Optional[List[str]] = 
 
     # ── Spinner refresh thread ──
     _SPIN_ICONS = ["✦", "✧", "✦", "✧", "⊹", "✦", "✧", "⊹"]
+    _TOOL_DOTS = ["", ".", "..", "..."]
     _frame_idx = [0]
 
     def spinner_loop():
@@ -1286,6 +1293,13 @@ def run_interactive(agent_config: dict, extra_tool_names: Optional[List[str]] = 
                     _frame_idx[0] = (_frame_idx[0] + 1) % len(_SPIN_ICONS)
                     icon = _SPIN_ICONS[_frame_idx[0]]
                     tui_state["spinner_text"] = f"{icon} thinking..."
+                elif tui_state.get("_spinner_base", ""):
+                    # Tool running — animate dots + show elapsed time
+                    base = tui_state["_spinner_base"]
+                    _frame_idx[0] = (_frame_idx[0] + 1) % len(_TOOL_DOTS)
+                    dots = _TOOL_DOTS[_frame_idx[0]]
+                    elapsed = time.monotonic() - tui_state.get("_tool_start", time.monotonic())
+                    tui_state["spinner_text"] = f"{base}{dots} ({elapsed:.0f}s)"
                 app.invalidate()
                 time.sleep(0.4)
             else:
