@@ -12,23 +12,11 @@ from fastapi.responses import HTMLResponse
 from .. import deps
 from ..config import settings
 from agentica.version import __version__
+from agentica.model.providers import get_supported_models
 from ..models import ModelSwitchRequest, ThinkingToggleRequest, BaseDirRequest, OpenRequest
 from ..services.agent_service import AgentService
 
 router = APIRouter()
-
-# Supported model list (provider → models)
-SUPPORTED_MODELS = {
-    "zhipuai": ["glm-4.7-flash", "glm-4-plus", "glm-4-long", "glm-4-flashx", "glm-4-flash", "glm-4-air", "glm-4-airx", "glm-4"],
-    "openai": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo", "o1", "o1-mini", "o3-mini"],
-    "deepseek": ["deepseek-chat", "deepseek-reasoner"],
-    "moonshot": ["moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"],
-    "yi": ["yi-lightning", "yi-large", "yi-medium", "yi-spark"],
-    "doubao": ["doubao-1.5-pro-32k", "doubao-pro-32k", "doubao-lite-32k"],
-    "kimi": ["k2p5", "k1.5-long", "k1.5-short"],
-    "anthropic": ["claude-sonnet-4-20250514", "claude-3-7-sonnet-20250219", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"],
-    "azure": ["gpt-4o", "gpt-4-turbo", "gpt-35-turbo"],
-}
 
 _DIR_HISTORY_MAX = 20
 
@@ -93,7 +81,7 @@ async def list_models():
         "current_provider": current_provider,
         "current_name": current_name,
         "current": f"{current_provider}/{current_name}",
-        "providers": SUPPORTED_MODELS,
+        "providers": get_supported_models(),
     }
 
 

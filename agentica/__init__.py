@@ -44,7 +44,7 @@ from agentica.model.usage import Usage, RequestUsage, TokenDetails
 from agentica.model.openai.chat import OpenAIChat
 from agentica.model.openai.like import OpenAILike
 from agentica.model.azure.openai_chat import AzureOpenAIChat
-from agentica.model.providers import create_provider, list_providers
+from agentica.model.providers import create_provider, list_providers, get_supported_models
 
 # ── Backward-compatible provider aliases ──
 def DeepSeekChat(**kwargs):
@@ -375,7 +375,7 @@ __all__ = [
     "SystemMessage", "ToolMessage", "Media", "Video", "Audio", "Image",
     "ModelResponse", "FileType", "Usage", "RequestUsage", "TokenDetails",
     "OpenAIChat", "OpenAILike", "AzureOpenAIChat",
-    "create_provider", "list_providers",
+    "create_provider", "list_providers", "get_supported_models",
     # provider aliases
     "DeepSeekChat", "DeepSeek", "MoonshotChat", "Moonshot",
     "DoubaoChat", "Doubao", "TogetherChat", "Together",

@@ -13,8 +13,8 @@ Usage:
     model = create_provider("deepseek", id="deepseek-reasoner")
 """
 
-from dataclasses import dataclass
-from typing import Optional, Dict
+from dataclasses import dataclass, field
+from typing import Optional, Dict, List
 from os import getenv
 
 
@@ -29,6 +29,7 @@ class ProviderConfig:
     provider: Optional[str] = None
     context_window: int = 128000
     max_output_tokens: Optional[int] = None
+    models: List[str] = field(default_factory=list)
 
 
 # Global registry
@@ -53,6 +54,31 @@ def get_provider_config(key: str) -> ProviderConfig:
 def list_providers() -> list:
     """List all registered provider names."""
     return sorted(PROVIDER_REGISTRY.keys())
+
+
+def get_supported_models() -> Dict[str, List[str]]:
+    """Return a dict of provider -> model list for all known providers.
+
+    Combines the OpenAI-compatible registry with core providers (openai, anthropic, azure).
+    """
+    result: Dict[str, List[str]] = {}
+    # Core providers (not in the OpenAI-compatible registry)
+    result["openai"] = [
+        "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo",
+        "o1", "o1-mini", "o3-mini",
+    ]
+    result["anthropic"] = [
+        "claude-sonnet-4-20250514", "claude-3-7-sonnet-20250219",
+        "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022",
+    ]
+    result["azure"] = ["gpt-4o", "gpt-4-turbo", "gpt-35-turbo"]
+    # Registry providers
+    for key, cfg in sorted(PROVIDER_REGISTRY.items()):
+        if cfg.models:
+            result[key] = list(cfg.models)
+        else:
+            result[key] = [cfg.default_model]
+    return result
 
 
 def create_provider(key: str, **overrides):
@@ -102,6 +128,7 @@ register_provider("deepseek", ProviderConfig(
     default_model="deepseek-chat",
     base_url="https://api.deepseek.com/v1",
     api_key_env="DEEPSEEK_API_KEY",
+    models=["deepseek-chat", "deepseek-reasoner"],
 ))
 
 register_provider("doubao", ProviderConfig(
@@ -110,6 +137,7 @@ register_provider("doubao", ProviderConfig(
     base_url="https://ark.cn-beijing.volces.com/api/v3",
     api_key_env="ARK_API_KEY",
     provider="ByteDance",
+    models=["doubao-1.5-pro-32k", "doubao-pro-32k", "doubao-lite-32k"],
 ))
 
 register_provider("qwen", ProviderConfig(
@@ -118,6 +146,7 @@ register_provider("qwen", ProviderConfig(
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
     api_key_env="DASHSCOPE_API_KEY",
     provider="Alibaba",
+    models=["qwen-max", "qwen-plus", "qwen-turbo", "qwen-long"],
 ))
 
 register_provider("xai", ProviderConfig(
@@ -134,6 +163,7 @@ register_provider("yi", ProviderConfig(
     base_url="https://api.lingyiwanwu.com/v1",
     api_key_env="YI_API_KEY",
     provider="01.ai",
+    models=["yi-lightning", "yi-large", "yi-medium", "yi-spark"],
 ))
 
 register_provider("nvidia", ProviderConfig(
@@ -155,6 +185,7 @@ register_provider("moonshot", ProviderConfig(
     default_model="kimi-k2.5",
     base_url="https://api.moonshot.cn/v1",
     api_key_env="MOONSHOT_API_KEY",
+    models=["kimi-k2.5", "moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"],
 ))
 
 register_provider("zhipuai", ProviderConfig(
@@ -163,6 +194,7 @@ register_provider("zhipuai", ProviderConfig(
     base_url="https://open.bigmodel.cn/api/paas/v4",
     api_key_env="ZHIPUAI_API_KEY",
     api_key_env_fallback="ZAI_API_KEY",
+    models=["glm-4.7-flash", "glm-4-plus", "glm-4-long", "glm-4-flashx", "glm-4-flash", "glm-4-air", "glm-4-airx", "glm-4"],
 ))
 
 register_provider("sambanova", ProviderConfig(
