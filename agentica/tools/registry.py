@@ -71,3 +71,7 @@ def unregister_tool(name: str) -> None:
 def clear_registry() -> None:
     """Remove all tools from the registry."""
     _TOOL_REGISTRY.clear()
+
+
+# ── Re-exports from helpers for convenience ──
+from agentica.tools.helpers import tool_error, tool_result  # noqa: F401, E402

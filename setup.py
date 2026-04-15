@@ -51,6 +51,7 @@ setup(
         "httpx",
         "loguru",
         "beautifulsoup4",
+        "lxml",
         "openai",
         "python-dotenv",
         "pydantic",

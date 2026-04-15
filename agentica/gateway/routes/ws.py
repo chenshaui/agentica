@@ -118,13 +118,11 @@ async def _handle_message(ws: WebSocket, client_id: str, message: dict) -> None:
             result = {"status": "ok", "connections": ws_manager.count()}
 
         elif method == "status":
-            scheduler_status = {}
-            if deps.scheduler:
-                st = await deps.scheduler.status()
-                scheduler_status = st.to_dict()
+            from agentica.cron.jobs import list_jobs as cron_list_jobs
+            active_jobs = len(cron_list_jobs(include_disabled=False))
             result = {
                 "channels": deps.channel_manager.get_status() if deps.channel_manager else {},
-                "scheduler": scheduler_status,
+                "scheduler": {"active_jobs": active_jobs},
             }
 
         elif method == "agent":

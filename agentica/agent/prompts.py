@@ -259,6 +259,17 @@ class PromptsMixin:
             system_message_lines.append("\n\n---\n\n".join(tool_policy_prompts))
             system_message_lines.append("")
 
+        # Tool use enforcement: instruct the model to call tools instead of
+        # describing intended actions in plain text.  Only injected when the
+        # agent actually has tools available.
+        if self.tools:
+            system_message_lines.append(
+                "IMPORTANT: When you need to perform an action, you MUST call the "
+                "appropriate tool function. Do NOT describe what you would do or "
+                "write out commands in plain text — use the tool directly."
+            )
+            system_message_lines.append("")
+
         if pc.guidelines is not None and len(pc.guidelines) > 0:
             system_message_lines.append("## Guidelines")
             if len(pc.guidelines) > 1:

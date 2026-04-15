@@ -1121,6 +1121,15 @@ class BuiltinExecuteTool(Tool):
                         f"in the allowed_commands list: {allowed}"
                     )
 
+        # Safety: check dangerous command patterns (always active, independent of sandbox)
+        from agentica.tools.safety import check_command_safety, redact_sensitive_text
+        safety = check_command_safety(command)
+        if safety["action"] == "block":
+            logger.warning(f"Safety blocked command: {safety['reason']} — {command[:100]}")
+            return f"Error: {safety['reason']}. Use a safer alternative."
+        if safety["action"] == "warn":
+            logger.info(f"Safety warning: {safety['reason']} — {command[:100]}")
+
         logger.debug(f"Executing command: {command}")
         cwd = str(self._work_dir) if self._work_dir else None
         proc = None
@@ -1170,7 +1179,8 @@ class BuiltinExecuteTool(Tool):
             output = f"{output}\n\n[Exit code: {proc.returncode}]"
 
         logger.debug(f"Command exit code: {proc.returncode}")
-        return output if output else f"Command executed successfully (exit code: {proc.returncode})"
+        result = output if output else f"Command executed successfully (exit code: {proc.returncode})"
+        return redact_sensitive_text(result)
 
 
 class BuiltinWebSearchTool(Tool):

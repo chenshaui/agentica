@@ -28,6 +28,7 @@ from agentica.config import (
     AGENTICA_LOG_FILE,
     AGENTICA_WORKSPACE_DIR,
     AGENTICA_PROJECTS_DIR,
+    AGENTICA_CRON_DIR,
 )
 
 # ── Logging ──
@@ -215,6 +216,13 @@ _LAZY_IMPORTS = {
     "run_tool_output_guardrails": "agentica.guardrails",
 
     # tools (external dependencies)
+    "CronTool": "agentica.tools.cron_tool",
+    "check_command_safety": "agentica.tools.safety",
+    "redact_sensitive_text": "agentica.tools.safety",
+    "set_interrupt": "agentica.tools.interrupt",
+    "is_interrupted": "agentica.tools.interrupt",
+    "tool_error": "agentica.tools.helpers",
+    "tool_result": "agentica.tools.helpers",
     "SearchSerperTool": "agentica.tools.search_serper_tool",
     "BaiduSearchTool": "agentica.tools.baidu_search_tool",
     "ImageAnalysisTool": "agentica.tools.image_analysis_tool",
@@ -357,6 +365,7 @@ __all__ = [
     # config
     "AGENTICA_HOME", "AGENTICA_DOTENV_PATH", "AGENTICA_LOG_LEVEL",
     "AGENTICA_LOG_FILE", "AGENTICA_WORKSPACE_DIR", "AGENTICA_PROJECTS_DIR",
+    "AGENTICA_CRON_DIR",
     # logging
     "set_log_level_to_debug", "set_log_level_to_info", "logger",
     # utils

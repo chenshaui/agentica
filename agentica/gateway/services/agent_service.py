@@ -159,16 +159,16 @@ class AgentService:
         model = self._create_model()
         work_dir = str(settings.base_dir)
 
-        # Extra tools: user-provided + scheduler
+        # Extra tools: user-provided + cron
         extra = list(self.extra_tools)
-        scheduler_tools = self._get_scheduler_tools()
-        extra.extend(scheduler_tools)
+        cron_tools = self._get_cron_tools()
+        extra.extend(cron_tools)
 
         instructions = list(self.extra_instructions) if self.extra_instructions else None
-        if scheduler_tools:
+        if cron_tools:
             if instructions is None:
                 instructions = []
-            instructions.append(self._get_scheduler_instructions())
+            instructions.append(self._get_cron_instructions())
 
         agent = DeepAgent(
             model=model,
@@ -192,7 +192,7 @@ class AgentService:
         )
 
         tool_count = len(agent.tools) if agent.tools else 0
-        logger.info(f"DeepAgent built: {tool_count} tools (extra={len(extra)}, scheduler={len(scheduler_tools)})")
+        logger.info(f"DeepAgent built: {tool_count} tools (extra={len(extra)}, cron={len(cron_tools)})")
         return agent
 
     async def _get_agent(self, session_id: str) -> DeepAgent:
@@ -266,57 +266,32 @@ class AgentService:
             from agentica import OpenAIChat
             return OpenAIChat(**params)
 
-    # ============== Scheduler tools ==============
+    # ============== Cron tools ==============
 
-    def _get_scheduler_tools(self) -> List[Any]:
-        """Load scheduler tools (returns empty list on failure)."""
+    def _get_cron_tools(self) -> List[Any]:
+        """Load cron tools from SDK cron module (returns empty list on failure)."""
         try:
-            from ..scheduler import (
-                create_scheduled_job_tool,
-                list_scheduled_jobs_tool,
-                delete_scheduled_job_tool,
-                pause_scheduled_job_tool,
-                resume_scheduled_job_tool,
-                create_task_chain_tool,
-            )
-            tools = [
-                create_scheduled_job_tool,
-                list_scheduled_jobs_tool,
-                delete_scheduled_job_tool,
-                pause_scheduled_job_tool,
-                resume_scheduled_job_tool,
-                create_task_chain_tool,
-            ]
-            logger.debug(f"Loaded {len(tools)} scheduler tools")
-            return tools
+            from agentica.tools.cron_tool import cronjob
+            logger.debug("Loaded cron tool")
+            return [cronjob]
         except Exception as e:
-            logger.warning(f"Failed to load scheduler tools: {e}")
+            logger.warning(f"Failed to load cron tools: {e}")
             return []
 
-    def _get_scheduler_instructions(self) -> str:
+    def _get_cron_instructions(self) -> str:
         return """
-# 定时任务功能
+# Cron Job Management
 
-你可以帮助用户创建和管理定时任务。当用户想要设置提醒、定时执行某些操作时，使用以下工具：
+You can help users create and manage scheduled tasks. Use the `cronjob` tool:
 
-## 可用工具
-- `create_scheduled_job`: 创建新的定时任务（支持自然语言描述）
-- `list_scheduled_jobs`: 列出用户的定时任务
-- `delete_scheduled_job`: 删除定时任务
-- `pause_scheduled_job`: 暂停定时任务
-- `resume_scheduled_job`: 恢复暂停的任务
-- `create_task_chain`: 创建任务链（任务A完成后自动触发任务B）
+- `cronjob(action="create", prompt="...", schedule="30 7 * * *")` — Create a cron job
+- `cronjob(action="list")` — List all cron jobs
+- `cronjob(action="pause", job_id="...")` — Pause a job
+- `cronjob(action="resume", job_id="...")` — Resume a paused job
+- `cronjob(action="remove", job_id="...")` — Delete a job
+- `cronjob(action="run", job_id="...")` — Trigger a job immediately
 
-## 使用场景
-- "每天早上9点提醒我看新闻" → 使用 create_scheduled_job
-- "帮我取消那个每日新闻提醒" → 先 list_scheduled_jobs 找到任务，再 delete_scheduled_job
-- "暂停一下那个任务" → 使用 pause_scheduled_job
-- "当数据备份完成后，自动开始数据分析" → 使用 create_task_chain
-
-## 注意事项
-- 创建任务时需要提供 user_id（从会话上下文中获取）
-- 支持的时间格式：cron表达式、间隔执行、一次性执行
-- 任务执行结果可以通过通知渠道发送给用户
+Schedule formats: cron expression ("30 7 * * *"), interval ("30m", "every 2h"), or ISO datetime.
 """
 
     # ============== Metrics helpers ==============

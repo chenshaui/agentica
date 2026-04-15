@@ -1,11 +1,23 @@
-"""Configuration management for the gateway service."""
+# -*- coding: utf-8 -*-
+"""
+@author: XuMing(xuming624@qq.com)
+@description: Configuration management for the gateway service.
+
+Gateway-specific settings only. Model/path/workspace config is in agentica/config.py.
+"""
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, List
 
 from dotenv import load_dotenv
-load_dotenv(override=True)
+
+load_dotenv()
+
+from agentica.config import (
+    AGENTICA_DATA_DIR,
+    AGENTICA_WORKSPACE_DIR,
+)
 
 
 @dataclass
@@ -16,29 +28,16 @@ class Settings:
     host: str = "0.0.0.0"
     port: int = 8789
     debug: bool = False
-    # API authentication token; empty string disables auth (local dev)
     gateway_token: Optional[str] = None
 
     # Default user ID (single-user scenario)
     default_user_id: str = "default"
-
-    # Paths
-    workspace_path: Path = field(default_factory=lambda: Path.home() / ".agentica" / "workspace")
-    data_dir: Path = field(default_factory=lambda: Path.home() / ".agentica" / "data")
-    # Agent working directory (cwd for shell tool), defaults to user home
-    base_dir: Path = field(default_factory=Path.home)
-
-    # Model
-    model_provider: str = "zhipuai"
-    model_name: str = "glm-4.7-flash"
-    model_thinking: str = ""  # thinking mode: enabled / disabled / auto, empty = off
 
     # Agent cache: max number of concurrent Agent instances kept in LRU cache
     agent_max_sessions: int = 50
 
     # File upload limits
     upload_max_size_mb: int = 50
-    # Comma-separated allowed extensions (empty = allow all, not recommended for production)
     upload_allowed_extensions: str = (
         ".txt,.md,.py,.js,.ts,.jsx,.tsx,.json,.yaml,.yml,.toml,.csv,"
         ".pdf,.png,.jpg,.jpeg,.gif,.webp,.svg,.zip,.tar,.gz"
@@ -61,6 +60,31 @@ class Settings:
     discord_bot_token: Optional[str] = None
     discord_allowed_users: List[str] = field(default_factory=list)
     discord_allowed_guilds: List[str] = field(default_factory=list)
+
+    # Bridged from SDK config (read-only properties)
+    @property
+    def model_provider(self) -> str:
+        return os.getenv("AGENTICA_MODEL_PROVIDER", "zhipuai")
+
+    @property
+    def model_name(self) -> str:
+        return os.getenv("AGENTICA_MODEL_NAME", "glm-4.7-flash")
+
+    @property
+    def model_thinking(self) -> str:
+        return os.getenv("AGENTICA_MODEL_THINKING", "")
+
+    @property
+    def workspace_path(self) -> Path:
+        return Path(AGENTICA_WORKSPACE_DIR)
+
+    @property
+    def data_dir(self) -> Path:
+        return Path(AGENTICA_DATA_DIR)
+
+    @property
+    def base_dir(self) -> Path:
+        return Path(os.getenv("AGENTICA_BASE_DIR", str(Path.home())))
 
     @property
     def upload_allowed_ext_set(self) -> set[str]:
@@ -86,22 +110,6 @@ class Settings:
 
             # Default user
             default_user_id=os.getenv("DEFAULT_USER_ID", "default"),
-
-            # Paths
-            workspace_path=Path(os.getenv(
-                "AGENTICA_WORKSPACE_DIR", str(Path.home() / ".agentica" / "workspace")
-            )),
-            data_dir=Path(os.getenv(
-                "AGENTICA_DATA_DIR", str(Path.home() / ".agentica" / "data")
-            )),
-            base_dir=Path(os.getenv(
-                "AGENTICA_BASE_DIR", str(Path.home())
-            )),
-
-            # Model
-            model_provider=os.getenv("AGENTICA_MODEL_PROVIDER", "zhipuai"),
-            model_name=os.getenv("AGENTICA_MODEL_NAME", "glm-4.7-flash"),
-            model_thinking=os.getenv("AGENTICA_MODEL_THINKING", ""),
 
             # Agent cache
             agent_max_sessions=int(os.getenv("AGENT_MAX_SESSIONS", "50")),

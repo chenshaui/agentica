@@ -23,6 +23,10 @@ from agentica.tools.buildin_tools import (
 from agentica.tools.code_tool import CodeTool
 from agentica.tools.lsp_tool import LspTool
 from agentica.tools.patch_tool import PatchTool
+from agentica.tools.cron_tool import CronTool
+from agentica.tools.helpers import tool_error, tool_result
+from agentica.tools.safety import check_command_safety, redact_sensitive_text
+from agentica.tools.interrupt import set_interrupt, is_interrupted
 
 __all__ = [
     # Base classes
@@ -37,6 +41,15 @@ __all__ = [
     "list_tools",
     "unregister_tool",
     "clear_registry",
+    # Helpers
+    "tool_error",
+    "tool_result",
+    # Safety
+    "check_command_safety",
+    "redact_sensitive_text",
+    # Interrupt
+    "set_interrupt",
+    "is_interrupted",
     # Builtin tools
     "BuiltinFileTool",       # File read/write/search/list
     "BuiltinExecuteTool",    # Shell command execution
@@ -48,4 +61,5 @@ __all__ = [
     "CodeTool",      # Code analysis, formatting, linting
     "LspTool",       # LSP-based code navigation
     "PatchTool",     # Apply diff/patch files
+    "CronTool",      # Cron job management
 ]

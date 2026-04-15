@@ -26,7 +26,6 @@ from .config import settings
 from .services.agent_service import AgentService
 from .services.channel_manager import ChannelManager
 from .services.router import MessageRouter
-from .scheduler import SchedulerService, JobExecutor, init_scheduler_tools
 from .routes import chat, config as config_routes, scheduler as scheduler_routes, channels, ws
 
 # ContextVar holding the current request ID — async-safe, no threading issues
@@ -73,25 +72,24 @@ async def lifespan(app: FastAPI):
     deps.channel_manager = ChannelManager()
     deps.message_router = MessageRouter(default_agent="main")
 
-    # Scheduler
-    agent_runner = _GatewayAgentRunner(agent_svc)
-    executor = JobExecutor(agent_runner=agent_runner)
-    sched = SchedulerService(
-        data_dir=str(settings.data_dir),
-        executor=executor,
-    )
-    deps.scheduler = sched
-    init_scheduler_tools(sched)
+    # Cron scheduler — tick every 60s using the new SDK cron module
+    from agentica.cron.scheduler import tick as cron_tick
+
+    cron_runner = _GatewayAgentRunner(agent_svc)
+
+    async def _cron_ticker():
+        while True:
+            await asyncio.sleep(60)
+            try:
+                await cron_tick(agent_runner=cron_runner)
+            except Exception as e:
+                logger.error(f"Cron tick error: {e}")
+
+    cron_task = asyncio.create_task(_cron_ticker())
+    logger.info("Cron scheduler started (60s tick)")
 
     # Channels
     await _setup_channels()
-
-    # Start scheduler
-    try:
-        await sched.start()
-        logger.info("Scheduler started")
-    except Exception as e:
-        logger.error(f"Failed to start scheduler: {e}")
 
     logger.info(f"Gateway started — http://{settings.host}:{settings.port}/chat")
 
@@ -99,9 +97,9 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Shutting down...")
+    cron_task.cancel()
     if deps.channel_manager:
         await deps.channel_manager.disconnect_all()
-    await sched.stop()
     logger.info("Goodbye!")
 
 

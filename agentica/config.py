@@ -23,6 +23,7 @@ AGENTICA_EXTRA_SKILL_PATHS = [
     for path in os.getenv("AGENTICA_EXTRA_SKILL_PATH", "").split(os.pathsep)
     if path.strip()
 ]
+AGENTICA_CRON_DIR = os.getenv("AGENTICA_CRON_DIR", f"{AGENTICA_HOME}/cron")
 AGENTICA_WORKSPACE_DIR = os.getenv("AGENTICA_WORKSPACE_DIR", f"{AGENTICA_HOME}/workspace")
 AGENTICA_PROJECTS_DIR = os.getenv("AGENTICA_PROJECTS_DIR", f"{AGENTICA_HOME}/projects")
 AGENTICA_LOG_LEVEL = os.getenv("AGENTICA_LOG_LEVEL", "INFO").upper()

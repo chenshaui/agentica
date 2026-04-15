@@ -43,24 +43,21 @@ async def root():
 @router.get("/health")
 @router.get("/api/health")
 async def health():
-    scheduler_status = {}
-    if deps.scheduler:
-        status = await deps.scheduler.status()
-        scheduler_status = status.to_dict()
+    from agentica.cron.jobs import list_jobs
+    active_jobs = len(list_jobs(include_disabled=False))
     return {
         "status": "ok",
         "version": __version__,
         "channels": deps.channel_manager.get_status() if deps.channel_manager else {},
-        "scheduler": scheduler_status,
+        "scheduler": {"active_jobs": active_jobs},
     }
 
 
 @router.get("/api/status")
 async def status():
-    scheduler_status = {}
-    if deps.scheduler:
-        st = await deps.scheduler.status()
-        scheduler_status = st.to_dict()
+    from agentica.cron.jobs import list_jobs
+    active_jobs = len(list_jobs(include_disabled=False))
+    scheduler_status = {"active_jobs": active_jobs}
 
     context_window = 128000
     svc = deps.agent_service
