@@ -1,4 +1,8 @@
-"""Config routes: /api/config/*, /api/models, /api/model, /api/open, /api/status."""
+# -*- coding: utf-8 -*-
+"""
+@author:XuMing(xuming624@qq.com)
+@description: Config routes: /api/config/*, /api/models, /api/model, /api/open, /api/status.
+"""
 import asyncio
 import json
 import shutil

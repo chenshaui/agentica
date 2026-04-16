@@ -1,4 +1,8 @@
-"""Response formatting utilities for gateway API responses.
+# -*- coding: utf-8 -*-
+"""
+@author:XuMing(xuming624@qq.com)
+@description: 
+Response formatting utilities for gateway API responses.
 
 Extracted from AgentService — these are pure functions with no state,
 making them easy to test and reuse across different response paths

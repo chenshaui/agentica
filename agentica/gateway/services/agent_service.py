@@ -1,4 +1,8 @@
-"""Agent service - wraps the agentica SDK.
+# -*- coding: utf-8 -*-
+"""
+@author:XuMing(xuming624@qq.com)
+@description: 
+Agent service - wraps the agentica SDK.
 
 Key design decisions:
 - LRU cache for Agent instances (bounded by settings.agent_max_sessions)

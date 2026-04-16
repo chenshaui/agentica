@@ -1,4 +1,7 @@
-"""Chat routes: /api/chat, /api/chat/stream, /api/sessions, /api/upload, /api/memory."""
+# -*- coding: utf-8 -*-
+"""
+@author:XuMing(xuming624@qq.com)
+@description: Chat routes: /api/chat, /api/chat/stream, /api/sessions, /api/upload, /api/memory."""
 import asyncio
 import json
 import shutil

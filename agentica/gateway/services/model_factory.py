@@ -1,4 +1,8 @@
-"""Model factory: instantiates configured LLM models and loads cron tools.
+# -*- coding: utf-8 -*-
+"""
+@author:XuMing(xuming624@qq.com)
+@description: 
+Model factory: instantiates configured LLM models and loads cron tools.
 
 Extracted from AgentService to keep model creation logic independently testable
 and to reduce AgentService's responsibility count.

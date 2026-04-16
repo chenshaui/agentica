@@ -12,7 +12,9 @@ Two levels of hooks:
 import json
 from typing import Any, Optional, List, Dict
 
+from agentica.experience.skill_upgrade import SkillEvolutionManager
 from agentica.model.message import Message
+from agentica.tools.skill_tool import SkillTool
 from agentica.utils.log import logger
 
 # ─── Shared memory type specification ───────────────────────────────────────
@@ -328,12 +330,14 @@ class MemoryExtractHooks(RunHooks):
 
     async def on_agent_end(self, agent: Any, output: Any, **kwargs) -> None:
         """Extract and save memories if LLM didn't use save_memory during this run."""
+        # Always drain accumulated state first — even when workspace is None.
+        # Without this, _tool_calls leaks keys for workspace-less runs.
+        agent_id = agent.agent_id
+        tool_calls = self._tool_calls.pop(agent_id, [])
+
         workspace = agent.workspace
         if workspace is None:
             return
-
-        agent_id = agent.agent_id
-        tool_calls = self._tool_calls.pop(agent_id, [])
 
         # Read run_input directly — Runner sets it before calling on_agent_end
         run_input = agent.run_input
@@ -464,7 +468,7 @@ class ExperienceCaptureHooks(RunHooks):
         '"category": "factual|preference|workflow|tool_usage|rejection|not_correction", '
         '"scope": "turn_only|session|cross_session", '
         '"should_persist": bool, '
-        '"persist_target": "none|experience|memory_feedback|session_only", '
+        '"persist_target": "none|experience|session_only", '
         '"title": "snake_case_short_name", '
         '"rule": "one-line reusable rule", '
         '"why": "reason this matters", '
@@ -477,6 +481,8 @@ class ExperienceCaptureHooks(RunHooks):
         self._tool_errors: Dict[str, List[Dict]] = {}
         self._tool_successes: Dict[str, List[Dict]] = {}
         self._last_assistant_output: Dict[str, Optional[str]] = {}
+        self._skills_used: Dict[str, set] = {}  # agent_id -> set of skill names loaded via get_skill_info
+        self._correction_detected: Dict[str, bool] = {}  # agent_id -> True if correction persisted this run
 
     async def on_agent_start(self, agent: Any, **kwargs) -> None:
         """Initialize per-agent capture state."""
@@ -484,6 +490,8 @@ class ExperienceCaptureHooks(RunHooks):
         self._tool_errors[aid] = []
         self._tool_successes[aid] = []
         self._last_assistant_output[aid] = None
+        self._skills_used[aid] = set()
+        self._correction_detected[aid] = False
 
     async def on_user_prompt(self, agent: Any, message: str, **kwargs) -> Optional[str]:
         """No-op: classification uses agent.run_input at on_agent_end time."""
@@ -517,6 +525,13 @@ class ExperienceCaptureHooks(RunHooks):
                 "elapsed": elapsed,
             })
 
+        # Track generated skills only when get_skill_info returned real content.
+        if tool_name == "get_skill_info" and tool_args and not is_error:
+            result_text = str(result) if result is not None else ""
+            skill_name = tool_args.get("skill_name") or tool_args.get("name", "")
+            if skill_name and not result_text.startswith("Error:"):
+                self._skills_used.setdefault(aid, set()).add(skill_name)
+
     async def on_agent_end(self, agent: Any, output: Any, **kwargs) -> None:
         """Persist captured experiences to workspace.
 
@@ -532,6 +547,8 @@ class ExperienceCaptureHooks(RunHooks):
         errors = self._tool_errors.pop(aid, [])
         successes = self._tool_successes.pop(aid, [])
         self._last_assistant_output.pop(aid, None)
+        skills_used = self._skills_used.pop(aid, set())
+        correction_this_run = self._correction_detected.pop(aid, False)
 
         workspace = agent.workspace
         if workspace is None:
@@ -562,8 +579,14 @@ class ExperienceCaptureHooks(RunHooks):
         # ── 2. Compile and persist experience cards ──
 
         # 2a. Tool errors (deterministic, zero LLM cost)
+        # Dedup by title: same run may produce duplicate error titles (e.g. two
+        # PermissionErrors from the same tool), which would inflate repeat_count.
         error_cards = ExperienceCompiler.compile_tool_errors(errors)
+        seen_titles: set = set()
         for card in error_cards:
+            if card.title in seen_titles:
+                continue
+            seen_titles.add(card.title)
             try:
                 await compiled_store.write(card)
             except Exception as e:
@@ -573,10 +596,12 @@ class ExperienceCaptureHooks(RunHooks):
         if self._config.capture_user_corrections and user_msg:
             model = self._get_classification_model(agent)
             if model is not None:
-                await self._classify_and_persist_feedback(
-                    model, event_store, compiled_store, workspace,
+                was_correction = await self._classify_and_persist_feedback(
+                    model, event_store, compiled_store,
                     user_msg, previous_assistant_text or "",
                 )
+                if was_correction:
+                    correction_this_run = True
 
         # 2c. Success pattern
         success_card = ExperienceCompiler.compile_success_pattern(successes)
@@ -596,6 +621,97 @@ class ExperienceCaptureHooks(RunHooks):
             )
         except Exception as e:
             logger.debug(f"Experience lifecycle sweep failed: {e}")
+
+        # ── 3.5 Skill upgrade (after lifecycle, before sync) ──
+        skill_cfg = self._config.skill_upgrade
+        if skill_cfg is not None and skill_cfg.mode != "off":
+            try:
+                manager = SkillEvolutionManager()
+                upgrade_model = self._get_classification_model(agent)
+                if upgrade_model is not None:
+                    gen_dir = workspace._get_user_generated_skills_dir()
+                    exp_dir = workspace._get_user_experience_dir()
+                    skill_tool = None
+                    for tool in agent.tools or []:
+                        if isinstance(tool, SkillTool):
+                            skill_tool = tool
+                            break
+                    should_reload_generated_skills = False
+
+                    # Phase A: try to spawn new skill from experience
+                    # (draft mode only generates, shadow mode generates + installs)
+                    candidates = manager.get_candidate_cards(
+                        exp_dir=exp_dir,
+                        min_repeat_count=skill_cfg.min_repeat_count,
+                        min_tier=skill_cfg.min_tier,
+                    )
+                    if candidates:
+                        existing = set(
+                            [d.name for d in gen_dir.iterdir() if d.is_dir()]
+                            if gen_dir.exists() else []
+                        )
+                        if skill_tool is not None:
+                            existing.update(skill.name for skill in skill_tool.registry.list_all())
+                        spawned = await manager.maybe_spawn_skill(
+                            model=upgrade_model,
+                            candidates=candidates,
+                            existing_skills=sorted(existing),
+                            generated_skills_dir=gen_dir,
+                        )
+                        # In draft mode, mark as draft instead of shadow
+                        if spawned and skill_cfg.mode == "draft":
+                            meta_path = gen_dir / spawned / "meta.json"
+                            meta = manager.read_meta(meta_path)
+                            if meta:
+                                meta["status"] = "draft"
+                                manager.write_meta(meta_path, meta)
+
+                        if spawned and skill_cfg.mode == "shadow":
+                            should_reload_generated_skills = True
+
+                    # Phase B: record episode only for skills actually used this run
+                    if skill_cfg.mode == "shadow" and skills_used and gen_dir.exists():
+                        outcome = "failure" if errors or correction_this_run else "success"
+                        query_text = user_msg or ""
+                        for skill_dir in gen_dir.iterdir():
+                            if not skill_dir.is_dir():
+                                continue
+                            meta = manager.read_meta(skill_dir / "meta.json")
+                            skill_name = meta.get("skill_name", "")
+                            if not skill_name or skill_name not in skills_used:
+                                continue
+                            if meta.get("status") not in ("shadow", "auto"):
+                                continue
+                            if skill_tool is not None:
+                                loaded_skill = skill_tool.registry.get(skill_name)
+                                if loaded_skill is None or loaded_skill.location != "generated":
+                                    continue
+                            episodes_path = skill_dir / "episodes.jsonl"
+                            manager.record_episode(
+                                episodes_path=episodes_path,
+                                outcome=outcome,
+                                query=query_text,
+                                tool_errors=len(errors),
+                                user_corrected=correction_this_run,
+                            )
+                            manager.update_meta_after_episode(
+                                skill_dir / "meta.json", outcome,
+                            )
+                            # Phase C: checkpoint judgment
+                            decision = await manager.maybe_update_skill_state(
+                                model=upgrade_model,
+                                skill_dir=skill_dir,
+                                checkpoint_interval=skill_cfg.checkpoint_interval,
+                                rollback_consecutive_failures=skill_cfg.rollback_consecutive_failures,
+                            )
+                            if decision is not None:
+                                should_reload_generated_skills = True
+
+                    if should_reload_generated_skills and skill_tool is not None:
+                        skill_tool.reload_generated_skills()
+                        agent.refresh_tool_system_prompts()
+            except Exception as e:
+                logger.debug(f"Skill upgrade check failed: {e}")
 
         # ── 4. Sync to global AGENTS.md ──
         if self._config.sync_to_global_agent_md:
@@ -636,14 +752,16 @@ class ExperienceCaptureHooks(RunHooks):
         model: Any,
         event_store: Any,
         compiled_store: Any,
-        workspace: Any,
         user_message: str,
         previous_assistant_text: str,
-    ) -> None:
+    ) -> bool:
         """Classify user feedback with LLM and persist if appropriate.
 
         Uses ExperienceCompiler for card building (pure logic).
         Delegates I/O to event_store and compiled_store.
+
+        Returns:
+            True if a correction was persisted to the experience store.
         """
         from agentica.experience.compiler import ExperienceCompiler
 
@@ -660,7 +778,7 @@ class ExperienceCaptureHooks(RunHooks):
                 Message(role="user", content=prompt),
             ])
             if not response or not response.content:
-                return
+                return False
 
             text = response.content.strip()
             if text.startswith("```"):
@@ -668,7 +786,7 @@ class ExperienceCaptureHooks(RunHooks):
 
             result = json.loads(text)
             if not isinstance(result, dict):
-                return
+                return False
 
             is_correction = result.get("is_correction", False)
             confidence = result.get("confidence", 0.0)
@@ -684,23 +802,24 @@ class ExperienceCaptureHooks(RunHooks):
             })
 
             if not is_correction or confidence < threshold:
-                return
+                return False
             if not result.get("should_persist", False) or result.get("persist_target") == "none":
-                return
+                return False
 
-            # Route: memory_feedback → workspace memory, experience → compiled store
-            if ExperienceCompiler.is_memory_feedback(result):
-                kwargs = ExperienceCompiler.build_memory_feedback(result)
-                await workspace.write_memory_entry(**kwargs)
-            else:
-                card = ExperienceCompiler.compile_correction(result)
-                if card:
-                    await compiled_store.write(card)
+            # All corrections go to experience store (no cross-layer memory writes)
+            card = ExperienceCompiler.compile_correction(result)
+            if card:
+                await compiled_store.write(card)
+                return True
+
+            return False
 
         except json.JSONDecodeError:
             logger.debug("Feedback classification: LLM returned invalid JSON")
+            return False
         except Exception as e:
-            logger.debug(f"Feedback classification failed: {e}")
+            logger.warning(f"Feedback classification failed ({type(e).__name__}): {e}")
+            return False
 
 
 class _CompositeRunHooks(RunHooks):

@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """
+@author:XuMing(xuming624@qq.com)
+@description: 
 Append-only raw experience event storage.
 
 Writes raw events to events.jsonl as the source of truth.

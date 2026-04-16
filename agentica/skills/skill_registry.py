@@ -23,6 +23,7 @@ class SkillRegistry:
         "project": 0,
         "user": 1,
         "managed": 2,
+        "generated": 3,
     }
 
     def __init__(self):
@@ -31,6 +32,7 @@ class SkillRegistry:
             "project": [],
             "user": [],
             "managed": [],
+            "generated": [],
         }
 
     def register(self, skill: Skill) -> bool:

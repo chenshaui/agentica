@@ -1,4 +1,9 @@
-"""WebSocket gateway: /ws endpoint + ConnectionManager."""
+# -*- coding: utf-8 -*-
+"""
+@author:XuMing(xuming624@qq.com)
+@description: 
+WebSocket gateway: /ws endpoint + ConnectionManager.
+"""
 from typing import Dict, Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect

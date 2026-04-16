@@ -1,4 +1,8 @@
-"""Telegram channel implementation using python-telegram-bot.
+# -*- coding: utf-8 -*-
+"""
+@author:XuMing(xuming624@qq.com)
+@description: 
+Telegram channel implementation using python-telegram-bot.
 
 Uses long-polling (``start_polling``) to receive incoming messages.
 Outgoing messages are sent via the Bot API's ``send_message`` method.

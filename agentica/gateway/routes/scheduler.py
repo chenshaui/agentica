@@ -1,4 +1,7 @@
-"""Scheduler routes: /api/scheduler/*
+# -*- coding: utf-8 -*-
+"""
+@author:XuMing(xuming624@qq.com)
+@description: Scheduler routes: /api/scheduler/*
 
 Simplified to use the SDK cron module (agentica.cron) instead of the old
 gateway-embedded SchedulerService.

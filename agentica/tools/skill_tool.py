@@ -35,7 +35,9 @@ Usage:
         tools=[skill_tool, ShellTool()],
     )
 """
+import json
 from typing import List, Optional
+from pathlib import Path
 
 from agentica.tools.base import Tool
 from agentica.skills import (
@@ -45,6 +47,7 @@ from agentica.skills import (
     load_skills,
     register_skill,
 )
+from agentica.skills.skill_loader import SkillLoader
 from agentica.utils.log import logger
 
 
@@ -64,6 +67,8 @@ class SkillTool(Tool):
 
     Also supports custom skill directories via constructor.
     """
+
+    _VISIBLE_GENERATED_STATUSES = {"shadow", "auto"}
 
     def __init__(
         self,
@@ -103,13 +108,97 @@ class SkillTool(Tool):
         else:
             self._registry = get_skill_registry()
 
-        # Load custom skill directories
-        for skill_dir in self._custom_skill_dirs:
-            skill = register_skill(skill_dir)
-            if skill:
-                logger.info(f"Loaded custom skill: {skill.name} from {skill_dir}")
+        self._load_custom_skill_dirs()
 
         self._initialized = True
+
+    def _load_custom_skill_dirs(self) -> None:
+        """Load custom skill directories during first initialization."""
+        loader = SkillLoader()
+
+        # Each entry can be either:
+        # - A direct skill dir (contains SKILL.md) -> register it directly
+        # - A parent dir with subdirectories (e.g., generated_skills/{slug}/SKILL.md)
+        #   -> discover and register all visible generated sub-skills
+        for skill_dir in self._custom_skill_dirs:
+            skill_dir_path = Path(skill_dir).resolve()
+            direct_md = skill_dir_path / "SKILL.md"
+            if direct_md.exists():
+                if (skill_dir_path / "meta.json").exists():
+                    loaded = self._load_generated_skill(loader, direct_md)
+                    if loaded and self._registry.register(loaded):
+                        logger.info(f"Loaded generated skill: {loaded.name} from {direct_md}")
+                else:
+                    skill = register_skill(skill_dir)
+                    if skill:
+                        logger.info(f"Loaded custom skill: {skill.name} from {skill_dir}")
+                continue
+
+            if not skill_dir_path.is_dir():
+                continue
+
+            for skill_md_path in loader.discover_skills(skill_dir_path):
+                loaded = self._load_generated_skill(loader, skill_md_path)
+                if loaded and self._registry.register(loaded):
+                    logger.info(f"Loaded generated skill: {loaded.name} from {skill_md_path}")
+
+    @classmethod
+    def _is_generated_skill_visible(cls, skill_md_path: Path) -> bool:
+        """Check whether a generated skill should be visible at runtime."""
+        meta_path = skill_md_path.parent / "meta.json"
+        if not meta_path.exists():
+            return True
+
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return False
+
+        status = meta.get("status")
+        return status in cls._VISIBLE_GENERATED_STATUSES
+
+    def _load_generated_skill(self, loader: SkillLoader, skill_md_path: Path) -> Optional[Skill]:
+        """Load a generated skill only when its runtime status is visible."""
+        if not self._is_generated_skill_visible(skill_md_path):
+            return None
+        return loader.load_skill(skill_md_path, "generated")
+
+    def reload_generated_skills(self) -> int:
+        """Re-scan custom skill dirs and sync generated skills.
+
+        This performs a full sync for generated skills:
+        - add newly visible skills
+        - remove rolled back / draft skills
+        - refresh revised skills in-place
+
+        Returns:
+            Number of visible generated skills after sync.
+        """
+        if self._registry is None:
+            return 0
+
+        loader = SkillLoader()
+        generated_skills = {}
+        for skill_dir in self._custom_skill_dirs:
+            skill_dir_path = Path(skill_dir).resolve()
+            if not skill_dir_path.is_dir():
+                continue
+            for skill_md_path in loader.discover_skills(skill_dir_path):
+                loaded = self._load_generated_skill(loader, skill_md_path)
+                if loaded is not None:
+                    generated_skills[loaded.name] = loaded
+
+        existing_generated_names = {
+            skill.name for skill in self._registry.list_by_location("generated")
+        }
+
+        for skill_name in existing_generated_names:
+            self._registry.remove(skill_name)
+
+        for skill in generated_skills.values():
+            self._registry.register(skill)
+
+        return len(generated_skills)
 
     @property
     def registry(self) -> SkillRegistry:

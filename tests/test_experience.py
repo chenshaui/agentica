@@ -18,6 +18,7 @@ import os
 import tempfile
 import unittest
 from datetime import date, timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from agentica.agent.config import ExperienceConfig
@@ -104,6 +105,8 @@ class TestExperienceCaptureHooks(unittest.TestCase):
         mock_compiled_store.sync_to_global_agent_md = AsyncMock(return_value="/tmp/AGENTS.md")
         agent.workspace.get_compiled_experience_store = MagicMock(return_value=mock_compiled_store)
         agent.workspace._get_global_agent_md_path = MagicMock(return_value="/tmp/AGENTS.md")
+        agent.workspace._get_user_generated_skills_dir = MagicMock(return_value=Path("/tmp/gen_skills"))
+        agent.workspace._get_user_experience_dir = MagicMock(return_value=Path("/tmp/experiences"))
         # Mock working_memory with empty messages (no previous assistant)
         agent.working_memory = MagicMock()
         agent.working_memory.messages = []
@@ -247,8 +250,8 @@ class TestExperienceCaptureHooks(unittest.TestCase):
         correction_calls = [c for c in calls if c[0][0].experience_type == "correction"]
         self.assertEqual(len(correction_calls), 0)
 
-    def test_on_agent_end_llm_classification_memory_feedback_target(self):
-        """persist_target=memory_feedback should write to memory instead of experience."""
+    def test_on_agent_end_llm_classification_memory_feedback_target_ignored(self):
+        """persist_target=memory_feedback should be ignored (no cross-layer write)."""
         hooks = self._make_hooks()
         agent = self._mock_agent()
 
@@ -271,10 +274,13 @@ class TestExperienceCaptureHooks(unittest.TestCase):
         asyncio.run(hooks.on_user_prompt(agent, "Please be more concise"))
         asyncio.run(hooks.on_agent_end(agent, output="OK"))
 
-        # Should write to workspace memory, not compiled_store
-        agent.workspace.write_memory_entry.assert_called()
-        call_args = agent.workspace.write_memory_entry.call_args
-        self.assertEqual(call_args.kwargs["memory_type"], "feedback")
+        # memory_feedback is no longer a valid target — should NOT write anywhere
+        # (compile_correction returns None for persist_target != "experience")
+        agent.workspace.write_memory_entry.assert_not_called()
+        compiled_store = agent.workspace.get_compiled_experience_store()
+        calls = compiled_store.write.call_args_list
+        correction_calls = [c for c in calls if c[0][0].experience_type == "correction"]
+        self.assertEqual(len(correction_calls), 0)
 
     def test_on_agent_end_persists_success_pattern(self):
         """on_agent_end should persist success patterns when 3+ tools all succeeded."""
@@ -449,6 +455,28 @@ class TestExperienceCaptureHooks(unittest.TestCase):
         self.assertNotEqual(titles[0], titles[1])
         self.assertIn("FileNotFoundError", titles[0])
         self.assertIn("PermissionError", titles[1])
+
+    def test_dedup_same_error_type_not_double_written(self):
+        """Two identical error types from same tool should only write once (dedup)."""
+        hooks = self._make_hooks(capture_user_corrections=False)
+        agent = self._mock_agent()
+
+        asyncio.run(hooks.on_agent_start(agent))
+        asyncio.run(hooks.on_tool_end(
+            agent, tool_name="execute", is_error=True,
+            result="PermissionError: denied attempt 1", elapsed=0.5,
+        ))
+        asyncio.run(hooks.on_tool_end(
+            agent, tool_name="execute", is_error=True,
+            result="PermissionError: denied attempt 2", elapsed=0.3,
+        ))
+        asyncio.run(hooks.on_agent_end(agent, output="errors"))
+
+        # Both produce title "execute_PermissionError", but dedup should write only once
+        compiled_store = agent.workspace.get_compiled_experience_store()
+        calls = compiled_store.write.call_args_list
+        error_calls = [c for c in calls if c[0][0].experience_type == "tool_error"]
+        self.assertEqual(len(error_calls), 1)
 
     def test_feedback_confidence_threshold_from_config(self):
         """Custom feedback_confidence_threshold should be respected."""
@@ -940,6 +968,18 @@ class TestExperienceCompiler(unittest.TestCase):
         self.assertIsNotNone(card)
         self.assertEqual(card.experience_type, "success_pattern")
         self.assertIn("4 calls", card.content)
+        # Title should include sorted unique tool names
+        self.assertIn("success_", card.title)
+        self.assertIn("t0", card.title)
+
+    def test_compile_success_pattern_distinct_titles(self):
+        """Different tool sets should produce different titles."""
+        from agentica.experience.compiler import ExperienceCompiler
+        s1 = [{"tool": "read_file", "elapsed": 0.1}, {"tool": "write_file", "elapsed": 0.1}, {"tool": "execute", "elapsed": 0.1}]
+        s2 = [{"tool": "search", "elapsed": 0.1}, {"tool": "fetch", "elapsed": 0.1}, {"tool": "parse", "elapsed": 0.1}]
+        card1 = ExperienceCompiler.compile_success_pattern(s1)
+        card2 = ExperienceCompiler.compile_success_pattern(s2)
+        self.assertNotEqual(card1.title, card2.title)
 
     def test_compile_success_pattern_too_few(self):
         from agentica.experience.compiler import ExperienceCompiler
@@ -975,29 +1015,6 @@ class TestExperienceCompiler(unittest.TestCase):
         }
         card = ExperienceCompiler.compile_correction(classification)
         self.assertIsNone(card)
-
-    def test_is_memory_feedback(self):
-        from agentica.experience.compiler import ExperienceCompiler
-        self.assertTrue(ExperienceCompiler.is_memory_feedback({
-            "is_correction": True, "should_persist": True,
-            "persist_target": "memory_feedback",
-        }))
-        self.assertFalse(ExperienceCompiler.is_memory_feedback({
-            "is_correction": True, "should_persist": True,
-            "persist_target": "experience",
-        }))
-
-    def test_build_memory_feedback(self):
-        from agentica.experience.compiler import ExperienceCompiler
-        result = ExperienceCompiler.build_memory_feedback({
-            "title": "concise", "rule": "Be concise",
-            "why": "User wants", "how_to_apply": "All",
-            "category": "preference", "confidence": 0.9,
-            "scope": "cross_session",
-        })
-        self.assertEqual(result["title"], "concise")
-        self.assertEqual(result["memory_type"], "feedback")
-        self.assertIn("Be concise", result["content"])
 
     def test_build_raw_events(self):
         from agentica.experience.compiler import ExperienceCompiler

@@ -38,6 +38,7 @@ from agentica.utils.log import logger, set_log_level_to_debug, set_log_level_to_
 from agentica.model.openai import OpenAIChat
 from agentica.model.message import Message
 from agentica.tools.base import ModelTool, Tool, Function
+from agentica.tools.skill_tool import SkillTool
 from agentica.model.base import Model
 from agentica.run_response import RunResponse, AgentCancelledError
 from agentica.run_config import RunConfig
@@ -312,6 +313,8 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         if self.tool_config.auto_load_mcp:
             self._load_mcp_tools()
 
+        self._inject_generated_skill_dirs()
+
         # Merge tool system prompts into instructions
         self._merge_tool_system_prompts()
 
@@ -394,6 +397,22 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
             auto_hooks.append(ExperienceCaptureHooks(self.experience_config))
         if auto_hooks:
             self._default_run_hooks = _CompositeRunHooks(auto_hooks)
+
+    def _inject_generated_skill_dirs(self) -> None:
+        """Attach workspace generated skill dirs to any SkillTool before prompt merge."""
+        if not self.experience or self.workspace is None:
+            return
+        if self.experience_config.skill_upgrade is None:
+            return
+
+        gen_dir = str(self.workspace._get_user_generated_skills_dir())
+        for tool in self.tools or []:
+            if isinstance(tool, SkillTool) and gen_dir not in tool._custom_skill_dirs:
+                tool._custom_skill_dirs.append(gen_dir)
+
+    def refresh_tool_system_prompts(self) -> None:
+        """Rebuild cached tool/session guidance prompts after tool state changes."""
+        self._merge_tool_system_prompts()
 
     async def get_workspace_context_prompt(self) -> Optional[str]:
         """Dynamically load workspace context for system prompt.

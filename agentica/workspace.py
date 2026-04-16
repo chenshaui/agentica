@@ -1266,6 +1266,10 @@ You are a helpful AI assistant.
         """Get current user's experience index file path."""
         return self._get_user_path() / self._EXPERIENCE_INDEX_FILE
 
+    def _get_user_generated_skills_dir(self) -> Path:
+        """Get current user's generated skills directory."""
+        return self._get_user_path() / "generated_skills"
+
     def get_experience_event_store(self):
         """Get the ExperienceEventStore for the current user.
 

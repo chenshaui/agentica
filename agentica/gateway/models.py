@@ -1,4 +1,9 @@
-"""Pydantic request/response models shared across routes."""
+# -*- coding: utf-8 -*-
+"""
+@author:XuMing(xuming624@qq.com)
+@description: 
+Pydantic request/response models shared across routes.
+"""
 from typing import Optional, List
 from pydantic import BaseModel
 

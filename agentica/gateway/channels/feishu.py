@@ -1,4 +1,8 @@
-"""Feishu (Lark) channel implementation using WebSocket long-polling.
+# -*- coding: utf-8 -*-
+"""
+@author:XuMing(xuming624@qq.com)
+@description: 
+Feishu (Lark) channel implementation using WebSocket long-polling.
 
 Connects to the Feishu Open Platform via the ``lark_oapi`` SDK's WebSocket
 client. Incoming messages are received on a dedicated background thread and

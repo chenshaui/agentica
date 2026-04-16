@@ -1,4 +1,9 @@
-"""Message router for dispatching incoming channel messages to agents."""
+# -*- coding: utf-8 -*-
+"""
+@author:XuMing(xuming624@qq.com)
+@description: 
+Message router for dispatching incoming channel messages to agents.
+"""
 from dataclasses import dataclass
 from typing import List, Optional
 

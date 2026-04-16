@@ -1,4 +1,8 @@
-"""Channel manager for multi-channel message routing and lifecycle management."""
+# -*- coding: utf-8 -*-
+"""
+@author:XuMing(xuming624@qq.com)
+@description: Channel manager for multi-channel message routing and lifecycle management.
+"""
 from typing import Dict, Optional, Callable, Any, Union
 
 from loguru import logger

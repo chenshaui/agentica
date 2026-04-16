@@ -1,4 +1,9 @@
-"""Gateway services: agent orchestration, channel management, and message routing."""
+# -*- coding: utf-8 -*-
+"""
+@author:XuMing(xuming624@qq.com)
+@description: 
+Gateway services: agent orchestration, channel management, and message routing.
+"""
 from .agent_service import AgentService, ChatResult
 from .channel_manager import ChannelManager
 from .model_factory import create_model, get_cron_tools, get_cron_instructions

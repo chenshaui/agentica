@@ -1,4 +1,7 @@
-"""FastAPI application entry point.
+# -*- coding: utf-8 -*-
+"""
+@author:XuMing(xuming624@qq.com)
+@description: FastAPI application entry point.
 
 Responsibilities:
 - App creation and lifespan management

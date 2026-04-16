@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """
+@author:XuMing(xuming624@qq.com)
+@description: 
 Pure/stateless experience compiler.
 
 Transforms raw captured data (tool errors, user messages, success patterns)
@@ -90,12 +92,14 @@ class ExperienceCompiler:
             return None
 
         tool_names = [s.get("tool", "unknown") for s in successes]
+        unique_tools = "_".join(sorted(set(tool_names)))[:40]
+        title = f"success_{unique_tools}" if unique_tools else "success_unknown"
         content = (
             f"Successful tool sequence ({len(successes)} calls, all passed):\n"
             + "\n".join(f"- {t}" for t in tool_names)
         )
         return CompiledCard(
-            title="successful_tool_sequence",
+            title=title,
             content=content,
             experience_type="success_pattern",
         )
@@ -140,55 +144,6 @@ class ExperienceCompiler:
             content=content,
             experience_type="correction",
         )
-
-    @staticmethod
-    def is_memory_feedback(classification: Dict) -> bool:
-        """Check if classification should be routed to memory instead of experience.
-
-        Args:
-            classification: LLM classification dict.
-
-        Returns:
-            True if persist_target is "memory_feedback".
-        """
-        return (
-            classification.get("is_correction", False)
-            and classification.get("should_persist", False)
-            and classification.get("persist_target") == "memory_feedback"
-        )
-
-    @staticmethod
-    def build_memory_feedback(classification: Dict) -> Dict[str, str]:
-        """Build memory entry kwargs from a classification marked as memory_feedback.
-
-        Args:
-            classification: LLM classification dict.
-
-        Returns:
-            Dict with title, content, memory_type, description keys.
-        """
-        title = classification.get("title", "user_feedback")
-        rule = classification.get("rule", "")
-        why = classification.get("why", "")
-        how_to_apply = classification.get("how_to_apply", "")
-        category = classification.get("category", "")
-        confidence = classification.get("confidence", 0.0)
-        scope = classification.get("scope", "cross_session")
-
-        content = (
-            f"Rule: {rule}\n"
-            f"Why: {why}\n"
-            f"How to apply: {how_to_apply}\n"
-            f"Category: {category}\n"
-            f"Confidence: {confidence:.2f}\n"
-            f"Scope: {scope}"
-        )
-        return {
-            "title": title,
-            "content": content,
-            "memory_type": "feedback",
-            "description": rule[:100],
-        }
 
     @staticmethod
     def build_raw_events(

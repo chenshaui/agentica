@@ -39,4 +39,4 @@ def extract_frontmatter_int(content: str, key: str, default: int = 0) -> int:
 def strip_frontmatter(content: str) -> str:
     """Remove YAML frontmatter block (---...---) from content."""
     stripped = re.sub(r"^---[\s\S]*?---\s*", "", content, flags=re.MULTILINE).strip()
-    return stripped if stripped else content
+    return stripped

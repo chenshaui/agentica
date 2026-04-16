@@ -180,6 +180,31 @@ class ExperienceConfig:
     # Sync confirmed experiences to ~/.agentica/AGENTS.md
     sync_to_global_agent_md: bool = False
 
+    # Skill upgrade pipeline (None = disabled)
+    skill_upgrade: Optional["SkillUpgradeConfig"] = None
+
+
+@dataclass
+class SkillUpgradeConfig:
+    """Experience → Skill automatic upgrade pipeline configuration.
+
+    When enabled, high-value experiences that cross the threshold are
+    automatically compiled into SKILL.md files and installed as shadow skills
+    in the workspace. Runtime episodes are recorded, and at checkpoint
+    intervals an LLM judges whether to keep, promote, revise, or rollback.
+
+    Modes:
+        off: No skill upgrade (same as setting skill_upgrade=None on ExperienceConfig)
+        draft: Generate SKILL.md drafts only, do not install
+        shadow: Generate + auto-install to workspace-local generated_skills (default)
+    """
+    mode: str = "shadow"
+    min_repeat_count: int = 3
+    min_tier: str = "hot"
+    checkpoint_interval: int = 5
+    rollback_consecutive_failures: int = 2
+    notify_user: bool = True
+
 
 @dataclass
 class SandboxConfig:

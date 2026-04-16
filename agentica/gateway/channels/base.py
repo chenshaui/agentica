@@ -1,4 +1,9 @@
-"""Abstract base class and shared data models for messaging channels."""
+# -*- coding: utf-8 -*-
+"""
+@author:XuMing(xuming624@qq.com)
+@description: 
+Abstract base class and shared data models for messaging channels.
+"""
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, Callable, Any, List

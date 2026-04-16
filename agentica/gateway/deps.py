@@ -1,4 +1,8 @@
-"""Dependency injection helpers for FastAPI routes.
+# -*- coding: utf-8 -*-
+"""
+@author:XuMing(xuming624@qq.com)
+@description: 
+Dependency injection helpers for FastAPI routes.
 
 All routes access shared service instances through these Depends() functions.
 Global instances are set during app lifespan startup.

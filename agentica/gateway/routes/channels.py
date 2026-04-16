@@ -1,4 +1,11 @@
-"""Channel routes: /api/channels, /api/send, /webhook/*"""
+# -*- coding: utf-8 -*-
+"""
+@author:XuMing(xuming624@qq.com)
+@description: Channel routes: /api/channels, /api/send, /webhook/*
+
+Simplified to use the SDK cron module (agentica.cron) instead of the old
+gateway-embedded SchedulerService.
+"""
 from fastapi import APIRouter, Depends, HTTPException
 
 from .. import deps

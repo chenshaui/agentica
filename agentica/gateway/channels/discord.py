@@ -1,4 +1,8 @@
-"""Discord channel implementation using discord.py.
+# -*- coding: utf-8 -*-
+"""
+@author:XuMing(xuming624@qq.com)
+@description: 
+Discord channel implementation using discord.py.
 
 Connects to Discord's gateway via the ``discord.Client`` WebSocket client.
 Incoming messages trigger the ``on_message`` event; outgoing messages are

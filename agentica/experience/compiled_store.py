@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """
+@author:XuMing(xuming624@qq.com)
+@description: 
 Compiled experience card store.
 
 CRUD for experience .md files with YAML frontmatter, lifecycle governance
