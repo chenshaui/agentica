@@ -119,7 +119,7 @@ async def get_thinking():
 async def set_base_dir(request: BaseDirRequest):
     raw = request.base_dir.strip()
     if not raw:
-        raise HTTPException(status_code=400, detail="路径不能为空")
+        raise HTTPException(status_code=400, detail="Path must not be empty")
     p = Path(raw).expanduser().resolve()
     created = False
     if not p.exists():
@@ -127,9 +127,9 @@ async def set_base_dir(request: BaseDirRequest):
             p.mkdir(parents=False, exist_ok=True)
             created = True
         else:
-            raise HTTPException(status_code=400, detail=f"路径不存在且无法自动创建: {p}")
+            raise HTTPException(status_code=400, detail=f"Path does not exist and cannot be auto-created: {p}")
     elif not p.is_dir():
-        raise HTTPException(status_code=400, detail=f"该路径不是文件夹: {p}")
+        raise HTTPException(status_code=400, detail=f"Path is not a directory: {p}")
 
     settings.base_dir = p
     svc = deps.agent_service

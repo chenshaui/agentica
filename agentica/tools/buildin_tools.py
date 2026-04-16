@@ -33,6 +33,72 @@ from typing import Optional, List, Dict, Any, Literal, TYPE_CHECKING, Union
 import aiofiles
 
 from agentica.tools.base import Tool
+
+
+def _interpret_exit_code(command: str, exit_code: int) -> Optional[str]:
+    """Return a human-readable note when a non-zero exit code is non-erroneous.
+
+    Returns None when the exit code is 0 or genuinely signals an error.
+    The note is appended to the tool result so the model doesn't waste
+    turns investigating expected exit codes.
+    """
+    if exit_code == 0:
+        return None
+
+    # Extract the last command in a pipeline/chain — that determines the
+    # exit code. Handles `cmd1 && cmd2`, `cmd1 | cmd2`, `cmd1; cmd2`.
+    segments = re.split(r'\s*(?:\|\||&&|[|;])\s*', command)
+    last_segment = (segments[-1] if segments else command).strip()
+
+    # Get base command name (first word), stripping env var assignments
+    # like VAR=val cmd ...
+    words = last_segment.split()
+    base_cmd = ""
+    for w in words:
+        if "=" in w and not w.startswith("-"):
+            continue  # skip VAR=val
+        base_cmd = w.split("/")[-1]  # handle /usr/bin/grep -> grep
+        break
+
+    if not base_cmd:
+        return None
+
+    # Command-specific semantics
+    semantics: Dict[str, Dict[int, str]] = {
+        # grep/rg/ag/ack: 1=no matches found (normal), 2+=real error
+        "grep": {1: "No matches found (not an error)"},
+        "egrep": {1: "No matches found (not an error)"},
+        "fgrep": {1: "No matches found (not an error)"},
+        "rg": {1: "No matches found (not an error)"},
+        "ag": {1: "No matches found (not an error)"},
+        "ack": {1: "No matches found (not an error)"},
+        # diff: 1=files differ (expected), 2+=real error
+        "diff": {1: "Files differ (expected, not an error)"},
+        "colordiff": {1: "Files differ (expected, not an error)"},
+        # find: 1=some dirs inaccessible but results may still be valid
+        "find": {1: "Some directories were inaccessible (partial results may still be valid)"},
+        # test/[: 1=condition is false (expected)
+        "test": {1: "Condition evaluated to false (expected, not an error)"},
+        "[": {1: "Condition evaluated to false (expected, not an error)"},
+        # curl: common non-error codes
+        "curl": {
+            6: "Could not resolve host",
+            7: "Failed to connect to host",
+            22: "HTTP response code indicated error (e.g. 404, 500)",
+            28: "Operation timed out",
+        },
+        # git: 1 is context-dependent but often normal
+        "git": {1: "Non-zero exit (often normal — e.g. 'git diff' returns 1 when files differ)"},
+        # pytest
+        "pytest": {1: "Tests failed", 5: "No tests collected"},
+        "python": {1: "Script exited with error"},
+    }
+
+    cmd_semantics = semantics.get(base_cmd)
+    if cmd_semantics and exit_code in cmd_semantics:
+        return cmd_semantics[exit_code]
+
+    return None
 from agentica.tools.builtin_task_tool import BuiltinTaskTool  # re-export after extraction
 from agentica.utils.log import logger
 from agentica.utils.string import truncate_if_too_long
@@ -40,6 +106,60 @@ from agentica.utils.string import truncate_if_too_long
 if TYPE_CHECKING:
     from agentica.agent import Agent
     from agentica.model.base import Model
+
+
+# ─── File safety guards ──────────────────────────────────────────────────────
+# Ported from hermes-agent tools/file_tools.py
+
+# Paths that would hang the process (infinite output or blocking input)
+_BLOCKED_DEVICE_PATHS = frozenset({
+    "/dev/zero", "/dev/random", "/dev/urandom", "/dev/full",
+    "/dev/stdin", "/dev/tty", "/dev/console",
+    "/dev/stdout", "/dev/stderr",
+    "/dev/fd/0", "/dev/fd/1", "/dev/fd/2",
+})
+
+# Sensitive system paths that file tools should refuse to write to
+_SENSITIVE_PATH_PREFIXES = ("/etc/", "/boot/", "/usr/lib/systemd/", "/private/etc/", "/private/var/run/")
+
+# Maximum consecutive identical reads before hard-blocking
+_MAX_CONSECUTIVE_READS = 4
+
+
+def _is_blocked_device(filepath: str) -> bool:
+    """Return True if the path would hang the process."""
+    normalized = os.path.expanduser(filepath)
+    if normalized in _BLOCKED_DEVICE_PATHS:
+        return True
+    # /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio
+    if normalized.startswith("/proc/") and normalized.endswith(
+        ("/fd/0", "/fd/1", "/fd/2")
+    ):
+        return True
+    return False
+
+
+def _check_sensitive_write_path(filepath: str) -> Optional[str]:
+    """Return an error message if the path targets a sensitive system location."""
+    try:
+        resolved = str(Path(filepath).expanduser().resolve())
+    except (OSError, ValueError):
+        resolved = filepath
+    for prefix in _SENSITIVE_PATH_PREFIXES:
+        if resolved.startswith(prefix):
+            return (
+                f"Refusing to write to sensitive system path: {filepath}\n"
+                "Use the execute tool with sudo if you need to modify system files."
+            )
+    # Home-directory sensitive locations
+    home = str(Path.home())
+    for sensitive in ("/.ssh/", "/.gnupg/", "/.aws/credentials"):
+        if resolved.startswith(home + sensitive):
+            return (
+                f"Refusing to write to sensitive path: {filepath}\n"
+                "This could compromise system security."
+            )
+    return None
 
 
 class BuiltinFileTool(Tool):
@@ -74,6 +194,16 @@ class BuiltinFileTool(Tool):
         # Key: resolved absolute path (str), Value: {"mtime": float}
         self._file_read_state: Dict[str, Dict[str, Any]] = {}
 
+        # Consecutive-read tracker: prevents LLM read-loop death spirals.
+        # Dict mapping (path, offset, limit) -> consecutive count.
+        # Per-key tracking is safe under concurrent reads (no cross-key interference).
+        self._read_consecutive_counts: Dict[tuple, int] = {}
+        self._read_last_key: Optional[tuple] = None
+
+        # File snapshots for workspace rollback: {abs_path: [content_before_1, ...]}
+        # Stores previous file content before each write/edit, supporting undo.
+        self._file_snapshots: Dict[str, List[str]] = {}
+
         # Register all file operation functions.
         # Read-only tools are concurrency_safe (can run in parallel with each other).
         # Write tools (write_file, edit_file, multi_edit_file) stay serialised.
@@ -84,6 +214,7 @@ class BuiltinFileTool(Tool):
         self.register(self.multi_edit_file, sanitize_arguments=False, is_destructive=True)
         self.register(self.glob, concurrency_safe=True, is_read_only=True)
         self.register(self.grep, concurrency_safe=True, is_read_only=True)
+        self.register(self.undo_edit, is_destructive=True)
 
     def _resolve_path(self, path: str) -> Path:
         """Resolve path, supporting absolute, relative, and ~ paths.
@@ -103,6 +234,43 @@ class BuiltinFileTool(Tool):
     def _get_file_lock(self, path: str) -> asyncio.Lock:
         """Get or create a per-file asyncio.Lock to serialize concurrent edits."""
         return self._file_locks.setdefault(path, asyncio.Lock())
+
+    def _preflight_edit_check(self, file_path: str) -> Optional[str]:
+        """Run shared preflight checks for edit_file / multi_edit_file.
+
+        Checks sensitive-path guard and mtime staleness guard.
+        Returns an error/warning message string if the edit should be rejected,
+        or None if the edit is safe to proceed.
+        """
+        path = self._resolve_path(file_path)
+
+        # Sensitive path guard (e.g. /etc/passwd, ~/.ssh)
+        sensitive_err = _check_sensitive_write_path(str(path))
+        if sensitive_err:
+            return f"Error: {sensitive_err}"
+
+        # mtime guard: detect external modifications since last read.
+        abs_path = str(path.resolve())
+        try:
+            current_mtime = path.stat().st_mtime
+        except OSError:
+            current_mtime = None
+        if current_mtime is not None and abs_path in self._file_read_state:
+            prev_mtime = self._file_read_state[abs_path].get("mtime")
+            if prev_mtime is not None and current_mtime != prev_mtime:
+                logger.warning(
+                    f"File '{file_path}' was modified externally since last read "
+                    f"(mtime {prev_mtime} -> {current_mtime}). "
+                    f"Please re-read the file before editing."
+                )
+                return (
+                    f"Warning: File '{file_path}' was modified externally since your last read. "
+                    f"Please re-read the file with read_file() before editing to avoid "
+                    f"overwriting someone else's changes."
+                )
+
+        return None
+
 
     def _validate_path(self, path: str) -> str:
         """Validate path against sandbox restrictions and blocked device files.
@@ -260,7 +428,18 @@ class BuiltinFileTool(Tool):
             self._validate_path(file_path)
             path = self._resolve_path(file_path)
 
+            # ── Device path guard ─────────────────────────────────────
+            if _is_blocked_device(str(path)):
+                return (
+                    f"Error: Cannot read '{file_path}': this is a device file "
+                    "that would block or produce infinite output."
+                )
+
             if not path.exists():
+                # Reset consecutive tracker for this path
+                for k in [k for k in self._read_consecutive_counts if k[0] == file_path]:
+                    del self._read_consecutive_counts[k]
+                self._read_last_key = None
                 return f"Error: File not found: {file_path}"
             if not path.is_file():
                 return f"Error: Not a file: {file_path}"
@@ -312,6 +491,25 @@ class BuiltinFileTool(Tool):
             except OSError:
                 pass
 
+            # ── Consecutive-read loop detection ───────────────────────
+            read_key = (file_path, offset, limit)
+            self._read_consecutive_counts[read_key] = self._read_consecutive_counts.get(read_key, 0) + 1
+            count = self._read_consecutive_counts[read_key]
+            self._read_last_key = read_key
+
+            if count >= _MAX_CONSECUTIVE_READS:
+                return (
+                    f"BLOCKED: You have read this exact file region {count} times in a row. "
+                    "The content has NOT changed. You already have this information. "
+                    "STOP re-reading and proceed with your task."
+                )
+            if count >= 3:
+                result += (
+                    f"\n\n[Warning: You have read this exact file region {count} times "
+                    "consecutively. The content has not changed. Use the information "
+                    "you already have.]"
+                )
+
             logger.debug(f"Read file {file_path}: lines {offset + 1}-{actual_end}, total {total_lines} lines")
             return result
         except Exception as e:
@@ -342,9 +540,44 @@ class BuiltinFileTool(Tool):
         try:
             self._validate_write_path(file_path)
             path = self._resolve_path(file_path)
+
+            # ── Sensitive path guard ──────────────────────────────────
+            sensitive_err = _check_sensitive_write_path(str(path))
+            if sensitive_err:
+                return f"Error: {sensitive_err}"
+
+            # ── File staleness check ──────────────────────────────────
+            stale_warning = ""
+            abs_path = str(path.resolve()) if path.exists() else None
+            if abs_path and abs_path in self._file_read_state:
+                read_mtime = self._file_read_state[abs_path].get("mtime")
+                if read_mtime is not None:
+                    try:
+                        current_mtime = path.stat().st_mtime
+                        if current_mtime != read_mtime:
+                            stale_warning = (
+                                f"\nWarning: {file_path} was modified since you last read it "
+                                "(external edit or concurrent agent). Consider re-reading."
+                            )
+                    except OSError:
+                        pass
+
+            # Reset consecutive-read tracker (write breaks the loop)
+            self._read_last_key = None
+            self._read_consecutive_counts.clear()
+
             # Ensure directory exists
             path.parent.mkdir(parents=True, exist_ok=True)
             action = "Created" if not path.exists() else "Updated"
+
+            # ── Snapshot for rollback ─────────────────────────────────
+            if path.exists() and path.is_file():
+                try:
+                    old_content = path.read_text(encoding='utf-8', errors='ignore')
+                    abs_snap = str(path.resolve())
+                    self._file_snapshots.setdefault(abs_snap, []).append(old_content)
+                except OSError:
+                    pass
 
             # Atomic write: write to temp file then rename to avoid partial writes
             tmp_fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
@@ -369,7 +602,7 @@ class BuiltinFileTool(Tool):
             except OSError:
                 self._file_read_state.pop(absolute_path, None)
             logger.debug(f"{action} file: {absolute_path}, file content length: {len(content)} characters")
-            return f"{action} file, absolute path: {absolute_path}"
+            return f"{action} file, absolute path: {absolute_path}{stale_warning}"
         except Exception as e:
             logger.error(f"Error writing file {file_path}: {e}")
             return f"Error writing file: {e}"
@@ -423,6 +656,17 @@ class BuiltinFileTool(Tool):
             path = self._resolve_path(file_path)
             path_key = str(path)
 
+            # Shared preflight: sensitive path + mtime staleness guard
+            preflight_err = self._preflight_edit_check(file_path)
+            if preflight_err:
+                return preflight_err
+
+            abs_path = str(path.resolve())
+
+            # Reset consecutive-read tracker (edit breaks the loop)
+            self._read_last_key = None
+            self._read_consecutive_counts.clear()
+
             if not path.exists():
                 return f"Error: File not found: {file_path}"
             if not path.is_file():
@@ -431,29 +675,11 @@ class BuiltinFileTool(Tool):
             # Per-file lock to serialize concurrent edits on the same file
             lock = self._get_file_lock(path_key)
             async with lock:
-                # mtime guard: detect external modifications since last read.
-                # Mirrors CC's FileEdit read-before-write protocol.
-                abs_path = str(path.resolve())
-                try:
-                    current_mtime = path.stat().st_mtime
-                except OSError:
-                    current_mtime = None
-                if current_mtime is not None and abs_path in self._file_read_state:
-                    prev_mtime = self._file_read_state[abs_path].get("mtime")
-                    if prev_mtime is not None and current_mtime != prev_mtime:
-                        logger.warning(
-                            f"File '{file_path}' was modified externally since last read "
-                            f"(mtime {prev_mtime} -> {current_mtime}). "
-                            f"Please re-read the file before editing."
-                        )
-                        return (
-                            f"Warning: File '{file_path}' was modified externally since your last read. "
-                            f"Please re-read the file with read_file() before editing to avoid "
-                            f"overwriting someone else's changes."
-                        )
-
                 async with aiofiles.open(path, 'r', encoding='utf-8') as f:
                     content = await f.read()
+
+                # ── Snapshot for rollback before edit ─────────────────
+                self._file_snapshots.setdefault(abs_path, []).append(content)
 
                 result = self._str_replace(content, old_string, new_string, replace_all)
 
@@ -520,6 +746,17 @@ class BuiltinFileTool(Tool):
             path = self._resolve_path(file_path)
             path_key = str(path)
 
+            # Shared preflight: sensitive path + mtime staleness guard
+            preflight_err = self._preflight_edit_check(file_path)
+            if preflight_err:
+                return preflight_err
+
+            abs_path = str(path.resolve())
+
+            # Reset consecutive-read tracker (multi-edit breaks the loop)
+            self._read_last_key = None
+            self._read_consecutive_counts.clear()
+
             if not path.exists():
                 return f"Error: File not found: {file_path}"
             if not path.is_file():
@@ -565,6 +802,11 @@ class BuiltinFileTool(Tool):
 
             summary = f"Successfully applied {len(edits)} edits to '{file_path}':\n" + "\n".join(results)
             logger.debug(summary)
+            # Update mtime state so subsequent edits don't trigger stale-read warning
+            try:
+                self._file_read_state[abs_path] = {"mtime": path.stat().st_mtime}
+            except OSError:
+                self._file_read_state.pop(abs_path, None)
             return summary
 
         except Exception as e:
@@ -988,6 +1230,68 @@ class BuiltinFileTool(Tool):
             logger.error(f"Error in grep fallback: {e}")
             return f"Error in grep: {e}"
 
+    async def undo_edit(self, file_path: str) -> str:
+        """Undo the last edit or write to a file, restoring the previous version.
+
+        Each write_file() and edit_file() call automatically snapshots the file's
+        content before modification. This tool restores the most recent snapshot,
+        effectively undoing the last change. Can be called multiple times to step
+        back through multiple edits.
+
+        Args:
+            file_path: Path to the file to restore
+
+        Returns:
+            Confirmation message or error if no previous version exists
+        """
+        try:
+            self._validate_write_path(file_path)
+            path = self._resolve_path(file_path)
+
+            # ── Reuse safety guards from write_file ───────────────────
+            sensitive_err = _check_sensitive_write_path(str(path))
+            if sensitive_err:
+                return f"Error: {sensitive_err}"
+
+            abs_path = str(path.resolve())
+            snapshots = self._file_snapshots.get(abs_path)
+            if not snapshots:
+                return (
+                    f"Error: No previous version available for '{file_path}'. "
+                    "Only files modified in this session can be undone."
+                )
+            previous = snapshots.pop()
+
+            # ── Atomic restore with per-file lock ─────────────────────
+            path_key = str(path)
+            lock = self._get_file_lock(path_key)
+            async with lock:
+                tmp_fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+                try:
+                    os.close(tmp_fd)
+                    async with aiofiles.open(tmp_path, 'w', encoding='utf-8') as f:
+                        await f.write(previous)
+                    os.replace(tmp_path, str(path))
+                except Exception:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                    raise
+
+            # Update mtime state
+            try:
+                self._file_read_state[abs_path] = {"mtime": path.stat().st_mtime}
+            except OSError:
+                pass
+            remaining = len(snapshots)
+            return (
+                f"Restored '{file_path}' to previous version ({len(previous)} chars). "
+                f"{remaining} more undo(s) available."
+            )
+        except Exception as e:
+            return f"Error undoing edit: {e}"
+
 
 class BuiltinExecuteTool(Tool):
     """
@@ -1170,13 +1474,26 @@ class BuiltinExecuteTool(Tool):
 
         output = "\n".join(output_parts).strip()
 
-        # Truncate if too long
+        # Truncate if too long — 40% head + 60% tail strategy
+        # (head preserves early context/errors, tail preserves final results)
         if len(output) > self._max_output_length:
-            output = output[:self._max_output_length] + "\n... (output truncated)"
+            head_chars = int(self._max_output_length * 0.4)
+            tail_chars = self._max_output_length - head_chars
+            omitted = len(output) - head_chars - tail_chars
+            output = (
+                output[:head_chars]
+                + f"\n\n... [OUTPUT TRUNCATED - {omitted} chars omitted"
+                  f" out of {len(output)} total] ...\n\n"
+                + output[-tail_chars:]
+            )
 
-        # Add exit code info
-        if proc.returncode != 0:
-            output = f"{output}\n\n[Exit code: {proc.returncode}]"
+        # Add exit code info with semantic interpretation
+        if proc.returncode and proc.returncode != 0:
+            hint = _interpret_exit_code(command, proc.returncode)
+            exit_line = f"\n\n[Exit code: {proc.returncode}]"
+            if hint:
+                exit_line += f"\n(Note: {hint})"
+            output = f"{output}{exit_line}"
 
         logger.debug(f"Command exit code: {proc.returncode}")
         result = output if output else f"Command executed successfully (exit code: {proc.returncode})"

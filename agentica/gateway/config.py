@@ -22,7 +22,11 @@ from agentica.config import (
 
 @dataclass
 class Settings:
-    """Gateway service configuration."""
+    """Gateway service configuration.
+
+    All fields are mutable at runtime so that routes (e.g. /api/model,
+    /api/config/base_dir) can update them without property-override hacks.
+    """
 
     # Server
     host: str = "0.0.0.0"
@@ -61,18 +65,12 @@ class Settings:
     discord_allowed_users: List[str] = field(default_factory=list)
     discord_allowed_guilds: List[str] = field(default_factory=list)
 
-    # Bridged from SDK config (read-only properties)
-    @property
-    def model_provider(self) -> str:
-        return os.getenv("AGENTICA_MODEL_PROVIDER", "zhipuai")
-
-    @property
-    def model_name(self) -> str:
-        return os.getenv("AGENTICA_MODEL_NAME", "glm-4.7-flash")
-
-    @property
-    def model_thinking(self) -> str:
-        return os.getenv("AGENTICA_MODEL_THINKING", "")
+    # Model / path settings — mutable fields with env-var defaults.
+    # Routes update these at runtime (e.g. model switch, base_dir change).
+    model_provider: str = ""
+    model_name: str = ""
+    model_thinking: str = ""
+    _base_dir: str = ""
 
     @property
     def workspace_path(self) -> Path:
@@ -84,7 +82,12 @@ class Settings:
 
     @property
     def base_dir(self) -> Path:
-        return Path(os.getenv("AGENTICA_BASE_DIR", str(Path.home())))
+        return Path(self._base_dir) if self._base_dir else Path(os.getenv("AGENTICA_BASE_DIR", str(Path.home())))
+
+    @base_dir.setter
+    def base_dir(self, value):
+        """Accept both str and Path for convenience."""
+        self._base_dir = str(value)
 
     @property
     def upload_allowed_ext_set(self) -> set[str]:
@@ -149,6 +152,11 @@ class Settings:
             discord_allowed_guilds=[
                 g.strip() for g in os.getenv("DISCORD_ALLOWED_GUILDS", "").split(",") if g.strip()
             ],
+
+            # Model / path
+            model_provider=os.getenv("AGENTICA_MODEL_PROVIDER", "zhipuai"),
+            model_name=os.getenv("AGENTICA_MODEL_NAME", "glm-4.7-flash"),
+            model_thinking=os.getenv("AGENTICA_MODEL_THINKING", ""),
         )
 
 

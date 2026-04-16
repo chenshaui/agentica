@@ -228,23 +228,38 @@ class TestCompositeRunHooksAllMethods(unittest.TestCase):
 
 
 class TestConversationArchiveHooksCapture(unittest.TestCase):
-    """ConversationArchiveHooks captures input at start, uses it at end."""
+    """ConversationArchiveHooks reads run_input at on_agent_end time."""
 
-    def test_captures_input_at_start(self):
+    def test_captures_input_at_end(self):
         hooks = ConversationArchiveHooks()
         agent = MagicMock()
         agent.agent_id = "agent_1"
         agent.run_input = "Hello, how are you?"
-        asyncio.run(hooks.on_agent_start(agent=agent))
-        self.assertEqual(hooks._run_inputs["agent_1"], "Hello, how are you?")
+        agent.run_id = "run-1"
+        agent.workspace = MagicMock()
+        agent.workspace.archive_conversation = AsyncMock(return_value="/path")
 
-    def test_non_string_input_stored_as_none(self):
+        asyncio.run(hooks.on_agent_end(agent=agent, output="response"))
+        call_args = agent.workspace.archive_conversation.call_args
+        messages = call_args[0][0]
+        user_msg = [m for m in messages if m["role"] == "user"][0]
+        self.assertEqual(user_msg["content"], "Hello, how are you?")
+
+    def test_non_string_input_skipped(self):
         hooks = ConversationArchiveHooks()
         agent = MagicMock()
         agent.agent_id = "agent_1"
         agent.run_input = 42  # not a string
-        asyncio.run(hooks.on_agent_start(agent=agent))
-        self.assertIsNone(hooks._run_inputs["agent_1"])
+        agent.run_id = "run-1"
+        agent.workspace = MagicMock()
+        agent.workspace.archive_conversation = AsyncMock(return_value="/path")
+
+        asyncio.run(hooks.on_agent_end(agent=agent, output="response"))
+        # Only assistant message should be archived (no user message from non-string input)
+        call_args = agent.workspace.archive_conversation.call_args
+        messages = call_args[0][0]
+        user_msgs = [m for m in messages if m["role"] == "user"]
+        self.assertEqual(len(user_msgs), 0)
 
     def test_end_with_no_workspace_is_noop(self):
         hooks = ConversationArchiveHooks()
@@ -253,19 +268,6 @@ class TestConversationArchiveHooksCapture(unittest.TestCase):
         agent.workspace = None
         # Should not raise
         asyncio.run(hooks.on_agent_end(agent=agent, output="done"))
-
-    def test_end_cleans_up_input(self):
-        hooks = ConversationArchiveHooks()
-        agent = MagicMock()
-        agent.agent_id = "agent_1"
-        agent.run_input = "hello"
-        asyncio.run(hooks.on_agent_start(agent=agent))
-
-        agent.workspace = MagicMock()
-        agent.workspace.archive_conversation = AsyncMock(return_value="/path")
-        agent.run_id = "run_1"
-        asyncio.run(hooks.on_agent_end(agent=agent, output="response"))
-        self.assertNotIn("agent_1", hooks._run_inputs)
 
 
 class TestAgentHooksDefaults(unittest.TestCase):

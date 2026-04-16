@@ -1,4 +1,4 @@
-"""消息路由器"""
+"""Message router for dispatching incoming channel messages to agents."""
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -7,14 +7,15 @@ from ..channels.base import Message, ChannelType
 
 @dataclass
 class RoutingRule:
-    """路由规则
+    """A single routing rule that maps messages to a target agent.
 
     Attributes:
-        agent_id: 目标 Agent ID
-        channel: 匹配的渠道类型
-        channel_id: 匹配的会话ID
-        sender_id: 匹配的发送者ID
-        priority: 优先级（数值越大优先级越高）
+        agent_id: The ID of the agent to route matching messages to.
+        channel: If set, the message must originate from this channel type.
+        channel_id: If set, the message must come from this specific
+                    conversation/chat within the channel.
+        sender_id: If set, the message must come from this specific sender.
+        priority: Higher values are evaluated first (descending order).
     """
     agent_id: str
     channel: Optional[ChannelType] = None
@@ -24,35 +25,38 @@ class RoutingRule:
 
 
 class MessageRouter:
-    """消息路由器
+    """Routes incoming channel messages to the appropriate agent.
 
-    根据规则将消息路由到不同的 Agent
+    Rules are evaluated in descending priority order. The first rule whose
+    constraints all match wins. If no rule matches, the ``default_agent``
+    is used.
     """
 
     def __init__(self, default_agent: str = "main"):
         """
         Args:
-            default_agent: 默认 Agent ID
+            default_agent: The agent ID to use when no routing rule matches.
         """
         self.default_agent = default_agent
         self.rules: List[RoutingRule] = []
 
     def add_rule(self, rule: RoutingRule):
-        """添加路由规则
+        """Add a routing rule and re-sort by descending priority.
 
         Args:
-            rule: 路由规则
+            rule: The routing rule to add.
         """
         self.rules.append(rule)
-        # 按优先级排序（高优先级在前）
+        # Keep rules sorted by descending priority (highest first)
         self.rules.sort(key=lambda r: -r.priority)
 
     def remove_rule(self, agent_id: str, channel: Optional[ChannelType] = None):
-        """移除路由规则
+        """Remove routing rules matching the given agent and optional channel.
 
         Args:
-            agent_id: Agent ID
-            channel: 渠道类型（可选）
+            agent_id: Remove rules targeting this agent.
+            channel: If provided, only remove rules for this channel type.
+                     If ``None``, all rules for the agent are removed.
         """
         self.rules = [
             r for r in self.rules
@@ -60,19 +64,19 @@ class MessageRouter:
         ]
 
     def route(self, message: Message) -> str:
-        """路由消息到 Agent
+        """Determine which agent should handle the given message.
 
-        匹配优先级：
-        1. 精确匹配 sender_id
-        2. 渠道+channel_id 匹配
-        3. 渠道匹配
-        4. 默认 Agent
+        Matching priority (in order of rule priority):
+            1. Exact ``sender_id`` match
+            2. Channel type + ``channel_id`` match
+            3. Channel type match only
+            4. Default agent (fallback)
 
         Args:
-            message: 消息
+            message: The incoming message to route.
 
         Returns:
-            目标 Agent ID
+            The agent ID that should handle the message.
         """
         for rule in self.rules:
             if self._match(message, rule):
@@ -80,48 +84,55 @@ class MessageRouter:
         return self.default_agent
 
     def _match(self, message: Message, rule: RoutingRule) -> bool:
-        """检查消息是否匹配规则
+        """Check whether a message satisfies all constraints of a routing rule.
+
+        All non-None fields in the rule must match the corresponding message
+        fields. A ``None`` field in the rule is treated as a wildcard.
 
         Args:
-            message: 消息
-            rule: 路由规则
+            message: The incoming message.
+            rule: The routing rule to test.
 
         Returns:
-            是否匹配
+            True if the message matches all rule constraints, False otherwise.
         """
-        # sender_id 必须精确匹配
+        # sender_id must match exactly if specified
         if rule.sender_id and message.sender_id != rule.sender_id:
             return False
 
-        # channel 必须匹配
+        # channel type must match if specified
         if rule.channel and message.channel != rule.channel:
             return False
 
-        # channel_id 必须匹配
+        # channel_id (conversation) must match if specified
         if rule.channel_id and message.channel_id != rule.channel_id:
             return False
 
         return True
 
     def get_session_id(self, message: Message, agent_id: str) -> str:
-        """生成 session_id
+        """Generate a deterministic session ID from the message and agent.
 
-        格式: agent:{agent_id}:{channel}:{channel_id}
+        Format: ``agent:{agent_id}:{channel}:{channel_id}``
+
+        This ensures that messages from the same conversation on the same
+        channel always map to the same agent session.
 
         Args:
-            message: 消息
-            agent_id: Agent ID
+            message: The incoming message.
+            agent_id: The agent that will handle the message.
 
         Returns:
-            Session ID
+            A unique session ID string.
         """
         return f"agent:{agent_id}:{message.channel.value}:{message.channel_id}"
 
     def list_rules(self) -> List[dict]:
-        """列出所有规则
+        """Serialize all routing rules to a list of dicts (for API responses).
 
         Returns:
-            规则列表
+            A list of dicts, each containing ``agent_id``, ``channel``,
+            ``channel_id``, ``sender_id``, and ``priority``.
         """
         return [
             {

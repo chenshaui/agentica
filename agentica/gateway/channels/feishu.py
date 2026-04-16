@@ -1,4 +1,9 @@
-"""飞书渠道实现"""
+"""Feishu (Lark) channel implementation using WebSocket long-polling.
+
+Connects to the Feishu Open Platform via the ``lark_oapi`` SDK's WebSocket
+client. Incoming messages are received on a dedicated background thread and
+forwarded to the main asyncio event loop via ``call_soon_threadsafe``.
+"""
 import json
 import asyncio
 import threading
@@ -10,7 +15,7 @@ from loguru import logger
 from .base import Channel, ChannelType, Message
 from ..config import settings
 
-# 飞书 SDK 相关（延迟导入）
+# Feishu SDK globals (lazy-imported to avoid hard dependency)
 lark = None
 CreateMessageRequest = None
 CreateMessageRequestBody = None
@@ -18,7 +23,11 @@ _lark_executor = None
 
 
 def _get_lark_executor():
-    """获取飞书专用线程池（用于隔离事件循环）"""
+    """Return the dedicated thread pool for Feishu SDK initialization.
+
+    A single-threaded executor is used to isolate the Feishu SDK's internal
+    event loop from the main application's event loop.
+    """
     global _lark_executor
     if _lark_executor is None:
         _lark_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="lark-ws")
@@ -26,10 +35,14 @@ def _get_lark_executor():
 
 
 def _init_lark_in_thread():
-    """在独立线程中导入并初始化 lark_oapi（避免事件循环污染主线程）"""
+    """Import and initialize ``lark_oapi`` in a dedicated thread.
+
+    The Feishu SDK creates its own event loop internally; running the import
+    in a separate thread prevents conflicts with the main asyncio loop.
+    """
     global lark, CreateMessageRequest, CreateMessageRequestBody
 
-    # 创建该线程专属的事件循环
+    # Create a thread-local event loop for the Feishu SDK
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
@@ -44,19 +57,20 @@ def _init_lark_in_thread():
 
 
 def _ensure_lark_sdk():
-    """确保飞书 SDK 已导入"""
+    """Ensure the Feishu SDK has been imported (lazy, thread-safe)."""
     global lark
     if lark is None:
-        # 在独立线程中初始化，避免事件循环冲突
+        # Initialize in a dedicated thread to avoid event loop conflicts
         executor = _get_lark_executor()
         future = executor.submit(_init_lark_in_thread)
-        future.result()  # 等待完成
+        future.result()  # Block until import completes
 
 
 class FeishuChannel(Channel):
-    """飞书渠道
+    """Feishu (Lark) messaging channel.
 
-    使用 WebSocket 长连接模式接收消息
+    Uses the SDK's WebSocket client for receiving messages in real-time.
+    Outgoing messages are sent via the IM v1 ``create_message`` API.
     """
 
     def __init__(
@@ -66,10 +80,9 @@ class FeishuChannel(Channel):
         allowed_users: Optional[List[str]] = None,
         allowed_groups: Optional[List[str]] = None,
     ):
-        super().__init__()
+        super().__init__(allowed_users=allowed_users or settings.feishu_allowed_users or [])
         self.app_id = app_id or settings.feishu_app_id
         self.app_secret = app_secret or settings.feishu_app_secret
-        self.allowed_users = allowed_users or settings.feishu_allowed_users or []
         self.allowed_groups = allowed_groups or settings.feishu_allowed_groups or []
         self._client = None
         self._ws_client = None
@@ -81,7 +94,7 @@ class FeishuChannel(Channel):
         return ChannelType.FEISHU
 
     async def connect(self) -> bool:
-        """建立连接"""
+        """Establish the WebSocket connection to Feishu Open Platform."""
         if not self.app_id or not self.app_secret:
             logger.warning("Feishu: Missing credentials, skipped")
             return False
@@ -96,10 +109,10 @@ class FeishuChannel(Channel):
                 .build()
             )
 
-            # 保存主事件循环引用
+            # Save reference to the main event loop for cross-thread dispatch
             self._main_loop = asyncio.get_running_loop()
 
-            # 事件处理器
+            # Build the event dispatcher for incoming messages
             event_handler = (
                 lark.EventDispatcherHandler.builder("", "")
                 .register_p2_im_message_receive_v1(self._on_message)
@@ -107,7 +120,7 @@ class FeishuChannel(Channel):
                 .build()
             )
 
-            # WebSocket 长连接
+            # Create the WebSocket long-polling client
             self._ws_client = lark.ws.Client(
                 self.app_id,
                 self.app_secret,
@@ -115,7 +128,8 @@ class FeishuChannel(Channel):
                 log_level=lark.LogLevel.WARNING,
             )
 
-            # 在独立线程启动 WebSocket（避免事件循环冲突）
+            # Run the WebSocket client in a background daemon thread
+            # to avoid blocking the main asyncio event loop
             self._ws_thread = threading.Thread(
                 target=self._run_ws_client,
                 daemon=True,
@@ -134,21 +148,25 @@ class FeishuChannel(Channel):
             return False
 
     def _run_ws_client(self):
-        """在独立线程运行 WebSocket 客户端"""
+        """Run the Feishu WebSocket client (called in a background thread)."""
         try:
-            # lark_oapi 内部会使用模块级事件循环，这里不需要再创建
+            # The lark_oapi SDK manages its own module-level event loop internally
             self._ws_client.start()
         except Exception as e:
             logger.error(f"Feishu: WebSocket error: {e}")
             self._connected = False
 
     async def disconnect(self):
-        """断开连接"""
+        """Mark the channel as disconnected."""
         self._connected = False
         logger.info("Feishu: Disconnected")
 
     async def send(self, channel_id: str, content: str, **kwargs) -> bool:  # noqa: ARG002
-        """发送消息"""
+        """Send a text message to a Feishu chat.
+
+        Long messages are automatically split into chunks of 4000 characters
+        to stay within the Feishu API's per-message size limit.
+        """
         if not self._client:
             logger.warning("Feishu: Not connected")
             return False
@@ -156,8 +174,8 @@ class FeishuChannel(Channel):
         try:
             _ensure_lark_sdk()
 
-            # 分片长消息
-            for chunk in self._split_text(content, 4000):
+            # Split long messages into chunks
+            for chunk in self.split_text(content, 4000):
                 request = (
                     CreateMessageRequest.builder()
                     .receive_id_type("chat_id")
@@ -173,22 +191,26 @@ class FeishuChannel(Channel):
                 response = self._client.im.v1.message.create(request)
 
                 if not response.success():
-                    logger.error(f"Feishu: Send failed: {response.code} {response.msg}")
+                    logger.error(f"Feishu: Send failed: code={response.code} msg={response.msg} channel_id={channel_id}")
                     return False
 
             return True
 
         except Exception as e:
-            logger.error(f"Feishu: Send error: {e}")
+            logger.error(f"Feishu: Send error: {e} channel_id={channel_id}")
             return False
 
     def _on_message(self, data) -> None:
-        """处理飞书消息（同步回调，在 ws 线程中执行）"""
+        """Handle an incoming Feishu message (sync callback, runs in the WS thread).
+
+        Parses the message, applies the user allowlist filter, converts to the
+        unified ``Message`` format, and dispatches to the main event loop.
+        """
         try:
             msg = data.event.message
             sender = data.event.sender
 
-            # 只处理文本消息
+            # Only handle text messages
             if msg.message_type != "text":
                 return
 
@@ -200,15 +222,14 @@ class FeishuChannel(Channel):
             user_id = sender.sender_id.user_id if sender.sender_id else "feishu_user"
             open_id = sender.sender_id.open_id if sender.sender_id else ""
 
-            # 记录用户消息日志
             logger.debug(f"[feishu] {user_id}: {text[:100]}")
 
-            # 白名单检查
-            if self.allowed_users and user_id not in self.allowed_users:
+            # User allowlist check (via base class)
+            if not self.check_allowlist(user_id):
                 logger.debug(f"Feishu: User {user_id} not in allowlist")
                 return
 
-            # 构造统一消息
+            # Convert to unified message format
             message = Message(
                 channel=ChannelType.FEISHU,
                 channel_id=msg.chat_id,
@@ -222,18 +243,21 @@ class FeishuChannel(Channel):
                 }
             )
 
-            # 使用 call_soon_threadsafe 将任务提交到主事件循环
+            # Dispatch to the main event loop using call_soon_threadsafe
+            # since this callback runs in the WebSocket background thread.
+            # Wrap in ensure_future with error handler to avoid silent task failures.
             if self._message_handler and self._main_loop:
-                self._main_loop.call_soon_threadsafe(
-                    lambda: asyncio.create_task(self._emit_message(message))
-                )
+                def _dispatch():
+                    fut = asyncio.ensure_future(self._emit_message(message))
+                    fut.add_done_callback(FeishuChannel._log_dispatch_error)
+
+                self._main_loop.call_soon_threadsafe(_dispatch)
 
         except Exception as e:
-            logger.error(f"Feishu: Message error: {e}")
+            logger.error(f"Feishu: Message error: {e} message_id={getattr(getattr(data, 'event', None), 'message', None) and data.event.message.message_id or 'unknown'}")
 
     @staticmethod
-    def _split_text(text: str, max_len: int) -> List[str]:
-        """分片长文本"""
-        if not text:
-            return [""]
-        return [text[i:i + max_len] for i in range(0, len(text), max_len)]
+    def _log_dispatch_error(fut: asyncio.Future) -> None:
+        """Log errors from dispatched message tasks (prevents silent failures)."""
+        if fut.exception():
+            logger.error(f"Feishu: Dispatch error: {fut.exception()}")

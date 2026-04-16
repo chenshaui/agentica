@@ -1,4 +1,4 @@
-"""渠道模块"""
+"""Channel implementations for external messaging platforms."""
 from .base import Channel, ChannelType, Message
 from .feishu import FeishuChannel
 from .telegram import TelegramChannel

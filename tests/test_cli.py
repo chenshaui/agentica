@@ -336,7 +336,13 @@ class TestCLIConfiguration(unittest.TestCase):
              patch.object(commands, "load_skills"), \
              patch.object(commands, "get_skill_registry", return_value=refreshed_registry), \
              patch.object(commands, "create_agent", return_value=MagicMock()), \
+             patch("agentica.cli.commands.Path") as MockPath, \
              patch("agentica.cli.commands.get_console") as mock_get_console:
+            # Make Path(source).expanduser().exists() return True so the local
+            # install branch is taken instead of falling through to hub_install.
+            mock_path_inst = MagicMock()
+            mock_path_inst.expanduser.return_value.exists.return_value = True
+            MockPath.return_value = mock_path_inst
             mock_console = MagicMock()
             mock_console.print = mock_print
             mock_get_console.return_value = mock_console

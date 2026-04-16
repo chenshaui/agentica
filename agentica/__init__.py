@@ -115,10 +115,13 @@ from agentica.utils.tokens import count_tokens, count_text_tokens, count_image_t
 # ── Agent (core) ──
 from agentica.agent import Agent, AgentCancelledError
 from agentica.agent.deep import DeepAgent
-from agentica.agent.config import PromptConfig, ToolConfig, WorkspaceMemoryConfig, TeamConfig, SandboxConfig, ToolRuntimeConfig, SkillRuntimeConfig
+from agentica.agent.config import PromptConfig, ToolConfig, WorkspaceMemoryConfig, TeamConfig, SandboxConfig, ToolRuntimeConfig, SkillRuntimeConfig, ExperienceConfig
 from agentica.run_config import RunConfig
 from agentica.workflow import Workflow, WorkflowSession
-from agentica.hooks import AgentHooks, RunHooks, ConversationArchiveHooks, MemoryExtractHooks
+from agentica.hooks import AgentHooks, RunHooks, ConversationArchiveHooks, MemoryExtractHooks, ExperienceCaptureHooks
+
+# ── Experience system ──
+from agentica.experience import ExperienceEventStore, ExperienceCompiler, CompiledExperienceStore
 
 # ── Workspace ──
 from agentica.workspace import Workspace, WorkspaceConfig
@@ -401,9 +404,11 @@ __all__ = [
     # agent
     "Agent", "AgentCancelledError",
     "PromptConfig", "ToolConfig", "WorkspaceMemoryConfig", "TeamConfig", "SandboxConfig",
-    "ToolRuntimeConfig", "SkillRuntimeConfig",
+    "ToolRuntimeConfig", "SkillRuntimeConfig", "ExperienceConfig",
     "RunConfig", "Workflow", "WorkflowSession", "AgentHooks", "RunHooks",
-    "ConversationArchiveHooks", "MemoryExtractHooks",
+    "ConversationArchiveHooks", "MemoryExtractHooks", "ExperienceCaptureHooks",
+    # experience system
+    "ExperienceEventStore", "ExperienceCompiler", "CompiledExperienceStore",
     # workspace
     "Workspace", "WorkspaceConfig",
     # lazy imports

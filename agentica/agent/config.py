@@ -147,6 +147,41 @@ class SkillRuntimeConfig:
 
 
 @dataclass
+class ExperienceConfig:
+    """Self-evolution experience capture configuration.
+
+    Tool error and success pattern capture is deterministic (zero LLM cost).
+    User correction classification uses auxiliary_model.
+
+    Lifecycle:
+        1. Capture: tool errors, correction classification, success sequences
+        2. Promote: repeat_count >= promotion_count within promotion_window_days → tier=hot
+        3. Demote: unused > demotion_days → tier=warm
+        4. Archive: unused > archive_days → tier=cold
+    """
+    # Capture switches
+    capture_tool_errors: bool = True
+    capture_user_corrections: bool = True
+    capture_success_patterns: bool = True
+
+    # LLM classification confidence threshold for persisting corrections
+    feedback_confidence_threshold: float = 0.8
+
+    # Promotion lifecycle
+    promotion_count: int = 3
+    # Used in lifecycle sweep: repeats must occur within this window to promote
+    promotion_window_days: int = 7
+    demotion_days: int = 30
+    archive_days: int = 90
+
+    # Injection
+    max_experiences_in_prompt: int = 5
+
+    # Sync confirmed experiences to ~/.agentica/AGENTS.md
+    sync_to_global_agent_md: bool = False
+
+
+@dataclass
 class SandboxConfig:
     """Sandbox execution isolation configuration (best-effort).
 

@@ -270,29 +270,38 @@ class OpenAIChat(Model):
                 else:
                     raise ValueError("response_format must be a subclass of BaseModel if structured_outputs=True")
             except Exception as e:
+                self._learn_context_limit_from_error(str(e))
                 logger.error(f"Error from OpenAI API structured outputs: {e}")
                 raise
 
-        return await self.get_client().chat.completions.create(
-            model=self.id,
-            messages=[self.format_message(m) for m in messages],  # type: ignore
-            **self.request_kwargs,
-            **langfuse_params,
-        )
+        try:
+            return await self.get_client().chat.completions.create(
+                model=self.id,
+                messages=[self.format_message(m) for m in messages],  # type: ignore
+                **self.request_kwargs,
+                **langfuse_params,
+            )
+        except Exception as e:
+            self._learn_context_limit_from_error(str(e))
+            raise
 
     @override
     async def invoke_stream(self, messages: List[Message]) -> AsyncIterator[ChatCompletionChunk]:
         """Send a streaming chat completion request to the OpenAI API (async-only)."""
         langfuse_params = self._get_langfuse_extra_params()
 
-        async_stream = await self.get_client().chat.completions.create(
-            model=self.id,
-            messages=[self.format_message(m) for m in messages],  # type: ignore
-            stream=True,
-            stream_options={"include_usage": True},
-            **self.request_kwargs,
-            **langfuse_params,
-        )
+        try:
+            async_stream = await self.get_client().chat.completions.create(
+                model=self.id,
+                messages=[self.format_message(m) for m in messages],  # type: ignore
+                stream=True,
+                stream_options={"include_usage": True},
+                **self.request_kwargs,
+                **langfuse_params,
+            )
+        except Exception as e:
+            self._learn_context_limit_from_error(str(e))
+            raise
         async for chunk in async_stream:  # type: ignore
             yield chunk
 

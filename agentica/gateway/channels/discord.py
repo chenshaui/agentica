@@ -1,16 +1,25 @@
-"""Discord 渠道实现"""
+"""Discord channel implementation using discord.py.
+
+Connects to Discord's gateway via the ``discord.Client`` WebSocket client.
+Incoming messages trigger the ``on_message`` event; outgoing messages are
+sent via the channel's ``send()`` method.
+"""
 import asyncio
 from typing import Optional, List
 
 from .base import Channel, ChannelType, Message
 from ..config import settings
 
-# 延迟导入 Discord SDK
+# Discord SDK global (lazy-imported to avoid hard dependency)
 discord = None
 
 
 def _ensure_discord_sdk():
-    """确保 Discord SDK 已导入"""
+    """Ensure the Discord SDK has been imported (lazy).
+
+    Raises:
+        ImportError: If ``discord.py`` is not installed.
+    """
     global discord
     if discord is None:
         try:
@@ -18,14 +27,15 @@ def _ensure_discord_sdk():
             discord = _discord
         except ImportError:
             raise ImportError(
-                "Discord SDK 未安装，请运行: pip install discord.py"
+                "Discord SDK not installed. Run: pip install discord.py"
             )
 
 
 class DiscordChannel(Channel):
-    """Discord 渠道
+    """Discord messaging channel.
 
-    使用 discord.py 库实现
+    Uses ``discord.py``'s ``Client`` to connect to the Discord gateway,
+    receive messages in real-time, and send replies.
     """
 
     def __init__(
@@ -34,19 +44,19 @@ class DiscordChannel(Channel):
         allowed_users: Optional[List[str]] = None,
         allowed_guilds: Optional[List[str]] = None,
     ):
-        super().__init__()
+        super().__init__(allowed_users=allowed_users or [])
         self.bot_token = bot_token or settings.discord_bot_token
-        self.allowed_users = allowed_users or []
         self.allowed_guilds = allowed_guilds or []
         self._client = None
         self._ready_event = asyncio.Event()
+        self._client_task: Optional[asyncio.Task] = None
 
     @property
     def channel_type(self) -> ChannelType:
         return ChannelType.DISCORD
 
     async def connect(self) -> bool:
-        """建立连接"""
+        """Connect to the Discord gateway and wait until the bot is ready."""
         if not self.bot_token:
             print("[Discord] Missing bot token, skipped")
             return False
@@ -54,15 +64,15 @@ class DiscordChannel(Channel):
         try:
             _ensure_discord_sdk()
 
-            # 配置 intents
+            # Configure intents (message_content is required for reading text)
             intents = discord.Intents.default()
             intents.message_content = True
             intents.guilds = True
 
-            # 创建 Client
+            # Create the Discord client
             self._client = discord.Client(intents=intents)
 
-            # 注册事件处理器
+            # Register event handlers
             @self._client.event
             async def on_ready():
                 print(f"[Discord] Logged in as {self._client.user}")
@@ -72,10 +82,10 @@ class DiscordChannel(Channel):
             async def on_message(message):
                 await self._on_message(message)
 
-            # 在后台启动
-            asyncio.create_task(self._start_client())
+            # Start the client in a tracked background task
+            self._client_task = asyncio.create_task(self._start_client())
 
-            # 等待 ready
+            # Wait for the client to become ready (timeout: 30s)
             try:
                 await asyncio.wait_for(self._ready_event.wait(), timeout=30)
             except asyncio.TimeoutError:
@@ -94,7 +104,7 @@ class DiscordChannel(Channel):
             return False
 
     async def _start_client(self):
-        """启动客户端"""
+        """Start the Discord client (runs in a background task)."""
         try:
             await self._client.start(self.bot_token)
         except Exception as e:
@@ -102,18 +112,34 @@ class DiscordChannel(Channel):
             self._connected = False
 
     async def disconnect(self):
-        """断开连接"""
+        """Gracefully close the Discord client connection."""
         if self._client:
             try:
                 await self._client.close()
             except Exception as e:
                 print(f"[Discord] Disconnect error: {e}")
 
+        # Cancel the client task if still running
+        if self._client_task and not self._client_task.done():
+            self._client_task.cancel()
+            try:
+                await self._client_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._client_task = None
+
         self._connected = False
         print("[Discord] Disconnected")
 
-    async def send(self, channel_id: str, content: str, **kwargs) -> bool:
-        """发送消息"""
+    async def send(self, channel_id: str, content: str, **kwargs) -> bool:  # noqa: ARG002
+        """Send a text message to a Discord channel or DM.
+
+        Long messages are automatically split into chunks of 1900 characters
+        to stay within Discord's 2000-character per-message limit.
+
+        If the ``channel_id`` does not match a known channel, the method
+        attempts to create a DM channel with the user of that ID.
+        """
         if not self._client:
             print("[Discord] Not connected")
             return False
@@ -121,7 +147,7 @@ class DiscordChannel(Channel):
         try:
             channel = self._client.get_channel(int(channel_id))
             if not channel:
-                # 尝试获取 DM channel
+                # Attempt to open a DM channel with the user
                 try:
                     user = await self._client.fetch_user(int(channel_id))
                     channel = await user.create_dm()
@@ -129,39 +155,44 @@ class DiscordChannel(Channel):
                     print(f"[Discord] Channel not found: {channel_id}")
                     return False
 
-            # 分片长消息（Discord 限制 2000 字符）
-            for chunk in self._split_text(content, 1900):
+            # Split long messages (Discord limit: 2000 characters)
+            for chunk in self.split_text(content, 1900):
                 await channel.send(chunk)
 
             return True
 
         except Exception as e:
-            print(f"[Discord] Send error: {e}")
+            print(f"[Discord] Send error: {e} channel_id={channel_id}")
             return False
 
     async def _on_message(self, message) -> None:
-        """处理 Discord 消息"""
+        """Handle an incoming Discord message.
+
+        Filters out bot messages, applies user and guild allowlists,
+        converts to the unified ``Message`` format, and forwards to the
+        registered handler.
+        """
         try:
-            # 忽略 bot 自己的消息
+            # Ignore messages from the bot itself
             if message.author == self._client.user:
                 return
 
-            # 忽略 bot 消息
+            # Ignore messages from other bots
             if message.author.bot:
                 return
 
             user_id = str(message.author.id)
 
-            # 白名单检查
-            if self.allowed_users and user_id not in self.allowed_users:
+            # User allowlist check (via base class)
+            if not self.check_allowlist(user_id):
                 return
 
-            # Guild 白名单检查
+            # Guild (server) allowlist check
             if self.allowed_guilds and message.guild:
                 if str(message.guild.id) not in self.allowed_guilds:
                     return
 
-            # 构造统一消息
+            # Convert to unified message format
             msg = Message(
                 channel=ChannelType.DISCORD,
                 channel_id=str(message.channel.id),
@@ -177,16 +208,9 @@ class DiscordChannel(Channel):
                 }
             )
 
-            # 异步处理
+            # Forward to the registered handler
             if self._message_handler:
                 await self._emit_message(msg)
 
         except Exception as e:
-            print(f"[Discord] Message error: {e}")
-
-    @staticmethod
-    def _split_text(text: str, max_len: int) -> List[str]:
-        """分片长文本"""
-        if not text:
-            return [""]
-        return [text[i:i + max_len] for i in range(0, len(text), max_len)]
+            print(f"[Discord] Message error: {e} sender_id={message.author.id if hasattr(message, 'author') else 'unknown'}")

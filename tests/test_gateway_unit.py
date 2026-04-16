@@ -1,0 +1,476 @@
+"""Unit tests for gateway services: ModelFactory, LRUCache, Router, ChannelManager, ResponseFormatter, Settings."""
+import asyncio
+import os
+from unittest.mock import patch, MagicMock
+
+import pytest
+
+
+# ============== TestSettings ==============
+
+class TestSettings:
+    """Test Settings configuration class."""
+
+    def test_from_env_defaults(self):
+        """Settings.from_env() with no env vars uses sensible defaults."""
+        from agentica.gateway.config import Settings
+        with patch.dict(os.environ, {}, clear=True):
+            s = Settings.from_env()
+        assert s.host == "0.0.0.0"
+        assert s.port == 8789
+        assert s.debug is False
+        assert s.gateway_token is None
+        assert s.model_provider == "zhipuai"
+        assert s.model_name == "glm-4.7-flash"
+        assert s.model_thinking == ""
+
+    def test_from_env_custom(self):
+        """Settings.from_env() reads custom env vars."""
+        from agentica.gateway.config import Settings
+        env = {
+            "HOST": "127.0.0.1",
+            "PORT": "9000",
+            "DEBUG": "true",
+            "GATEWAY_TOKEN": "secret123",
+            "AGENTICA_MODEL_PROVIDER": "openai",
+            "AGENTICA_MODEL_NAME": "gpt-4o",
+            "AGENTICA_MODEL_THINKING": "enabled",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            s = Settings.from_env()
+        assert s.host == "127.0.0.1"
+        assert s.port == 9000
+        assert s.debug is True
+        assert s.gateway_token == "secret123"
+        assert s.model_provider == "openai"
+        assert s.model_name == "gpt-4o"
+        assert s.model_thinking == "enabled"
+
+    def test_mutable_model_fields(self):
+        """model_provider, model_name, model_thinking should be mutable."""
+        from agentica.gateway.config import Settings
+        s = Settings()
+        s.model_provider = "anthropic"
+        s.model_name = "claude-3.5"
+        s.model_thinking = "auto"
+        assert s.model_provider == "anthropic"
+        assert s.model_name == "claude-3.5"
+        assert s.model_thinking == "auto"
+
+    def test_base_dir_mutable(self):
+        """base_dir should be settable as both str and Path."""
+        from pathlib import Path
+        from agentica.gateway.config import Settings
+        s = Settings()
+        s.base_dir = "/tmp/test_dir"
+        assert s.base_dir == Path("/tmp/test_dir")
+        s.base_dir = Path("/tmp/other")
+        assert s.base_dir == Path("/tmp/other")
+
+    def test_upload_allowed_ext_set(self):
+        """upload_allowed_ext_set parses comma-separated extensions."""
+        from agentica.gateway.config import Settings
+        s = Settings(upload_allowed_extensions=".py,.js,.ts")
+        ext_set = s.upload_allowed_ext_set
+        assert ext_set == {".py", ".js", ".ts"}
+
+
+# ============== TestLRUAgentCache ==============
+
+class TestLRUAgentCache:
+    """Test LRU cache for agent instances."""
+
+    def test_put_and_get(self):
+        from agentica.gateway.services.agent_service import LRUAgentCache
+        cache = LRUAgentCache(max_size=3)
+        mock_agent = MagicMock()
+        cache.put("s1", mock_agent)
+        assert cache.get("s1") is mock_agent
+        assert cache.get("nonexistent") is None
+
+    def test_eviction(self):
+        """Oldest entry is evicted when cache exceeds max_size."""
+        from agentica.gateway.services.agent_service import LRUAgentCache
+        cache = LRUAgentCache(max_size=2)
+        cache.put("s1", MagicMock())
+        cache.put("s2", MagicMock())
+        cache.put("s3", MagicMock())
+        assert cache.get("s1") is None  # evicted
+        assert cache.get("s2") is not None
+        assert cache.get("s3") is not None
+
+    def test_access_refreshes_lru_order(self):
+        """Accessing an entry moves it to the end (most recent)."""
+        from agentica.gateway.services.agent_service import LRUAgentCache
+        cache = LRUAgentCache(max_size=2)
+        cache.put("s1", MagicMock())
+        cache.put("s2", MagicMock())
+        cache.get("s1")  # refresh s1
+        cache.put("s3", MagicMock())  # should evict s2, not s1
+        assert cache.get("s1") is not None
+        assert cache.get("s2") is None
+
+    def test_delete(self):
+        from agentica.gateway.services.agent_service import LRUAgentCache
+        cache = LRUAgentCache(max_size=5)
+        cache.put("s1", MagicMock())
+        assert cache.delete("s1") is True
+        assert cache.delete("s1") is False
+        assert cache.get("s1") is None
+
+    def test_clear(self):
+        from agentica.gateway.services.agent_service import LRUAgentCache
+        cache = LRUAgentCache(max_size=5)
+        cache.put("s1", MagicMock())
+        cache.put("s2", MagicMock())
+        cache.clear()
+        assert len(cache) == 0
+
+    def test_keys(self):
+        from agentica.gateway.services.agent_service import LRUAgentCache
+        cache = LRUAgentCache(max_size=5)
+        cache.put("s1", MagicMock())
+        cache.put("s2", MagicMock())
+        assert set(cache.keys()) == {"s1", "s2"}
+
+
+# ============== TestMessageRouter ==============
+
+class TestMessageRouter:
+    """Test message routing rules and priority."""
+
+    def _make_message(self, channel="feishu", channel_id="chat1", sender_id="user1"):
+        from agentica.gateway.channels.base import ChannelType, Message
+        return Message(
+            channel=ChannelType(channel),
+            channel_id=channel_id,
+            sender_id=sender_id,
+            sender_name="Test User",
+            content="hello",
+            message_id="msg1",
+        )
+
+    def test_default_route(self):
+        """No rules → default agent."""
+        from agentica.gateway.services.router import MessageRouter
+        router = MessageRouter(default_agent="main")
+        msg = self._make_message()
+        assert router.route(msg) == "main"
+
+    def test_sender_match(self):
+        """Exact sender_id match routes to specific agent."""
+        from agentica.gateway.services.router import MessageRouter, RoutingRule
+        from agentica.gateway.channels.base import ChannelType
+        router = MessageRouter(default_agent="main")
+        router.add_rule(RoutingRule(agent_id="vip_agent", sender_id="user1"))
+        msg = self._make_message(sender_id="user1")
+        assert router.route(msg) == "vip_agent"
+
+    def test_channel_match(self):
+        """Channel type match."""
+        from agentica.gateway.services.router import MessageRouter, RoutingRule
+        from agentica.gateway.channels.base import ChannelType
+        router = MessageRouter(default_agent="main")
+        router.add_rule(RoutingRule(agent_id="tg_agent", channel=ChannelType.TELEGRAM))
+        msg = self._make_message(channel="telegram")
+        assert router.route(msg) == "tg_agent"
+
+    def test_priority_ordering(self):
+        """Higher priority rules are checked first."""
+        from agentica.gateway.services.router import MessageRouter, RoutingRule
+        from agentica.gateway.channels.base import ChannelType
+        router = MessageRouter(default_agent="main")
+        router.add_rule(RoutingRule(agent_id="low", channel=ChannelType.FEISHU, priority=1))
+        router.add_rule(RoutingRule(agent_id="high", channel=ChannelType.FEISHU, priority=10))
+        msg = self._make_message(channel="feishu")
+        assert router.route(msg) == "high"
+
+    def test_no_match_falls_to_default(self):
+        """Non-matching rules fall through to default."""
+        from agentica.gateway.services.router import MessageRouter, RoutingRule
+        from agentica.gateway.channels.base import ChannelType
+        router = MessageRouter(default_agent="main")
+        router.add_rule(RoutingRule(agent_id="tg_agent", channel=ChannelType.TELEGRAM))
+        msg = self._make_message(channel="feishu")
+        assert router.route(msg) == "main"
+
+    def test_session_id_format(self):
+        """Session ID has deterministic format."""
+        from agentica.gateway.services.router import MessageRouter
+        router = MessageRouter()
+        msg = self._make_message(channel="feishu", channel_id="chat123")
+        sid = router.get_session_id(msg, "agent1")
+        assert sid == "agent:agent1:feishu:chat123"
+
+    def test_remove_rule(self):
+        """Removing a rule by agent_id."""
+        from agentica.gateway.services.router import MessageRouter, RoutingRule
+        from agentica.gateway.channels.base import ChannelType
+        router = MessageRouter(default_agent="main")
+        router.add_rule(RoutingRule(agent_id="x", channel=ChannelType.FEISHU))
+        router.remove_rule("x")
+        assert len(router.rules) == 0
+
+    def test_list_rules(self):
+        """list_rules returns serialized dicts."""
+        from agentica.gateway.services.router import MessageRouter, RoutingRule
+        from agentica.gateway.channels.base import ChannelType
+        router = MessageRouter()
+        router.add_rule(RoutingRule(agent_id="a", channel=ChannelType.FEISHU, priority=5))
+        rules = router.list_rules()
+        assert len(rules) == 1
+        assert rules[0]["agent_id"] == "a"
+        assert rules[0]["channel"] == "feishu"
+        assert rules[0]["priority"] == 5
+
+
+# ============== TestChannelManager ==============
+
+class TestChannelManager:
+    """Test channel manager lifecycle and dispatch."""
+
+    def _make_channel(self, channel_type_str="feishu", connected=True):
+        from agentica.gateway.channels.base import ChannelType
+        from unittest.mock import AsyncMock
+        ch = MagicMock()
+        ch.channel_type = ChannelType(channel_type_str)
+        ch.is_connected = connected
+        ch.send = AsyncMock(return_value=True)
+        ch.connect = AsyncMock()
+        ch.disconnect = AsyncMock()
+        ch.set_handler = MagicMock()
+        return ch
+
+    def test_register_and_list(self):
+        from agentica.gateway.services.channel_manager import ChannelManager
+        mgr = ChannelManager()
+        ch = self._make_channel("feishu")
+        mgr.register(ch)
+        assert mgr.list_channels() == ["feishu"]
+        ch.set_handler.assert_called_once()
+
+    def test_get_status(self):
+        from agentica.gateway.services.channel_manager import ChannelManager
+        mgr = ChannelManager()
+        ch = self._make_channel("telegram", connected=True)
+        mgr.register(ch)
+        status = mgr.get_status()
+        assert "telegram" in status
+        assert status["telegram"]["connected"] is True
+
+    def test_send_unknown_channel_type(self):
+        from agentica.gateway.services.channel_manager import ChannelManager
+        mgr = ChannelManager()
+        result = asyncio.run(mgr.send("nonexistent", "chat1", "hello"))
+        assert result is False
+
+    def test_send_channel_not_registered(self):
+        from agentica.gateway.services.channel_manager import ChannelManager
+        from agentica.gateway.channels.base import ChannelType
+        mgr = ChannelManager()
+        result = asyncio.run(mgr.send(ChannelType.FEISHU, "chat1", "hello"))
+        assert result is False
+
+    def test_get_channel(self):
+        from agentica.gateway.services.channel_manager import ChannelManager
+        from agentica.gateway.channels.base import ChannelType
+        mgr = ChannelManager()
+        ch = self._make_channel("feishu")
+        mgr.register(ch)
+        assert mgr.get_channel(ChannelType.FEISHU) is ch
+        assert mgr.get_channel(ChannelType.TELEGRAM) is None
+
+
+# ============== TestResponseFormatter ==============
+
+class TestResponseFormatter:
+    """Test response formatting utilities."""
+
+    def test_format_edit_file(self):
+        from agentica.gateway.services.response_formatter import format_tool_call_args
+        result = format_tool_call_args("edit_file", {
+            "file_path": "test.py",
+            "old_string": "line1\nline2\nline3",
+            "new_string": "line1\nnewline\nline3\nline4",
+        })
+        # "line1\nline2\nline3" → 2 newlines + 1 = 3
+        assert result["_diff_del"] == 3
+        # "line1\nnewline\nline3\nline4" → 3 newlines + 1 = 4
+        assert result["_diff_add"] == 4
+        assert result["file_path"] == "test.py"
+
+    def test_format_write_file(self):
+        from agentica.gateway.services.response_formatter import format_tool_call_args
+        result = format_tool_call_args("write_file", {
+            "file_path": "new.py",
+            "content": "import os\nimport sys\n",
+        })
+        assert result["_lines"] == 3  # 2 newlines + 1
+        assert result["file_path"] == "new.py"
+
+    def test_format_generic_truncation(self):
+        from agentica.gateway.services.response_formatter import format_tool_call_args
+        long_str = "x" * 200
+        result = format_tool_call_args("some_tool", {"query": long_str, "limit": 10})
+        assert result["query"].endswith("...")
+        assert len(result["query"]) == 103  # 100 + "..."
+        assert result["limit"] == 10
+
+    def test_format_tool_result_normal(self):
+        from agentica.gateway.services.response_formatter import format_tool_result
+        name, result_str, is_task = format_tool_result({
+            "tool_name": "read_file",
+            "content": "file contents here",
+        })
+        assert name == "read_file"
+        assert result_str == "file contents here"
+        assert is_task is False
+
+    def test_format_tool_result_empty(self):
+        from agentica.gateway.services.response_formatter import format_tool_result
+        name, result_str, is_task = format_tool_result({
+            "tool_name": "ls",
+            "content": "",
+        })
+        assert result_str == "(no output)"
+
+    def test_format_tool_result_error(self):
+        from agentica.gateway.services.response_formatter import format_tool_result
+        name, result_str, is_task = format_tool_result({
+            "tool_name": "execute",
+            "content": "permission denied",
+            "tool_call_error": True,
+        })
+        assert result_str.startswith("Error: ")
+
+    def test_format_tool_result_task_meta(self):
+        import json
+        from agentica.gateway.services.response_formatter import format_tool_result
+        task_content = json.dumps({"success": True, "tool_count": 3, "tool_calls_summary": ["a", "b"]})
+        name, result_str, is_task = format_tool_result({
+            "tool_name": "task",
+            "content": task_content,
+        })
+        assert is_task is True
+        parsed = json.loads(result_str)
+        assert parsed["_task_meta"] is True
+        assert parsed["tool_count"] == 3
+
+    def test_extract_metrics_none(self):
+        from agentica.gateway.services.response_formatter import extract_metrics
+        assert extract_metrics(None) is None
+
+    def test_extract_metrics_with_data(self):
+        from agentica.gateway.services.response_formatter import extract_metrics
+        agent = MagicMock()
+        agent.run_response.metrics = {"input_tokens": [100], "output_tokens": [50]}
+        result = extract_metrics(agent)
+        assert result["input_tokens"] == [100]
+
+    def test_multi_edit_file(self):
+        from agentica.gateway.services.response_formatter import format_tool_call_args
+        result = format_tool_call_args("multi_edit_file", {
+            "file_path": "test.py",
+            "edits": [
+                {"old_string": "a\nb", "new_string": "c"},
+                {"old_string": "d", "new_string": "e\nf\ng"},
+            ],
+        })
+        assert result["_edit_count"] == 2
+        assert result["_diff_del"] == 3  # "a\nb" = 2+1, "d" = 0+1
+        assert result["_diff_add"] == 4  # "c" = 0+1, "e\nf\ng" = 2+1
+
+
+# ============== TestModelFactory ==============
+
+class TestModelFactory:
+    """Test model factory provider dispatch."""
+
+    def test_unknown_provider_raises(self):
+        from agentica.gateway.services.model_factory import create_model
+        with pytest.raises(ValueError, match="Unknown model_provider"):
+            create_model("nonexistent_provider", "some-model")
+
+    def test_openai_provider(self):
+        from agentica.gateway.services.model_factory import create_model
+        with patch("agentica.gateway.services.model_factory.settings") as mock_settings:
+            mock_settings.model_thinking = ""
+            model = create_model("openai", "gpt-4o-mini")
+        assert model.__class__.__name__ == "OpenAIChat"
+
+    def test_kimi_provider(self):
+        from agentica.gateway.services.model_factory import create_model
+        with patch("agentica.gateway.services.model_factory.settings") as mock_settings:
+            mock_settings.model_thinking = ""
+            model = create_model("kimi", "moonshot-v1")
+        assert model.__class__.__name__ == "KimiChat"
+
+    def test_registry_provider(self):
+        """Providers in the SDK registry (e.g. deepseek) should be created via create_provider."""
+        from agentica.gateway.services.model_factory import create_model
+        from agentica.model.providers import PROVIDER_REGISTRY
+        # Pick a registry provider if any exist
+        if PROVIDER_REGISTRY:
+            provider_name = next(iter(PROVIDER_REGISTRY))
+            with patch("agentica.gateway.services.model_factory.settings") as mock_settings:
+                mock_settings.model_thinking = ""
+                model = create_model(provider_name, "test-model")
+            assert model is not None
+
+    def test_cron_tools_returns_list(self):
+        from agentica.gateway.services.model_factory import get_cron_tools
+        tools = get_cron_tools()
+        assert isinstance(tools, list)
+
+    def test_cron_instructions_non_empty(self):
+        from agentica.gateway.services.model_factory import get_cron_instructions
+        instructions = get_cron_instructions()
+        assert "cronjob" in instructions
+
+
+# ============== TestChannelBase ==============
+
+class TestChannelBase:
+    """Test Channel base class shared utilities."""
+
+    def test_split_text_normal(self):
+        from agentica.gateway.channels.base import Channel
+        chunks = Channel.split_text("abcdefgh", 3)
+        assert chunks == ["abc", "def", "gh"]
+
+    def test_split_text_empty(self):
+        from agentica.gateway.channels.base import Channel
+        assert Channel.split_text("", 100) == [""]
+
+    def test_split_text_short(self):
+        from agentica.gateway.channels.base import Channel
+        assert Channel.split_text("hi", 100) == ["hi"]
+
+    def test_check_allowlist_empty_allows_all(self):
+        from agentica.gateway.channels.base import Channel
+        # Create a concrete subclass for testing
+        class _TestChannel(Channel):
+            @property
+            def channel_type(self):
+                from agentica.gateway.channels.base import ChannelType
+                return ChannelType.WEB
+            async def connect(self): return True
+            async def disconnect(self): pass
+            async def send(self, channel_id, content, **kw): return True
+
+        ch = _TestChannel(allowed_users=[])
+        assert ch.check_allowlist("anyone") is True
+
+    def test_check_allowlist_filters(self):
+        from agentica.gateway.channels.base import Channel, ChannelType
+        class _TestChannel(Channel):
+            @property
+            def channel_type(self):
+                return ChannelType.WEB
+            async def connect(self): return True
+            async def disconnect(self): pass
+            async def send(self, channel_id, content, **kw): return True
+
+        ch = _TestChannel(allowed_users=["user1", "user2"])
+        assert ch.check_allowlist("user1") is True
+        assert ch.check_allowlist("user3") is False

@@ -47,9 +47,12 @@ from agentica.compression import CompressionManager
 from agentica.config import LANGFUSE_SECRET_KEY, LANGFUSE_PUBLIC_KEY
 from agentica.agent.config import (
     PromptConfig, ToolConfig, WorkspaceMemoryConfig, TeamConfig, SandboxConfig,
-    ToolRuntimeConfig, SkillRuntimeConfig,
+    ToolRuntimeConfig, SkillRuntimeConfig, ExperienceConfig,
 )
-from agentica.hooks import AgentHooks, RunHooks, ConversationArchiveHooks, MemoryExtractHooks, _CompositeRunHooks
+from agentica.hooks import (
+    AgentHooks, RunHooks, ConversationArchiveHooks, MemoryExtractHooks,
+    ExperienceCaptureHooks, _CompositeRunHooks,
+)
 from agentica.runner import Runner
 
 # Import mixin classes — pure method containers, no state, no __init__
@@ -94,6 +97,9 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
     # Layer 1: Core definition
     # ============================
     model: Optional[Model] = None
+    # Auxiliary model for low-cost side tasks (compression, memory extraction, evaluation).
+    # When set, CompressionManager and other subsystems use this instead of the main model.
+    auxiliary_model: Optional[Model] = None
     name: Optional[str] = None
     agent_id: str = ""
     description: Optional[str] = None
@@ -105,6 +111,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
     workspace: Optional[Any] = None  # Workspace type
     work_dir: Optional[str] = None  # Working directory for file operations (used by builtin tools)
     memory: bool = False  # Whether to enable long-term memory tools and hooks
+    experience: bool = False  # Whether to enable experience capture (self-evolution)
     response_model: Optional[Type[Any]] = None
 
     # ============================
@@ -130,6 +137,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
     prompt_config: PromptConfig = field(default_factory=PromptConfig)
     tool_config: ToolConfig = field(default_factory=ToolConfig)
     long_term_memory_config: WorkspaceMemoryConfig = field(default_factory=WorkspaceMemoryConfig)
+    experience_config: ExperienceConfig = field(default_factory=ExperienceConfig)
     team_config: TeamConfig = field(default_factory=TeamConfig)
     sandbox_config: Optional[SandboxConfig] = None
 
@@ -177,6 +185,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
             *,
             # ---- Core definition ----
             model: Optional[Model] = None,
+            auxiliary_model: Optional[Model] = None,
             name: Optional[str] = None,
             agent_id: Optional[str] = None,
             description: Optional[str] = None,
@@ -188,6 +197,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
             workspace: Optional[Union[Any, str]] = None,  # Workspace or str path
             work_dir: Optional[str] = None,  # Working directory for file operations
             memory: bool = False,  # Enable long-term memory tools and hooks
+            experience: bool = False,  # Enable experience capture (self-evolution)
             response_model: Optional[Type[Any]] = None,
             # ---- Common config ----
             add_history_to_messages: bool = False,
@@ -202,6 +212,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
             prompt_config: Optional[PromptConfig] = None,
             tool_config: Optional[ToolConfig] = None,
             long_term_memory_config: Optional[WorkspaceMemoryConfig] = None,
+            experience_config: Optional[ExperienceConfig] = None,
             team_config: Optional[TeamConfig] = None,
             sandbox_config: Optional[SandboxConfig] = None,
             tool_input_guardrails: Optional[List[Any]] = None,
@@ -212,6 +223,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
     ):
         # Core
         self.model = model
+        self.auxiliary_model = auxiliary_model
         self.name = name
         self.agent_id = agent_id or str(uuid4())
         self.description = description
@@ -223,6 +235,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         self.response_model = response_model
         self.work_dir = work_dir
         self.memory = memory
+        self.experience = experience
 
         # Handle workspace: str → Workspace(path=str)
         if isinstance(workspace, str):
@@ -250,6 +263,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         self.prompt_config = prompt_config or PromptConfig()
         self.tool_config = tool_config or ToolConfig()
         self.long_term_memory_config = long_term_memory_config or WorkspaceMemoryConfig()
+        self.experience_config = experience_config or ExperienceConfig()
         self.team_config = team_config or TeamConfig()
         self.sandbox_config = sandbox_config
         self.tool_input_guardrails = tool_input_guardrails or []
@@ -337,10 +351,17 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         # Initialize compression manager
         if self.tool_config.compress_tool_results and self.tool_config.compression_manager is None:
             self.tool_config.compression_manager = CompressionManager(
-                model=self.model,
+                model=self.auxiliary_model or self.model,
                 compress_tool_results=True,
                 workspace=self.workspace,
             )
+        # Wire auxiliary model into existing compression manager if not already set
+        elif (
+            self.auxiliary_model is not None
+            and self.tool_config.compression_manager is not None
+            and self.tool_config.compression_manager.model is None
+        ):
+            self.tool_config.compression_manager.model = self.auxiliary_model
 
         # Tracing: check Langfuse config when enabled
         if self.tracing:
@@ -356,8 +377,9 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
 
         # Auto-archive: inject ConversationArchiveHooks when memory=True and auto_archive=True (zero cost)
         # Auto-extract: inject MemoryExtractHooks when memory=True and auto_extract_memory=True (LLM cost)
+        # Auto-experience: inject ExperienceCaptureHooks when experience=True (zero LLM cost)
+        auto_hooks: list = []
         if self.memory and self.workspace is not None:
-            auto_hooks: list = []
             if self.long_term_memory_config.auto_archive:
                 auto_hooks.append(ConversationArchiveHooks())
             if self.long_term_memory_config.auto_extract_memory:
@@ -368,8 +390,10 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
                         )
                     )
                 )
-            if auto_hooks:
-                self._default_run_hooks = _CompositeRunHooks(auto_hooks)
+        if self.experience and self.workspace is not None:
+            auto_hooks.append(ExperienceCaptureHooks(self.experience_config))
+        if auto_hooks:
+            self._default_run_hooks = _CompositeRunHooks(auto_hooks)
 
     async def get_workspace_context_prompt(self) -> Optional[str]:
         """Dynamically load workspace context for system prompt.
@@ -416,6 +440,23 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
             already_surfaced=self._surfaced_memories,
         )
         return memory if memory else None
+
+    async def get_experience_prompt(self, query: str = "") -> Optional[str]:
+        """Load relevant experiences for system prompt injection.
+
+        Args:
+            query: Current user query for relevance scoring.
+
+        Returns:
+            Formatted experience string, or None if experience not enabled.
+        """
+        if not self.experience or not self.workspace:
+            return None
+        experiences = await self.workspace.get_relevant_experiences(
+            query=query,
+            limit=self.experience_config.max_experiences_in_prompt,
+        )
+        return experiences if experiences else None
 
     def _load_mcp_tools(self):
         """Auto-load MCP tools from mcp_config.json/yaml if available."""

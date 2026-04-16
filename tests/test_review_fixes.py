@@ -322,56 +322,49 @@ class TestArchiveConcurrencyLock:
 # =========================================================================
 
 class TestConversationArchiveHooks:
-    """Tests for I2: reliable run_input capture."""
+    """Tests for I2: reliable run_input capture (reads at on_agent_end time)."""
 
-    def test_captures_input_at_start(self):
-        """on_agent_start should capture run_input."""
+    def test_captures_input_at_end(self):
+        """on_agent_end should read current agent.run_input."""
         hooks = ConversationArchiveHooks()
         agent = MagicMock()
         agent.agent_id = "test-agent"
         agent.run_input = "Hello world"
+        agent.run_id = "run-1"
+        agent.workspace = MagicMock()
+        agent.workspace.archive_conversation = AsyncMock(return_value="/path")
 
-        asyncio.run(hooks.on_agent_start(agent))
-        assert hooks._run_inputs["test-agent"] == "Hello world"
+        asyncio.run(hooks.on_agent_end(agent, output="Response"))
+        call_args = agent.workspace.archive_conversation.call_args
+        messages = call_args[0][0]
+        user_msg = [m for m in messages if m["role"] == "user"][0]
+        assert user_msg["content"] == "Hello world"
 
-    def test_uses_captured_input_in_end(self):
-        """on_agent_end should use the run_input captured at start, not current value."""
+    def test_uses_current_run_input_not_stale(self):
+        """on_agent_end reads current agent.run_input (Runner sets it before hooks)."""
         hooks = ConversationArchiveHooks()
         agent = MagicMock()
         agent.agent_id = "test-agent"
-        agent.run_input = "Original input"
+        agent.run_input = "Current round input"
         agent.workspace = MagicMock()
         agent.workspace.archive_conversation = AsyncMock(return_value="/path/archive.md")
         agent.run_id = "run-1"
 
-        # Capture at start
-        asyncio.run(hooks.on_agent_start(agent))
-
-        # Simulate run_input changing (e.g. in a subsequent call)
-        agent.run_input = "Changed input"
-
-        # on_agent_end should use "Original input"
         asyncio.run(hooks.on_agent_end(agent, output="Response"))
 
         call_args = agent.workspace.archive_conversation.call_args
         messages = call_args[0][0]
-        assert messages[0]["content"] == "Original input"
+        assert messages[0]["content"] == "Current round input"
 
-    def test_cleans_up_after_end(self):
-        """on_agent_end should remove the captured input from dict."""
+    def test_no_workspace_is_noop(self):
+        """on_agent_end with no workspace should not raise."""
         hooks = ConversationArchiveHooks()
         agent = MagicMock()
         agent.agent_id = "test-agent"
         agent.run_input = "Test"
-        agent.workspace = MagicMock()
-        agent.workspace.archive_conversation = AsyncMock(return_value="/path")
-        agent.run_id = None
-
-        asyncio.run(hooks.on_agent_start(agent))
-        assert "test-agent" in hooks._run_inputs
+        agent.workspace = None
 
         asyncio.run(hooks.on_agent_end(agent, output="Done"))
-        assert "test-agent" not in hooks._run_inputs
 
 
 # =========================================================================

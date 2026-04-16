@@ -1,17 +1,25 @@
-"""Telegram 渠道实现"""
+"""Telegram channel implementation using python-telegram-bot.
+
+Uses long-polling (``start_polling``) to receive incoming messages.
+Outgoing messages are sent via the Bot API's ``send_message`` method.
+"""
 import asyncio
 from typing import Optional, List
 
 from .base import Channel, ChannelType, Message
 from ..config import settings
 
-# 延迟导入 Telegram SDK
+# Telegram SDK globals (lazy-imported to avoid hard dependency)
 telegram = None
 Application = None
 
 
 def _ensure_telegram_sdk():
-    """确保 Telegram SDK 已导入"""
+    """Ensure the Telegram SDK has been imported (lazy).
+
+    Raises:
+        ImportError: If ``python-telegram-bot`` is not installed.
+    """
     global telegram, Application
     if telegram is None:
         try:
@@ -21,14 +29,15 @@ def _ensure_telegram_sdk():
             Application = _Application
         except ImportError:
             raise ImportError(
-                "Telegram SDK 未安装，请运行: pip install python-telegram-bot"
+                "Telegram SDK not installed. Run: pip install python-telegram-bot"
             )
 
 
 class TelegramChannel(Channel):
-    """Telegram 渠道
+    """Telegram messaging channel.
 
-    使用 python-telegram-bot 库实现
+    Uses ``python-telegram-bot``'s ``Application`` to receive messages via
+    long-polling and send replies through the Bot API.
     """
 
     def __init__(
@@ -36,18 +45,18 @@ class TelegramChannel(Channel):
         bot_token: Optional[str] = None,
         allowed_users: Optional[List[str]] = None,
     ):
-        super().__init__()
+        super().__init__(allowed_users=allowed_users or [])
         self.bot_token = bot_token or settings.telegram_bot_token
-        self.allowed_users = allowed_users or []
         self._app = None
         self._bot = None
+        self._polling_task: Optional[asyncio.Task] = None
 
     @property
     def channel_type(self) -> ChannelType:
         return ChannelType.TELEGRAM
 
     async def connect(self) -> bool:
-        """建立连接"""
+        """Start the Telegram bot and begin polling for updates."""
         if not self.bot_token:
             print("[Telegram] Missing bot token, skipped")
             return False
@@ -55,11 +64,11 @@ class TelegramChannel(Channel):
         try:
             _ensure_telegram_sdk()
 
-            # 创建 Application
+            # Build the Application with the provided bot token
             self._app = Application.builder().token(self.bot_token).build()
             self._bot = self._app.bot
 
-            # 注册消息处理器
+            # Register a handler for all non-command text messages
             self._app.add_handler(
                 telegram.MessageHandler(
                     telegram.filters.TEXT & ~telegram.filters.COMMAND,
@@ -67,8 +76,8 @@ class TelegramChannel(Channel):
                 )
             )
 
-            # 启动轮询（在后台运行）
-            asyncio.create_task(self._start_polling())
+            # Start polling in a tracked background task
+            self._polling_task = asyncio.create_task(self._start_polling())
 
             self._connected = True
             print("[Telegram] Connected")
@@ -82,7 +91,7 @@ class TelegramChannel(Channel):
             return False
 
     async def _start_polling(self):
-        """启动轮询"""
+        """Initialize the application and start update polling."""
         try:
             await self._app.initialize()
             await self._app.start()
@@ -92,7 +101,16 @@ class TelegramChannel(Channel):
             self._connected = False
 
     async def disconnect(self):
-        """断开连接"""
+        """Stop polling and shut down the Telegram application."""
+        # Cancel the polling task if still running
+        if self._polling_task and not self._polling_task.done():
+            self._polling_task.cancel()
+            try:
+                await self._polling_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._polling_task = None
+
         if self._app:
             try:
                 await self._app.updater.stop()
@@ -105,14 +123,18 @@ class TelegramChannel(Channel):
         print("[Telegram] Disconnected")
 
     async def send(self, channel_id: str, content: str, **kwargs) -> bool:
-        """发送消息"""
+        """Send a text message to a Telegram chat.
+
+        Long messages are automatically split into chunks of 4000 characters
+        to stay within Telegram's 4096-character per-message limit.
+        """
         if not self._bot:
             print("[Telegram] Not connected")
             return False
 
         try:
-            # 分片长消息（Telegram 限制 4096 字符）
-            for chunk in self._split_text(content, 4000):
+            # Split long messages (Telegram limit: 4096 characters)
+            for chunk in self.split_text(content, 4000):
                 await self._bot.send_message(
                     chat_id=int(channel_id),
                     text=chunk,
@@ -121,11 +143,15 @@ class TelegramChannel(Channel):
             return True
 
         except Exception as e:
-            print(f"[Telegram] Send error: {e}")
+            print(f"[Telegram] Send error: {e} channel_id={channel_id}")
             return False
 
     async def _on_message(self, update, context) -> None:  # noqa: ARG002
-        """处理 Telegram 消息"""
+        """Handle an incoming Telegram message.
+
+        Applies the user allowlist filter, converts to the unified ``Message``
+        format, and forwards to the registered handler.
+        """
         try:
             msg = update.message
             if not msg or not msg.text:
@@ -134,12 +160,12 @@ class TelegramChannel(Channel):
             user = msg.from_user
             user_id = str(user.id) if user else ""
 
-            # 白名单检查
-            if self.allowed_users and user_id not in self.allowed_users:
+            # User allowlist check (via base class)
+            if not self.check_allowlist(user_id):
                 print(f"[Telegram] User {user_id} not in allowlist")
                 return
 
-            # 构造统一消息
+            # Convert to unified message format
             message = Message(
                 channel=ChannelType.TELEGRAM,
                 channel_id=str(msg.chat_id),
@@ -155,16 +181,9 @@ class TelegramChannel(Channel):
                 }
             )
 
-            # 异步处理
+            # Forward to the registered handler
             if self._message_handler:
                 await self._emit_message(message)
 
         except Exception as e:
-            print(f"[Telegram] Message error: {e}")
-
-    @staticmethod
-    def _split_text(text: str, max_len: int) -> List[str]:
-        """分片长文本"""
-        if not text:
-            return [""]
-        return [text[i:i + max_len] for i in range(0, len(text), max_len)]
+            print(f"[Telegram] Message error: {e} sender_id={user_id if 'user_id' in dir() else 'unknown'}")

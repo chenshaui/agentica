@@ -9,6 +9,7 @@ import collections.abc
 import io
 import json
 import base64
+import re
 import weakref
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -94,6 +95,21 @@ class Model(ABC):
             catalog_cw = get_model_context_window(self.id, default=0)
             if catalog_cw > 0:
                 self.context_window = catalog_cw
+
+    _CONTEXT_LIMIT_PATTERN = re.compile(
+        r"(?:maximum context (?:length|window)|context_length|max_context_length)[^\d]*(\d[\d,]*)",
+        re.IGNORECASE,
+    )
+
+    def _learn_context_limit_from_error(self, error_message: str) -> None:
+        """Extract context window size from API error messages and update self.context_window."""
+        match = self._CONTEXT_LIMIT_PATTERN.search(error_message)
+        if match:
+            limit = int(match.group(1).replace(",", ""))
+            if limit > 1000 and limit != self.context_window:
+                old = self.context_window
+                self.context_window = limit
+                logger.info(f"Learned context_window={limit} from API error (was {old}) for model {self.id}")
 
     @property
     @abstractmethod

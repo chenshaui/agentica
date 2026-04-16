@@ -239,26 +239,22 @@ class ConversationArchiveHooks(RunHooks):
     """
 
     def __init__(self):
-        self._run_inputs: Dict[str, Optional[str]] = {}  # agent_id -> captured run_input
-
-    async def on_agent_start(self, agent: Any, **kwargs) -> None:
-        """Capture run_input at start time for reliable access in on_agent_end."""
-        agent_id = agent.agent_id
-        run_input = agent.run_input
-        self._run_inputs[agent_id] = run_input if isinstance(run_input, str) else None
+        pass
 
     async def on_agent_end(self, agent: Any, output: Any, **kwargs) -> None:
-        """Archive conversation after agent completes."""
+        """Archive conversation after agent completes.
+
+        Reads agent.run_input directly (set by Runner before on_agent_end).
+        """
         workspace = agent.workspace
         if workspace is None:
             return
 
-        agent_id = agent.agent_id
         messages_to_archive = []
 
-        # Use run_input captured at start time
-        run_input = self._run_inputs.pop(agent_id, None)
-        if run_input:
+        # Read run_input directly — Runner sets it before calling on_agent_end
+        run_input = agent.run_input
+        if run_input and isinstance(run_input, str):
             messages_to_archive.append({"role": "user", "content": run_input})
 
         # Collect agent output
@@ -317,14 +313,11 @@ class MemoryExtractHooks(RunHooks):
     )
 
     def __init__(self, sync_memories_to_global_agent_md: bool = False):
-        self._run_inputs: Dict[str, Optional[str]] = {}
         self._tool_calls: Dict[str, List[str]] = {}  # agent_id -> list of tool names called
         self._sync_memories_to_global_agent_md = sync_memories_to_global_agent_md
 
     async def on_agent_start(self, agent: Any, **kwargs) -> None:
-        agent_id = agent.agent_id
-        self._run_inputs[agent_id] = agent.run_input if isinstance(agent.run_input, str) else None
-        self._tool_calls[agent_id] = []
+        self._tool_calls[agent.agent_id] = []
 
     async def on_tool_end(self, agent: Any, tool_name: str = "", **kwargs) -> None:
         """Track tool calls to detect if save_memory was already used."""
@@ -340,8 +333,11 @@ class MemoryExtractHooks(RunHooks):
             return
 
         agent_id = agent.agent_id
-        run_input = self._run_inputs.pop(agent_id, None)
         tool_calls = self._tool_calls.pop(agent_id, [])
+
+        # Read run_input directly — Runner sets it before calling on_agent_end
+        run_input = agent.run_input
+        run_input = run_input if isinstance(run_input, str) else None
 
         # If LLM already called save_memory, skip extraction (CC's hasMemoryWritesSince)
         if "save_memory" in tool_calls:
@@ -420,6 +416,291 @@ class MemoryExtractHooks(RunHooks):
             logger.debug(f"Memory extraction: LLM returned invalid JSON: {e}")
         except Exception as e:
             logger.warning(f"Memory extraction failed: {e}")
+
+
+class ExperienceCaptureHooks(RunHooks):
+    """Capture tool failures, user corrections, and success patterns.
+
+    Tool errors and success patterns are captured deterministically (zero LLM cost).
+    User corrections are classified by an auxiliary LLM model for accuracy —
+    keyword matching is too fragile for nuanced human feedback.
+
+    Persists experiences to workspace at on_agent_end for cross-session learning.
+
+    Delegates to three experience-layer classes:
+    - ExperienceEventStore: append-only raw event persistence
+    - ExperienceCompiler: pure/stateless compilation (errors/successes -> cards)
+    - CompiledExperienceStore: card CRUD, lifecycle, sync
+
+    Usage::
+
+        from agentica.hooks import ExperienceCaptureHooks
+        from agentica.agent.config import ExperienceConfig
+
+        hooks = ExperienceCaptureHooks(ExperienceConfig())
+        response = await agent.run("Hello", config=RunConfig(hooks=hooks))
+    """
+
+    # LLM prompt for feedback classification
+    _FEEDBACK_CLASSIFY_PROMPT = (
+        "You are judging whether the user's latest message is a correction or "
+        "behavioral feedback to the assistant.\n\n"
+        "Inputs:\n"
+        "- Previous assistant message\n"
+        "- Current user message\n\n"
+        "Decide:\n"
+        "1. Is the user correcting the assistant, rejecting its approach, or "
+        "imposing a behavioral constraint?\n"
+        "2. Is this feedback only relevant to the current turn, or should it be "
+        "remembered across future sessions?\n"
+        "3. If it should be remembered, normalize it into a reusable rule.\n\n"
+        "Important:\n"
+        "- Do not rely on literal phrases.\n"
+        "- Indirect corrections count.\n"
+        "- Quoted text, examples, or hypothetical statements are NOT corrections.\n"
+        "- Only mark should_persist=true when the feedback is generalizable.\n\n"
+        "Return JSON only with these fields:\n"
+        '{"is_correction": bool, "confidence": float (0-1), '
+        '"category": "factual|preference|workflow|tool_usage|rejection|not_correction", '
+        '"scope": "turn_only|session|cross_session", '
+        '"should_persist": bool, '
+        '"persist_target": "none|experience|memory_feedback|session_only", '
+        '"title": "snake_case_short_name", '
+        '"rule": "one-line reusable rule", '
+        '"why": "reason this matters", '
+        '"how_to_apply": "when and where to apply this rule"}\n\n'
+    )
+
+    def __init__(self, config: Any):
+        self._config = config
+        # Per-agent state (keyed by agent_id)
+        self._tool_errors: Dict[str, List[Dict]] = {}
+        self._tool_successes: Dict[str, List[Dict]] = {}
+        self._last_assistant_output: Dict[str, Optional[str]] = {}
+
+    async def on_agent_start(self, agent: Any, **kwargs) -> None:
+        """Initialize per-agent capture state."""
+        aid = agent.agent_id
+        self._tool_errors[aid] = []
+        self._tool_successes[aid] = []
+        self._last_assistant_output[aid] = None
+
+    async def on_user_prompt(self, agent: Any, message: str, **kwargs) -> Optional[str]:
+        """No-op: classification uses agent.run_input at on_agent_end time."""
+        return None  # Never modify the message
+
+    async def on_tool_end(
+        self,
+        agent: Any,
+        tool_name: str = "",
+        tool_call_id: str = "",
+        tool_args: Optional[Dict[str, Any]] = None,
+        result: Any = None,
+        is_error: bool = False,
+        elapsed: float = 0.0,
+        **kwargs,
+    ) -> None:
+        """Record tool errors and successes."""
+        aid = agent.agent_id
+
+        if is_error and self._config.capture_tool_errors:
+            result_str = str(result)[:500] if result else ""
+            self._tool_errors.setdefault(aid, []).append({
+                "tool": tool_name,
+                "args": tool_args or {},
+                "error": result_str,
+                "elapsed": elapsed,
+            })
+        elif not is_error and self._config.capture_success_patterns:
+            self._tool_successes.setdefault(aid, []).append({
+                "tool": tool_name,
+                "elapsed": elapsed,
+            })
+
+    async def on_agent_end(self, agent: Any, output: Any, **kwargs) -> None:
+        """Persist captured experiences to workspace.
+
+        Flow: write raw events -> compile cards -> persist -> lifecycle -> sync.
+        Delegates compilation to ExperienceCompiler (pure, no I/O).
+        Delegates persistence to ExperienceEventStore / CompiledExperienceStore.
+        """
+        from agentica.experience.compiler import ExperienceCompiler
+
+        # Always drain accumulated state first — even when workspace is None.
+        # Without this, state leaks into the next run that DOES have a workspace.
+        aid = agent.agent_id
+        errors = self._tool_errors.pop(aid, [])
+        successes = self._tool_successes.pop(aid, [])
+        self._last_assistant_output.pop(aid, None)
+
+        workspace = agent.workspace
+        if workspace is None:
+            return
+
+        # Read run_input directly — Runner sets it before calling on_agent_end
+        run_input = agent.run_input
+        user_msg = run_input if isinstance(run_input, str) else None
+
+        # Extract previous assistant message from working_memory for correction context.
+        previous_assistant_text = self._get_previous_assistant_text(agent)
+
+        # Get stores from workspace
+        event_store = workspace.get_experience_event_store()
+        compiled_store = workspace.get_compiled_experience_store()
+
+        # ── 1. Write raw events (pure builder + store) ──
+        raw_events = ExperienceCompiler.build_raw_events(
+            errors=errors,
+            user_msg=user_msg,
+            previous_assistant=previous_assistant_text,
+            successes=successes,
+            capture_corrections=self._config.capture_user_corrections,
+        )
+        for event in raw_events:
+            await event_store.append(event)
+
+        # ── 2. Compile and persist experience cards ──
+
+        # 2a. Tool errors (deterministic, zero LLM cost)
+        error_cards = ExperienceCompiler.compile_tool_errors(errors)
+        for card in error_cards:
+            try:
+                await compiled_store.write(card)
+            except Exception as e:
+                logger.warning(f"Failed to write tool error experience: {e}")
+
+        # 2b. LLM-based correction classification
+        if self._config.capture_user_corrections and user_msg:
+            model = self._get_classification_model(agent)
+            if model is not None:
+                await self._classify_and_persist_feedback(
+                    model, event_store, compiled_store, workspace,
+                    user_msg, previous_assistant_text or "",
+                )
+
+        # 2c. Success pattern
+        success_card = ExperienceCompiler.compile_success_pattern(successes)
+        if success_card and not errors:
+            try:
+                await compiled_store.write(success_card)
+            except Exception as e:
+                logger.warning(f"Failed to write success pattern experience: {e}")
+
+        # ── 3. Lifecycle sweep ──
+        try:
+            await compiled_store.run_lifecycle(
+                promotion_count=self._config.promotion_count,
+                promotion_window_days=self._config.promotion_window_days,
+                demotion_days=self._config.demotion_days,
+                archive_days=self._config.archive_days,
+            )
+        except Exception as e:
+            logger.debug(f"Experience lifecycle sweep failed: {e}")
+
+        # ── 4. Sync to global AGENTS.md ──
+        if self._config.sync_to_global_agent_md:
+            try:
+                global_md = workspace._get_global_agent_md_path()
+                await compiled_store.sync_to_global_agent_md(global_md)
+            except Exception as e:
+                logger.debug(f"Experience sync to global AGENTS.md failed: {e}")
+
+    @staticmethod
+    def _get_previous_assistant_text(agent: Any) -> Optional[str]:
+        """Get the last assistant message text from working_memory.
+
+        At on_agent_end time, the current run's messages haven't been added
+        to working_memory yet, so the last assistant message reflects previous
+        runs — which is exactly what a user correction refers to.
+        """
+        messages = agent.working_memory.messages
+        for msg in reversed(messages):
+            if msg.role == "assistant" and msg.content:
+                return msg.content if isinstance(msg.content, str) else str(msg.content)
+        return None
+
+    @staticmethod
+    def _get_classification_model(agent: Any) -> Any:
+        """Get the model for feedback classification.
+
+        Prefers auxiliary_model (cheaper), falls back to main model.
+        Returns None if no model is available.
+        """
+        model = agent.auxiliary_model
+        if model is not None:
+            return model
+        return agent.model
+
+    async def _classify_and_persist_feedback(
+        self,
+        model: Any,
+        event_store: Any,
+        compiled_store: Any,
+        workspace: Any,
+        user_message: str,
+        previous_assistant_text: str,
+    ) -> None:
+        """Classify user feedback with LLM and persist if appropriate.
+
+        Uses ExperienceCompiler for card building (pure logic).
+        Delegates I/O to event_store and compiled_store.
+        """
+        from agentica.experience.compiler import ExperienceCompiler
+
+        prompt = (
+            self._FEEDBACK_CLASSIFY_PROMPT
+            + f"Previous assistant message:\n{previous_assistant_text[:1000]}\n\n"
+            + f"Current user message:\n{user_message[:1000]}\n"
+        )
+
+        threshold = self._config.feedback_confidence_threshold
+
+        try:
+            response = await model.response([
+                Message(role="user", content=prompt),
+            ])
+            if not response or not response.content:
+                return
+
+            text = response.content.strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+            result = json.loads(text)
+            if not isinstance(result, dict):
+                return
+
+            is_correction = result.get("is_correction", False)
+            confidence = result.get("confidence", 0.0)
+
+            # Write classification result as raw event
+            await event_store.append({
+                "event_type": "correction_classification",
+                "is_correction": is_correction,
+                "confidence": confidence,
+                "should_persist": result.get("should_persist", False),
+                "persist_target": result.get("persist_target", "none"),
+                "user_message": user_message[:300],
+            })
+
+            if not is_correction or confidence < threshold:
+                return
+            if not result.get("should_persist", False) or result.get("persist_target") == "none":
+                return
+
+            # Route: memory_feedback → workspace memory, experience → compiled store
+            if ExperienceCompiler.is_memory_feedback(result):
+                kwargs = ExperienceCompiler.build_memory_feedback(result)
+                await workspace.write_memory_entry(**kwargs)
+            else:
+                card = ExperienceCompiler.compile_correction(result)
+                if card:
+                    await compiled_store.write(card)
+
+        except json.JSONDecodeError:
+            logger.debug("Feedback classification: LLM returned invalid JSON")
+        except Exception as e:
+            logger.debug(f"Feedback classification failed: {e}")
 
 
 class _CompositeRunHooks(RunHooks):

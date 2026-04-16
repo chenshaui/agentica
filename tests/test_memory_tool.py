@@ -201,7 +201,6 @@ class TestMemoryExtractHooks:
     def test_init(self):
         """Test  initialization."""
         hooks = MemoryExtractHooks()
-        assert isinstance(hooks._run_inputs, dict)
         assert isinstance(hooks._tool_calls, dict)
 
     def test_skips_when_save_memory_called(self):

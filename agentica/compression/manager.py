@@ -56,6 +56,26 @@ DEFAULT_COMPRESSION_PROMPT = dedent("""\
     Be concise while retaining all critical facts.
     """)
 
+ITERATIVE_COMPRESSION_PROMPT = dedent("""\
+    You are updating an existing conversation summary with new information.
+
+    EXISTING SUMMARY:
+    {previous_summary}
+
+    NEW CONVERSATION TURNS TO INCORPORATE:
+    {new_messages}
+
+    Update the summary to incorporate the new information. Preserve all critical
+    context from the existing summary. Use this structure:
+
+    **Goal:** [Current objective]
+    **Progress:** [What has been accomplished - cumulative]
+    **Decisions:** [Key choices made]
+    **Files:** [Working files and modifications]
+    **Next Steps:** [What to do next]
+    **Critical Context:** [Essential info needed for continuation]
+    """)
+
 @dataclass
 class CompressionManager:
     """
@@ -125,17 +145,17 @@ class CompressionManager:
     # Buffer tokens reserved for the compaction summary output (CC uses 13_000).
     _auto_compact_buffer_tokens: int = field(init=False, default=13_000)
 
-    # Iterative summary: stores the previous compression summary so that
-    # subsequent compressions UPDATE the summary instead of regenerating.
-    # This reduces information loss across multiple compressions.
+    # Iterative summary for *conversation-level* auto_compact only.
+    # Tool-result compression does NOT use iterative summaries because it runs
+    # concurrently via asyncio.gather() — sharing mutable state would race.
     # Pattern borrowed from hermes-agent ContextCompressor.
-    _previous_summary: Optional[str] = field(init=False, default=None, repr=False)
+    _conversation_previous_summary: Optional[str] = field(init=False, default=None, repr=False)
 
     def reset_run_state(self) -> None:
         """Reset per-run state. Call at the start of each agent run to prevent
         circuit breaker and stats from leaking across runs."""
         self._consecutive_auto_compact_failures = 0
-        self._previous_summary = None
+        self._conversation_previous_summary = None
 
     def __post_init__(self):
         # Default target: 60% of trigger threshold
@@ -344,12 +364,18 @@ class CompressionManager:
     # -------------------------------------------------------------------------
 
     async def _compress_tool_result_llm(self, tool_result: "Message") -> Optional[str]:
-        """Compress a single tool result using LLM."""
+        """Compress a single tool result using LLM.
+
+        This runs concurrently (asyncio.gather) for multiple tool results,
+        so it must be stateless — no shared mutable summary state.
+        Always uses the user-provided or default compression prompt.
+        """
         if not tool_result or not self.model:
             return None
 
         tool_name = tool_result.tool_name or 'unknown'
         tool_content = f"Tool: {tool_name}\n{tool_result.content}"
+
         compression_prompt = self.compress_tool_call_instructions or DEFAULT_COMPRESSION_PROMPT
 
         try:
@@ -359,7 +385,8 @@ class CompressionManager:
                     Message(role="user", content="Tool Results to Compress: " + tool_content),
                 ]
             )
-            return response.content if hasattr(response, 'content') else str(response)
+            summary_text = response.content if hasattr(response, 'content') else str(response)
+            return summary_text
         except Exception as e:
             logger.error(f"LLM compression failed: {e}")
             return None
@@ -408,6 +435,74 @@ class CompressionManager:
         return compressed_count
 
     # -------------------------------------------------------------------------
+    # Tool-pair sanitization
+    # -------------------------------------------------------------------------
+
+    def _sanitize_tool_pairs(self, messages: List["Message"]) -> List["Message"]:
+        """Ensure every tool_call has a matching tool result and vice versa.
+
+        Rebuilds the message list in-order: for each assistant message with
+        tool_calls, inserts any existing tool results (matched by call_id) or
+        a placeholder, in the *original tool_calls order*. This preserves the
+        provider's hard constraint that tool results immediately follow their
+        assistant tool_call message.
+
+        Orphan tool results (no matching assistant tool_call) are dropped.
+        """
+        # Index existing tool results by call_id for O(1) lookup
+        result_by_id: Dict[str, "Message"] = {}
+        for msg in messages:
+            if msg.role == "tool" and msg.tool_call_id:
+                result_by_id[msg.tool_call_id] = msg
+
+        # Collect all call_ids that assistant messages reference
+        all_call_ids: set = set()
+        for msg in messages:
+            if msg.role == "assistant" and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    tc_id = tc.get("id")
+                    if tc_id:
+                        all_call_ids.add(tc_id)
+
+        rebuilt: List["Message"] = []
+        placeholder_count = 0
+        orphan_count = 0
+
+        for msg in messages:
+            if msg.role == "tool":
+                # Tool results are placed by the assistant-loop below;
+                # drop orphans (result whose call_id has no matching assistant)
+                if msg.tool_call_id not in all_call_ids:
+                    orphan_count += 1
+                # Skip here — results are re-inserted after their assistant msg
+                continue
+
+            rebuilt.append(msg)
+
+            # After an assistant with tool_calls, insert results in call order
+            if msg.role == "assistant" and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    tc_id = tc.get("id")
+                    if not tc_id:
+                        continue
+                    if tc_id in result_by_id:
+                        rebuilt.append(result_by_id[tc_id])
+                    else:
+                        rebuilt.append(Message(
+                            role="tool",
+                            tool_call_id=tc_id,
+                            content="[Tool result removed during compression]",
+                        ))
+                        placeholder_count += 1
+
+        if orphan_count:
+            logger.debug(f"Removed {orphan_count} orphan tool results")
+        if placeholder_count:
+            logger.debug(f"Added {placeholder_count} placeholder tool results")
+
+        return rebuilt
+
+    # -------------------------------------------------------------------------
     # Main compress entry point
     # -------------------------------------------------------------------------
 
@@ -450,6 +545,11 @@ class CompressionManager:
             llm_count = await self._llm_compress_old_tool_results(messages)
             if llm_count:
                 logger.debug(f"Stage 2: LLM compressed {llm_count} tool results")
+
+        # Sanitize orphaned tool_call/result pairs after compression
+        sanitized = self._sanitize_tool_pairs(list(messages))
+        messages.clear()
+        messages.extend(sanitized)
 
         # Log compression result
         _after_tokens = count_tokens(messages, tools, _model_id, response_format)
@@ -535,12 +635,12 @@ class CompressionManager:
         # Iterative summary: if we have a previous summary, ask LLM to UPDATE
         # it with new turns rather than regenerating from scratch. This preserves
         # accumulated knowledge across multiple compressions.
-        if self._previous_summary:
+        if self._conversation_previous_summary:
             prompt_parts.extend([
                 "You are updating an existing conversation summary with new turns.",
                 "",
                 "## Previous Summary",
-                self._previous_summary,
+                self._conversation_previous_summary,
                 "",
                 "## New Turns to Integrate",
                 text,
@@ -572,7 +672,7 @@ class CompressionManager:
             prompt_parts.append("")
             prompt_parts.append(f"Additional instructions: {custom_instructions}")
 
-        if not self._previous_summary:
+        if not self._conversation_previous_summary:
             prompt_parts.append("")
             prompt_parts.append("Conversation to summarise:")
             prompt_parts.append(text)
@@ -600,7 +700,7 @@ class CompressionManager:
 
         # Store for iterative updates on next compression
         if summary:
-            self._previous_summary = summary
+            self._conversation_previous_summary = summary
         return summary
 
     async def auto_compact(

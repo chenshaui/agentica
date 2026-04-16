@@ -98,6 +98,10 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down...")
     cron_task.cancel()
+    try:
+        await cron_task
+    except (asyncio.CancelledError, Exception):
+        pass
     if deps.channel_manager:
         await deps.channel_manager.disconnect_all()
     logger.info("Goodbye!")
@@ -331,7 +335,7 @@ def main() -> None:
     """Start the gateway server."""
     import uvicorn
     uvicorn.run(
-        "src.main:app",
+        "agentica.gateway.main:app",
         host=settings.host,
         port=settings.port,
         reload=False,

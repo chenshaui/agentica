@@ -95,19 +95,35 @@ def get_tool_result_path(
 # ---------------------------------------------------------------------------
 
 def _build_persisted_message(file_path: str, content: str) -> str:
-    """Build the preview message returned to the model after persisting."""
-    preview = content[:PREVIEW_CHARS]
+    """Build the preview message returned to the model after persisting.
+
+    Uses 40% head + 60% tail strategy to preserve both early context
+    (command echo, headers) and final results (exit codes, summaries).
+    """
+    max_preview = PREVIEW_CHARS
     size_kb = len(content.encode("utf-8", errors="ignore")) / 1024
+
+    if len(content) <= max_preview:
+        preview = content
+    else:
+        # 40% head + 60% tail — preserves both early context and final results
+        head_chars = int(max_preview * 0.4)
+        tail_chars = max_preview - head_chars
+        omitted = len(content) - head_chars - tail_chars
+        preview = (
+            content[:head_chars]
+            + f"\n\n... [{omitted} chars omitted] ...\n\n"
+            + content[-tail_chars:]
+        )
+
     msg = (
         f"<persisted-output>\n"
         f"Output too large ({size_kb:.1f} KB). Full output saved to:\n"
         f"{file_path}\n\n"
-        f"Preview (first {PREVIEW_CHARS} chars):\n"
+        f"Preview ({max_preview} chars, 40%head+60%tail):\n"
         f"{preview}"
+        f"\n</persisted-output>"
     )
-    if len(content) > PREVIEW_CHARS:
-        msg += "\n..."
-    msg += "\n</persisted-output>"
     return msg
 
 

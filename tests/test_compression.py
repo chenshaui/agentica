@@ -375,7 +375,7 @@ class TestCompressionManagerAutoCompact(unittest.TestCase):
                 return Resp()
 
         cm = CompressionManager()
-        cm._previous_summary = "old summary"
+        cm._conversation_previous_summary = "old summary"
         model = FakeModel()
         msgs = [
             Message(role="user", content="user asks for change"),

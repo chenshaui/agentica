@@ -177,15 +177,21 @@ class TestConversationArchiveHooks(unittest.TestCase):
     """ConversationArchiveHooks must write to workspace after agent run."""
 
     def test_on_agent_start_captures_run_input(self):
+        """ConversationArchiveHooks reads run_input at on_agent_end time."""
         hooks = ConversationArchiveHooks()
         agent = MagicMock()
         agent.agent_id = "agent-123"
         agent.run_input = "hello world"
+        agent.run_id = "run-1"
+        agent.workspace = MagicMock()
+        agent.workspace.archive_conversation = AsyncMock(return_value="/tmp/archive.md")
 
-        asyncio.run(hooks.on_agent_start(agent=agent))
-        # Should have captured the run_input
-        self.assertIn("agent-123", hooks._run_inputs)
-        self.assertEqual(hooks._run_inputs["agent-123"], "hello world")
+        asyncio.run(hooks.on_agent_end(agent=agent, output="response"))
+        # Should have archived with current run_input
+        call_args = agent.workspace.archive_conversation.call_args
+        messages = call_args[0][0]
+        user_msg = [m for m in messages if m["role"] == "user"][0]
+        self.assertEqual(user_msg["content"], "hello world")
 
     def test_on_agent_end_with_no_workspace_is_noop(self):
         """If agent has no workspace, on_agent_end should not raise."""

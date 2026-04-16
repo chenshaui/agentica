@@ -125,12 +125,8 @@ async def chat_stream(
                     request_entries.append(entry)
 
                 ctx_window = 128000
-                agent = deps.agent_service
-                if agent and agent._workspace:
-                    from agentica import DeepAgent as _Agent
-                    cached = deps.agent_service._cache.get(session_id)
-                    if cached and cached.model:
-                        ctx_window = cached.model.context_window
+                if deps.agent_service:
+                    ctx_window = deps.agent_service.get_context_window(session_id)
 
                 await queue.put({"event": "done", "data": {
                     "session_id": result.session_id,

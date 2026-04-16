@@ -7,14 +7,14 @@ Key design decisions:
 - cancel_session(session_id) for precise stream cancellation
 - Agent build timeout to guard against SDK hangs
 - Uses DeepAgent (batteries-included) instead of manual Agent + builtin tools
+- Per-session stream lock prevents concurrent streams on the same session
 """
-import os
 import asyncio
-import json
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Callable, List, Any, Dict
+
 from loguru import logger
 
 from agentica import DeepAgent
@@ -24,6 +24,8 @@ from agentica.workspace import Workspace
 from agentica.agent.config import WorkspaceMemoryConfig
 
 from ..config import settings
+from .model_factory import create_model, get_cron_tools, get_cron_instructions
+from .response_formatter import extract_metrics, format_tool_call_args, format_tool_result
 
 logger = logger.bind(module="agent_service")
 
@@ -90,6 +92,7 @@ class AgentService:
     - Session history management (per session_id)
     - LRU-bounded Agent instance cache (evicts on overflow)
     - Per-session working directory
+    - Per-session run lock (prevents concurrent chat/stream on same session)
     - Scheduler tool integration
     """
 
@@ -110,6 +113,9 @@ class AgentService:
         self._cache = LRUAgentCache(max_size=settings.agent_max_sessions)
         # Per-session work_dir overrides; falls back to settings.base_dir
         self._session_work_dirs: Dict[str, str] = {}
+        # Per-session run locks: prevents concurrent runs (chat or stream) on the same session.
+        # The underlying Agent instance is NOT thread-safe for concurrent reuse.
+        self._session_locks: Dict[str, asyncio.Lock] = {}
         self._workspace: Optional[Workspace] = None
         self._initialized = False
         self._init_lock = asyncio.Lock()
@@ -156,19 +162,19 @@ class AgentService:
         compression, workspace memory, conversation archive, memory tools.
         Only extra tools and scheduler need manual addition.
         """
-        model = self._create_model()
+        model = create_model(self.model_provider, self.model_name)
         work_dir = str(settings.base_dir)
 
         # Extra tools: user-provided + cron
         extra = list(self.extra_tools)
-        cron_tools = self._get_cron_tools()
+        cron_tools = get_cron_tools()
         extra.extend(cron_tools)
 
         instructions = list(self.extra_instructions) if self.extra_instructions else None
         if cron_tools:
             if instructions is None:
                 instructions = []
-            instructions.append(self._get_cron_instructions())
+            instructions.append(get_cron_instructions())
 
         agent = DeepAgent(
             model=model,
@@ -220,177 +226,28 @@ class AgentService:
         logger.info(f"Agent created for session: {session_id} (cache size: {len(self._cache)})")
         return agent
 
-    # ============== Model factory ==============
+    def _get_session_lock(self, session_id: str) -> asyncio.Lock:
+        """Return (or create) the per-session run lock.
 
-    def _create_model(self) -> Any:
-        """Instantiate the configured LLM model."""
-        _ANTHROPIC_PROVIDERS = {"kimi", "anthropic", "claude"}
-
-        params: dict[str, Any] = {"id": self.model_name, "timeout": 300}
-
-        if settings.model_thinking and settings.model_thinking in ("enabled", "disabled", "auto"):
-            if self.model_provider in _ANTHROPIC_PROVIDERS:
-                params["thinking"] = {"type": settings.model_thinking, "budget_tokens": 8000}
-            else:
-                params["extra_body"] = {"thinking": {"type": settings.model_thinking}}
-            logger.info(f"Model thinking mode: {settings.model_thinking} (provider={self.model_provider})")
-
-        if self.model_provider == "zhipuai":
-            from agentica import ZhipuAI
-            return ZhipuAI(**params)
-        elif self.model_provider == "openai":
-            from agentica import OpenAIChat
-            return OpenAIChat(**params)
-        elif self.model_provider == "deepseek":
-            from agentica import DeepSeek
-            return DeepSeek(**params)
-        elif self.model_provider == "moonshot":
-            from agentica import Moonshot
-            return Moonshot(**params)
-        elif self.model_provider == "yi":
-            from agentica import Yi
-            return Yi(**params)
-        elif self.model_provider == "doubao":
-            from agentica import Doubao
-            return Doubao(**params)
-        elif self.model_provider == "kimi":
-            from agentica import KimiChat
-            return KimiChat(**params)
-        elif self.model_provider in ("anthropic", "claude"):
-            from agentica import Claude
-            return Claude(**params)
-        elif self.model_provider == "azure":
-            from agentica import AzureOpenAIChat
-            return AzureOpenAIChat(**params)
-        else:
-            from agentica import OpenAIChat
-            return OpenAIChat(**params)
-
-    # ============== Cron tools ==============
-
-    def _get_cron_tools(self) -> List[Any]:
-        """Load cron tools from SDK cron module (returns empty list on failure)."""
-        try:
-            from agentica.tools.cron_tool import cronjob
-            logger.debug("Loaded cron tool")
-            return [cronjob]
-        except Exception as e:
-            logger.warning(f"Failed to load cron tools: {e}")
-            return []
-
-    def _get_cron_instructions(self) -> str:
-        return """
-# Cron Job Management
-
-You can help users create and manage scheduled tasks. Use the `cronjob` tool:
-
-- `cronjob(action="create", prompt="...", schedule="30 7 * * *")` — Create a cron job
-- `cronjob(action="list")` — List all cron jobs
-- `cronjob(action="pause", job_id="...")` — Pause a job
-- `cronjob(action="resume", job_id="...")` — Resume a paused job
-- `cronjob(action="remove", job_id="...")` — Delete a job
-- `cronjob(action="run", job_id="...")` — Trigger a job immediately
-
-Schedule formats: cron expression ("30 7 * * *"), interval ("30m", "every 2h"), or ISO datetime.
-"""
-
-    # ============== Metrics helpers ==============
-
-    @staticmethod
-    def _extract_metrics(agent: Optional[DeepAgent]) -> Optional[Dict[str, Any]]:
-        """Extract metrics from the agent's last run_response."""
-        if not agent:
-            return None
-        if agent.run_response and agent.run_response.metrics:
-            return agent.run_response.metrics
-        return None
-
-    @staticmethod
-    def _format_tool_call_args(tool_name: str, tool_args: dict) -> dict:
-        """Format tool call arguments for frontend display.
-
-        Computes diff metadata for file-editing tools; truncates others.
+        Both chat() and chat_stream() acquire this lock to prevent concurrent
+        runs on the same Agent instance, which is not thread-safe.
         """
-        display_args: dict = {}
-
-        if tool_name == "edit_file":
-            old_s = tool_args.get("old_string", "")
-            new_s = tool_args.get("new_string", "")
-            display_args["_diff_add"] = new_s.count("\n") + (1 if new_s else 0)
-            display_args["_diff_del"] = old_s.count("\n") + (1 if old_s else 0)
-            fp = tool_args.get("file_path") or tool_args.get("file") or tool_args.get("path", "")
-            if fp:
-                display_args["file_path"] = fp
-
-        elif tool_name == "multi_edit_file":
-            edits = tool_args.get("edits", [])
-            total_add = total_del = 0
-            for ed in (edits if isinstance(edits, list) else []):
-                old_s = ed.get("old_string", "")
-                new_s = ed.get("new_string", "")
-                total_del += old_s.count("\n") + (1 if old_s else 0)
-                total_add += new_s.count("\n") + (1 if new_s else 0)
-            display_args["_diff_add"] = total_add
-            display_args["_diff_del"] = total_del
-            display_args["_edit_count"] = len(edits) if isinstance(edits, list) else 0
-            fp = tool_args.get("file_path") or tool_args.get("file") or tool_args.get("path", "")
-            if fp:
-                display_args["file_path"] = fp
-
-        elif tool_name == "write_file":
-            content = tool_args.get("content", "")
-            display_args["_lines"] = content.count("\n") + (1 if content else 0)
-            fp = tool_args.get("file_path") or tool_args.get("file") or tool_args.get("path", "")
-            if fp:
-                display_args["file_path"] = fp
-
-        else:
-            for k, v in tool_args.items():
-                if isinstance(v, str) and len(v) > 100:
-                    display_args[k] = v[:100] + "..."
-                else:
-                    display_args[k] = v
-
-        return display_args
-
-    @staticmethod
-    def _format_tool_result(tool_info: dict) -> tuple[str, str, bool]:
-        """Format tool result for frontend display.
-
-        Returns:
-            (tool_name, result_str, is_task_meta)
-        """
-        t_name = tool_info.get("tool_name") or tool_info.get("name", "unknown")
-        t_content = tool_info.get("content", "")
-        is_error = tool_info.get("tool_call_error", False)
-
-        # task tool: parse subagent JSON and produce structured metadata
-        if t_name == "task" and t_content:
-            try:
-                task_data = json.loads(str(t_content))
-                task_meta = {
-                    "_task_meta": True,
-                    "success": task_data.get("success", False),
-                    "tool_calls_summary": task_data.get("tool_calls_summary", []),
-                    "execution_time": task_data.get("execution_time"),
-                    "tool_count": task_data.get("tool_count", 0),
-                }
-                if not task_data.get("success"):
-                    task_meta["error"] = task_data.get("error", "Unknown error")
-                return t_name, json.dumps(task_meta, ensure_ascii=False), True
-            except (ValueError, TypeError):
-                pass
-
-        if t_content:
-            result_str = str(t_content)[:500] + ("..." if len(str(t_content)) > 500 else "")
-        else:
-            result_str = "(no output)"
-        if is_error:
-            result_str = "Error: " + result_str
-
-        return t_name, result_str, False
+        if session_id not in self._session_locks:
+            self._session_locks[session_id] = asyncio.Lock()
+        return self._session_locks[session_id]
 
     # ============== Public API ==============
+
+    def get_context_window(self, session_id: str) -> int:
+        """Return the context window size for the model used by a session.
+
+        Falls back to 128000 if the session has no cached agent or
+        the model doesn't expose a context_window attribute.
+        """
+        agent = self._cache.get(session_id)
+        if agent and agent.model:
+            return getattr(agent.model, "context_window", 128000)
+        return 128000
 
     async def chat(
         self,
@@ -400,6 +257,9 @@ Schedule formats: cron expression ("30 7 * * *"), interval ("30m", "every 2h"), 
     ) -> ChatResult:
         """Send a message and return the full response (non-streaming).
 
+        Acquires a per-session lock to prevent concurrent runs on the same
+        Agent instance (which is not thread-safe).
+
         Args:
             message: User message
             session_id: Session identifier
@@ -407,45 +267,57 @@ Schedule formats: cron expression ("30 7 * * *"), interval ("30m", "every 2h"), 
 
         Returns:
             ChatResult with content, tool_calls, metrics
+
+        Raises:
+            RuntimeError: If another run is already active on this session.
         """
         await self._ensure_initialized()
-        agent = await self._get_agent(session_id)
 
-        try:
-            if self._workspace:
-                await asyncio.to_thread(self._workspace.set_user, user_id)
-
-            response = await agent.run(message)
-
-            content = (response.content or "").strip()
-            tools_used: List[str] = []
-            tool_calls = 0
-
-            if response.tools:
-                tool_calls = len(response.tools)
-                for tool in response.tools:
-                    if isinstance(tool, dict):
-                        tools_used.append(tool.get("tool_name", tool.get("name", "unknown")))
-                    else:
-                        tools_used.append(str(tool))
-
-            return ChatResult(
-                content=content,
-                tool_calls=tool_calls,
-                session_id=session_id,
-                user_id=user_id,
-                tools_used=tools_used,
-                metrics=self._extract_metrics(agent),
+        lock = self._get_session_lock(session_id)
+        if lock.locked():
+            raise RuntimeError(
+                f"Session '{session_id}' already has an active run. "
+                "Wait for it to complete or cancel it first."
             )
 
-        except Exception as e:
-            logger.error(f"AgentService.chat error (session={session_id}): {e}")
-            return ChatResult(
-                content=f"Error: {e}",
-                tool_calls=0,
-                session_id=session_id,
-                user_id=user_id,
-            )
+        async with lock:
+            agent = await self._get_agent(session_id)
+
+            try:
+                if self._workspace:
+                    await asyncio.to_thread(self._workspace.set_user, user_id)
+
+                response = await agent.run(message)
+
+                content = (response.content or "").strip()
+                tools_used: List[str] = []
+                tool_calls = 0
+
+                if response.tools:
+                    tool_calls = len(response.tools)
+                    for tool in response.tools:
+                        if isinstance(tool, dict):
+                            tools_used.append(tool.get("tool_name", tool.get("name", "unknown")))
+                        else:
+                            tools_used.append(str(tool))
+
+                return ChatResult(
+                    content=content,
+                    tool_calls=tool_calls,
+                    session_id=session_id,
+                    user_id=user_id,
+                    tools_used=tools_used,
+                    metrics=extract_metrics(agent),
+                )
+
+            except Exception as e:
+                logger.error(f"AgentService.chat error (session={session_id}): {e}")
+                return ChatResult(
+                    content=f"Error: {e}",
+                    tool_calls=0,
+                    session_id=session_id,
+                    user_id=user_id,
+                )
 
     async def chat_stream(
         self,
@@ -459,6 +331,9 @@ Schedule formats: cron expression ("30 7 * * *"), interval ("30m", "every 2h"), 
     ) -> ChatResult:
         """Send a message and stream the response via callbacks.
 
+        Acquires the per-session run lock to prevent concurrent runs
+        (both chat and chat_stream) on the same Agent instance.
+
         Args:
             message: User message
             session_id: Session identifier
@@ -470,7 +345,34 @@ Schedule formats: cron expression ("30 7 * * *"), interval ("30m", "every 2h"), 
 
         Returns:
             ChatResult with accumulated content + metrics
+
+        Raises:
+            RuntimeError: If another run is already active on this session.
         """
+        lock = self._get_session_lock(session_id)
+        if lock.locked():
+            raise RuntimeError(
+                f"Session '{session_id}' already has an active run. "
+                "Wait for it to complete or cancel it first."
+            )
+
+        async with lock:
+            return await self._chat_stream_impl(
+                message, session_id, user_id,
+                on_content, on_tool_call, on_tool_result, on_thinking,
+            )
+
+    async def _chat_stream_impl(
+        self,
+        message: str,
+        session_id: str,
+        user_id: str,
+        on_content: Optional[Callable[[str], Any]],
+        on_tool_call: Optional[Callable[[str, dict], Any]],
+        on_tool_result: Optional[Callable[[str, str], Any]],
+        on_thinking: Optional[Callable[[str], Any]],
+    ) -> ChatResult:
+        """Internal stream implementation (called under per-session lock)."""
         await self._ensure_initialized()
         agent = await self._get_agent(session_id)
 
@@ -492,7 +394,7 @@ Schedule formats: cron expression ("30 7 * * *"), interval ("30m", "every 2h"), 
                     if tool_info:
                         tool_name = tool_info.get("tool_name") or tool_info.get("name", "unknown")
                         tool_args = tool_info.get("tool_args") or tool_info.get("arguments", {})
-                        display_args = self._format_tool_call_args(tool_name, tool_args)
+                        display_args = format_tool_call_args(tool_name, tool_args)
                         tools_used.append(tool_name)
                         tool_calls += 1
                         if on_tool_call:
@@ -503,7 +405,7 @@ Schedule formats: cron expression ("30 7 * * *"), interval ("30m", "every 2h"), 
                     if chunk.tools and on_tool_result:
                         for ti in reversed(chunk.tools):
                             if "content" in ti:
-                                t_name, result_str, _ = self._format_tool_result(ti)
+                                t_name, result_str, _ = format_tool_result(ti)
                                 await on_tool_result(t_name, result_str)
                                 break
                     continue
@@ -533,7 +435,7 @@ Schedule formats: cron expression ("30 7 * * *"), interval ("30m", "every 2h"), 
                 user_id=user_id,
                 tools_used=tools_used,
                 reasoning=reasoning_content,
-                metrics=self._extract_metrics(agent),
+                metrics=extract_metrics(agent),
             )
 
         except (asyncio.CancelledError, AgentCancelledError, KeyboardInterrupt):
@@ -562,6 +464,7 @@ Schedule formats: cron expression ("30 7 * * *"), interval ("30m", "every 2h"), 
         """
         removed = self._cache.delete(session_id)
         self._session_work_dirs.pop(session_id, None)
+        self._session_locks.pop(session_id, None)
         if removed:
             logger.debug(f"Session deleted: {session_id}")
         return removed

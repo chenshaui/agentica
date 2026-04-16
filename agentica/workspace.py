@@ -6,13 +6,12 @@ Workspace management for Agentica agents.
 Inspired by OpenClaw's workspace concept.
 """
 import asyncio
-import functools
 import os
 import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional, Dict, List, Tuple
+from typing import Any, Optional, Dict, List, Tuple
 from dataclasses import dataclass
 from datetime import date, datetime
 
@@ -21,18 +20,13 @@ from agentica.config import (
     AGENTICA_HOME,
     AGENTICA_MAX_MEMORY_CHARACTER_COUNT,
 )
-
-
-async def _async_read_text(path: Path, encoding: str = "utf-8") -> str:
-    """Read text file in executor to avoid blocking event loop."""
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, functools.partial(path.read_text, encoding=encoding))
-
-
-async def _async_write_text(path: Path, content: str, encoding: str = "utf-8") -> None:
-    """Write text file in executor to avoid blocking event loop."""
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, functools.partial(path.write_text, content, encoding=encoding))
+from agentica.utils.async_file import (
+    async_read_text as _async_read_text,
+    async_write_text as _async_write_text,
+    extract_frontmatter_value,
+    extract_frontmatter_int,
+    strip_frontmatter,
+)
 
 
 @dataclass
@@ -660,7 +654,7 @@ You are a helpful AI assistant.
 
     def _is_durable_global_preference(self, memory_type: str, metadata: Dict[str, str], content: str) -> bool:
         """Keep only concise, reusable rules in user-global AGENTS.md."""
-        normalized = re.sub(r"\s+", " ", self._strip_frontmatter(content)).strip()
+        normalized = re.sub(r"\s+", " ", strip_frontmatter(content)).strip()
         if not normalized or len(normalized) > 240:
             return False
         combined = " ".join(
@@ -701,7 +695,7 @@ You are a helpful AI assistant.
                     continue
 
                 title = metadata.get("name", memory_file.stem)
-                summary = self._summarize_memory_for_global_agent(self._strip_frontmatter(raw))
+                summary = self._summarize_memory_for_global_agent(strip_frontmatter(raw))
                 if not summary:
                     continue
 
@@ -816,7 +810,7 @@ You are a helpful AI assistant.
             if content_path.exists():
                 raw = (await _async_read_text(content_path)).strip()
                 # Strip frontmatter (---...---) before injecting
-                body = self._strip_frontmatter(raw)
+                body = strip_frontmatter(raw)
                 if body:
                     parts.append(f"### {entry['title']}\n\n{body}")
                     # Write back to already_surfaced for session-level dedup
@@ -988,12 +982,6 @@ You are a helpful AI assistant.
 
         scored.sort(key=lambda x: -x["_score"])
         return scored
-
-    @staticmethod
-    def _strip_frontmatter(content: str) -> str:
-        """Remove YAML frontmatter block (---...---) from memory file content."""
-        stripped = re.sub(r"^---[\s\S]*?---\s*", "", content, flags=re.MULTILINE).strip()
-        return stripped if stripped else content
 
     async def write_memory(self, content: str, to_daily: bool = True):
         """Write memory content. Delegates to write_memory_entry() for indexed storage.
@@ -1262,6 +1250,70 @@ You are a helpful AI assistant.
         if max_files is not None:
             files = files[:max_files]
         return files
+
+    # =========================================================================
+    # Experience System (self-evolution) — delegates to experience package
+    # =========================================================================
+
+    _EXPERIENCE_INDEX_FILE = "EXPERIENCE.md"
+    _EXPERIENCE_DIR = "experiences"
+
+    def _get_user_experience_dir(self) -> Path:
+        """Get current user's experience directory."""
+        return self._get_user_path() / self._EXPERIENCE_DIR
+
+    def _get_user_experience_md(self) -> Path:
+        """Get current user's experience index file path."""
+        return self._get_user_path() / self._EXPERIENCE_INDEX_FILE
+
+    def get_experience_event_store(self):
+        """Get the ExperienceEventStore for the current user.
+
+        Returns:
+            ExperienceEventStore instance pointing at users/{user_id}/experiences/.
+        """
+        from agentica.experience.event_store import ExperienceEventStore
+        self._initialize_user_dir()
+        return ExperienceEventStore(self._get_user_experience_dir())
+
+    def get_compiled_experience_store(self):
+        """Get the CompiledExperienceStore for the current user.
+
+        Returns:
+            CompiledExperienceStore instance with relevance scorer from Workspace.
+        """
+        from agentica.experience.compiled_store import CompiledExperienceStore
+        self._initialize_user_dir()
+        return CompiledExperienceStore(
+            exp_dir=self._get_user_experience_dir(),
+            index_path=self._get_user_experience_md(),
+            relevance_scorer=self._compute_relevance_score,
+        )
+
+    # ── Backward-compatible delegation methods ────────────────────────────
+
+    async def get_relevant_experiences(
+        self,
+        query: str = "",
+        limit: int = 5,
+    ) -> str:
+        """Retrieve top-k experiences for system prompt injection.
+
+        Delegates to CompiledExperienceStore.
+
+        Args:
+            query: Current user query for relevance scoring
+            limit: Maximum number of experiences to return
+
+        Returns:
+            Formatted markdown string, or empty string.
+        """
+        store = self.get_compiled_experience_store()
+        return await store.get_relevant(query=query, limit=limit)
+
+    # Frontmatter helpers delegate to shared utils
+    _extract_frontmatter_value = staticmethod(extract_frontmatter_value)
+    _extract_frontmatter_int = staticmethod(extract_frontmatter_int)
 
     def __repr__(self) -> str:
         return f"Workspace(path={self.path}, exists={self.exists()}, user_id={self._user_id})"

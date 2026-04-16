@@ -3,7 +3,7 @@
 
 Verifies that Claude model correctly injects cache_control breakpoints into:
 1. System message (prepare_request_kwargs)
-2. Last conversation message (format_messages)
+2. Last 3 conversation messages - system_and_3 strategy (format_messages)
 3. Respects enable_cache_control=False to disable injection
 4. cache_write tokens tracked in update_usage_metrics
 """
@@ -75,12 +75,12 @@ class TestSystemMessageCacheControl(unittest.TestCase):
 
 
 class TestConversationCacheControl(unittest.TestCase):
-    """format_messages injects cache_control on last conversation message."""
+    """format_messages injects cache_control on last 3 conversation messages (system_and_3 strategy)."""
 
     def _run(self, coro):
         return asyncio.run(coro)
 
-    def test_last_user_message_gets_cache_control(self):
+    def test_last_3_messages_get_cache_control(self):
         model = _make_claude(enable_cache_control=True)
         messages = [
             Message(role="system", content="System prompt"),
@@ -96,18 +96,13 @@ class TestConversationCacheControl(unittest.TestCase):
         # Should have 3 chat messages (2 user + 1 assistant)
         self.assertEqual(len(chat_msgs), 3)
 
-        # Last message (user "How are you?") should have cache_control
-        last_content = chat_msgs[-1]["content"]
-        self.assertIsInstance(last_content, list)
-        last_block = last_content[-1]
-        self.assertIn("cache_control", last_block)
-        self.assertEqual(last_block["cache_control"], {"type": "ephemeral"})
-
-        # Non-last messages should NOT have cache_control
-        first_content = chat_msgs[0]["content"]
-        first_block = first_content[-1] if isinstance(first_content, list) else first_content
-        if isinstance(first_block, dict):
-            self.assertNotIn("cache_control", first_block)
+        # system_and_3: all 3 messages should have cache_control (3 <= 3)
+        for msg in chat_msgs:
+            content = msg["content"]
+            self.assertIsInstance(content, list)
+            last_block = content[-1]
+            self.assertIn("cache_control", last_block)
+            self.assertEqual(last_block["cache_control"], {"type": "ephemeral"})
 
     def test_single_user_message_gets_cache_control(self):
         """Even a single user message should get cache_control."""
@@ -249,15 +244,11 @@ class TestEndToEndRequestShape(unittest.TestCase):
         # Messages: 3 items (user, assistant, user)
         self.assertEqual(len(chat_msgs), 3)
 
-        # Only the last message has cache_control
-        for i, msg in enumerate(chat_msgs):
+        # system_and_3 strategy: all 3 messages get cache_control (3 <= 3)
+        for msg in chat_msgs:
             content = msg["content"]
             last_block = content[-1] if isinstance(content, list) else content
-            if i == len(chat_msgs) - 1:
-                self.assertIn("cache_control", last_block)
-            else:
-                if isinstance(last_block, dict):
-                    self.assertNotIn("cache_control", last_block)
+            self.assertIn("cache_control", last_block)
 
 
 if __name__ == "__main__":

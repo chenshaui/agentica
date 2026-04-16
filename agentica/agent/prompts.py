@@ -322,6 +322,15 @@ class PromptsMixin:
             system_message_lines.append(self._render_xml_cdata_block("workspace_memory", workspace_memory))
             system_message_lines.append("")
 
+        # Experience injection (self-evolution)
+        experience_prompt = await self.get_experience_prompt(query=_query)
+        if experience_prompt:
+            system_message_lines.append("## Learned Experiences")
+            system_message_lines.append(
+                self._render_xml_cdata_block("experiences", experience_prompt)
+            )
+            system_message_lines.append("")
+
         if self.working_memory.create_session_summary:
             if self.working_memory.summary is not None:
                 system_message_lines.append("Here is a brief summary of your previous interactions if it helps:")
@@ -475,6 +484,14 @@ class PromptsMixin:
             system_message_lines.append("\n## Workspace Memory")
             system_message_lines.append(
                 self._render_xml_cdata_block("workspace_memory", workspace_memory)
+            )
+
+        # Experience injection (self-evolution)
+        experience_prompt = await self.get_experience_prompt(query=_query)
+        if experience_prompt:
+            system_message_lines.append("\n## Learned Experiences")
+            system_message_lines.append(
+                self._render_xml_cdata_block("experiences", experience_prompt)
             )
 
         if self.working_memory.create_session_summary and self.working_memory.summary is not None:

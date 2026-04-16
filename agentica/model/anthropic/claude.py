@@ -199,15 +199,20 @@ class Claude(Model):
 
                 chat_messages.append({"role": message.role, "content": content})  # type: ignore
 
-        # Prompt caching: mark the last user/assistant turn so the
-        # conversation prefix is cached on subsequent requests.
-        # This uses one of the 4 allowed cache breakpoints (system uses another).
+        # system_and_3 strategy: cache system prompt (in prepare_request_kwargs)
+        # + last 3 non-system messages for rolling cache window.
+        # Anthropic allows max 4 cache breakpoints total.
         if self.enable_cache_control and chat_messages:
-            last_msg = chat_messages[-1]
-            if isinstance(last_msg.get("content"), list) and last_msg["content"]:
-                last_block = last_msg["content"][-1]
-                if isinstance(last_block, dict):
-                    last_block["cache_control"] = {"type": "ephemeral"}
+            for msg in chat_messages[-3:]:
+                content = msg.get("content")
+                if isinstance(content, list) and content:
+                    last_block = content[-1]
+                    if isinstance(last_block, dict):
+                        last_block["cache_control"] = {"type": "ephemeral"}
+                elif isinstance(content, str) and content:
+                    msg["content"] = [
+                        {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+                    ]
 
         return chat_messages, " ".join(system_messages)
 
@@ -374,9 +379,13 @@ class Claude(Model):
         chat_messages, system_message = await self.format_messages(messages)
         request_kwargs = self.prepare_request_kwargs(system_message)
 
-        return await self.get_client().messages.create(
-            model=self.id, messages=chat_messages, **request_kwargs,
-        )
+        try:
+            return await self.get_client().messages.create(
+                model=self.id, messages=chat_messages, **request_kwargs,
+            )
+        except Exception as e:
+            self._learn_context_limit_from_error(str(e))
+            raise
 
     @override
     async def invoke_stream(self, messages: List[Message]) -> Any:
@@ -392,9 +401,13 @@ class Claude(Model):
         chat_messages, system_message = await self.format_messages(messages)
         request_kwargs = self.prepare_request_kwargs(system_message)
 
-        return self.get_client().messages.stream(
-            model=self.id, messages=chat_messages, **request_kwargs,
-        )
+        try:
+            return self.get_client().messages.stream(
+                model=self.id, messages=chat_messages, **request_kwargs,
+            )
+        except Exception as e:
+            self._learn_context_limit_from_error(str(e))
+            raise
 
     def update_usage_metrics(
             self,

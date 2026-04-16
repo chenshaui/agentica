@@ -455,6 +455,97 @@ class ModelTool(BaseModel):
         return self.model_dump(exclude_none=True)
 
 
+def _coerce_number(value: str, integer_only: bool = False):
+    """Try to parse *value* as a number. Returns original string on failure."""
+    stripped = value.strip()
+    # Try int first to preserve precision for large integers (snowflake IDs, etc.)
+    try:
+        return int(stripped)
+    except ValueError:
+        pass
+    if integer_only:
+        return value
+    try:
+        f = float(stripped)
+    except (ValueError, OverflowError):
+        return value
+    # Guard against inf/nan
+    if f != f or f == float("inf") or f == float("-inf"):
+        return f
+    return f
+
+
+def _coerce_boolean(value: str):
+    """Try to parse *value* as a boolean. Returns original string on failure."""
+    low = value.strip().lower()
+    if low == "true":
+        return True
+    if low == "false":
+        return False
+    return value
+
+
+def _coerce_value(value: str, expected_type):
+    """Attempt to coerce a string *value* to *expected_type*.
+
+    Returns the original string when coercion is not applicable or fails.
+    """
+    if isinstance(expected_type, list):
+        # Union type — try each in order, return first successful coercion
+        for t in expected_type:
+            result = _coerce_value(value, t)
+            if result is not value:
+                return result
+        return value
+
+    if expected_type in ("integer", "number"):
+        return _coerce_number(value, integer_only=(expected_type == "integer"))
+    if expected_type == "boolean":
+        return _coerce_boolean(value)
+    if expected_type in ("array", "object"):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, ValueError):
+            return value
+    return value
+
+
+def coerce_tool_args(args: Dict[str, Any], function: Function) -> Dict[str, Any]:
+    """Coerce tool call arguments to match their JSON Schema types.
+
+    LLMs frequently return numbers as strings ("42" instead of 42)
+    and booleans as strings ("true" instead of true). This compares
+    each argument value against the tool's registered JSON Schema and
+    attempts safe coercion when the value is a string but the schema
+    expects a different type. Original values are preserved when
+    coercion fails.
+
+    Handles "type": "integer", "number", "boolean", "array", "object",
+    and union types ("type": ["integer", "string"]).
+    """
+    if not args or not isinstance(args, dict):
+        return args
+
+    properties = (function.parameters or {}).get("properties")
+    if not properties:
+        return args
+
+    for key, value in args.items():
+        if not isinstance(value, str):
+            continue
+        prop_schema = properties.get(key)
+        if not prop_schema:
+            continue
+        expected = prop_schema.get("type")
+        if not expected:
+            continue
+        coerced = _coerce_value(value, expected)
+        if coerced is not value:
+            args[key] = coerced
+
+    return args
+
+
 def get_function_call(
         name: str,
         arguments: Optional[str] = None,
@@ -496,6 +587,9 @@ def get_function_call(
             logger.error(f"Function arguments are not a valid JSON object: {arguments}")
             function_call.error = "Function arguments are not a valid JSON object.\n\n Please fix and retry."
             return function_call
+
+        # Schema-aware type coercion: fix LLM string→number/boolean mistakes
+        _arguments = coerce_tool_args(_arguments, function_to_call)
 
         try:
             clean_arguments: Dict[str, Any] = {}
