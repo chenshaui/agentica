@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-@author:XuMing(xuming624@qq.com)
-@description: URL Crawler Tool
+@author: XuMing(xuming624@qq.com)
+@description: URL Crawler Tool.
+
+bs4 is included in agentica core dependencies (since v1.3.6).
 """
 import asyncio
 import hashlib
@@ -12,8 +14,7 @@ from urllib.parse import ParseResult, urlparse, urljoin
 
 import httpx
 from bs4 import BeautifulSoup
-import sys
-sys.path.append("../..")
+
 from agentica.tools.base import Tool
 from agentica.config import AGENTICA_HOME
 from agentica.utils.log import logger

@@ -11,6 +11,10 @@ from unittest.mock import Mock, patch, MagicMock
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# ACP tests require websockets (from [acp] extras).
+pytest.importorskip("websockets", reason="ACP tests require agentica[acp] extras")
+
 from agentica.acp.types import (
     ACPRequest,
     ACPResponse,

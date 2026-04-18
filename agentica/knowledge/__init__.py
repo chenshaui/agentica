@@ -1,7 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-@author:XuMing(xuming624@qq.com)
-@description: 
+@author: XuMing(xuming624@qq.com)
+@description: Knowledge module: RAG knowledge base orchestration.
+
+Base class (Knowledge) is dependency-free.
+Integrations (LangChainKnowledge, LlamaIndexKnowledge) require their own libs.
+
+For a complete RAG stack with vector DB:
+    pip install agentica[rag]                # basic RAG
+    pip install agentica[qdrant]             # + Qdrant
+    pip install agentica[chroma]             # + ChromaDB
+    pip install agentica[lancedb]            # + LanceDB
+    pip install agentica[pgvector]           # + pgvector
 """
 from .base import Knowledge
 from .langchain_knowledge import LangChainKnowledge

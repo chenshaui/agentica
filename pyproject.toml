@@ -1,0 +1,309 @@
+[project]
+name = "agentica"
+version = "1.3.6"
+description = "Agentica: A lightweight Python SDK for building AI agents with persistent memory and self-evolution"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "XuMing", email = "xuming624@qq.com" }]
+keywords = ["ai", "agent", "llm", "sdk", "agentic"]
+classifiers = [
+    "Intended Audience :: Developers",
+    "Intended Audience :: Education",
+    "Intended Audience :: Science/Research",
+    "Development Status :: 5 - Production/Stable",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: OS Independent",
+    "License :: OSI Approved :: Apache Software License",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# ─────────────────────────────────────────────────────────
+# Core dependencies (M1-核心 A+ 方案：19 个)
+#   包含 Agent 运行时 + 默认产品化能力（Workspace + CLI + DeepAgent 内置工具）
+#   对标 agno 的 `dependencies` 风格，但保证 `agentica` CLI 开箱即用
+# ─────────────────────────────────────────────────────────
+dependencies = [
+    # ── 真核心（Agent / Model / Tool 运行时）──
+    "openai>=1.0",                # OpenAI 协议，DeepSeek/Zhipu/Qwen/Moonshot 都用它
+    "anthropic>=0.40",            # Claude 直接默认装（agentica 主推 provider）
+    "pydantic>=2.0",
+    "httpx>=0.24",
+    "loguru>=0.7",
+    "aiofiles>=23.0",
+    "tiktoken>=0.5",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+    "typing_extensions>=4.0",
+    # ── 默认产品化能力（agentica 差异化卖点，必装）──
+    "python-frontmatter>=1.0",    # workspace: AGENTS.md / MEMORY.md / skills 解析
+    "prompt-toolkit>=3.0",        # cli: 交互式终端
+    "rich>=13.0",                 # cli: 终端渲染（workspace 也用）
+    # ── DeepAgent 默认内置工具的依赖（CLI 开箱即用）──
+    # 没有这些 `agentica --query "..."` 会立即 crash
+    "beautifulsoup4>=4.12",       # BaiduSearchTool / UrlCrawlerTool 解析 HTML
+    "lxml>=4.9",                  # bs4 高性能后端
+    "markdownify>=0.11",          # MarkdownConverter: HTML → Markdown
+    "requests>=2.31",             # UrlCrawlerTool 同步请求
+    "puremagic>=1.15",            # MarkdownConverter 识别文件 MIME 类型
+    "tqdm>=4.65",                 # 通用进度条
+]
+
+[project.optional-dependencies]
+
+# ═══════════════════════════════════════════════════════════
+# Model providers (OpenAI / Anthropic 默认装；其他按需)
+# ═══════════════════════════════════════════════════════════
+ollama   = ["ollama>=0.1"]
+azure    = ["azure-ai-inference>=1.0", "aiohttp"]
+litellm  = ["litellm<=1.82.6"]
+google   = ["google-genai>=1.0"]
+groq     = ["groq>=0.4"]
+mistral  = ["mistralai>=1.0"]
+cohere   = ["cohere>=5.0"]
+bedrock  = ["boto3", "aioboto3"]
+
+# ═══════════════════════════════════════════════════════════
+# Protocols
+# ═══════════════════════════════════════════════════════════
+mcp = ["mcp>=1.9"]
+acp = ["websockets>=12.0"]
+
+# ═══════════════════════════════════════════════════════════
+# RAG + Vector DBs + Embedders + Rerankers
+# ═══════════════════════════════════════════════════════════
+rag      = ["scikit-learn>=1.3", "numpy>=1.24"]
+
+# Vector DBs（细粒度，参照 agno）
+chroma   = ["chromadb>=0.4"]
+lancedb  = ["lancedb>=0.26.0", "tantivy"]
+qdrant   = ["qdrant-client>=1.7"]
+pgvector = ["pgvector>=0.2", "psycopg[binary]>=3.1"]
+pinecone = ["pinecone>=5.0"]
+milvus   = ["pymilvus>=2.5"]
+weaviate = ["weaviate-client>=4.0"]
+
+# Embedders
+huggingface = ["huggingface-hub>=0.20", "sentence-transformers>=2.0"]
+
+# ═══════════════════════════════════════════════════════════
+# Tools（细粒度，参照 agno）
+# ═══════════════════════════════════════════════════════════
+# 搜索
+ddg       = ["ddgs>=4.0"]
+wikipedia = ["wikipedia>=1.4"]
+serper    = []
+exa       = ["exa-py>=1.0"]
+bocha     = []
+tavily    = ["tavily-python>=0.3"]
+
+# 金融
+yfinance = ["yfinance>=0.2"]
+
+# 学术
+arxiv     = ["arxiv>=2.0"]
+newspaper = ["newspaper4k", "lxml_html_clean"]
+dblp      = []
+
+# 图像 / 视频
+dalle          = []
+cogview        = []
+cogvideo       = []
+ocr            = ["pytesseract>=0.3"]
+image-analysis = []
+video-analysis = []
+
+# 浏览器自动化 / 爬虫
+browser = ["playwright>=1.40"]
+# Note: bs4 / lxml / markdownify / requests / puremagic / tqdm 已在核心默认装
+# crawl extras 保留为占位（未来可加 trafilatura / readability 等高级解析能力）
+crawl   = []
+
+# 代码 / 数据
+jupyter = ["jupyter>=1.0", "ipykernel>=6.0"]
+sql     = ["sqlalchemy>=2.0"]
+
+# 通信 / 服务
+resend   = ["resend>=0.7"]
+volc-tts = []
+weather  = ["requests>=2.31"]
+
+# ═══════════════════════════════════════════════════════════
+# Tools 超级组合（参照 agno tools/storage/vectordbs）
+# ═══════════════════════════════════════════════════════════
+tools-search = [
+    "agentica[ddg]",
+    "agentica[wikipedia]",
+    "agentica[serper]",
+    "agentica[exa]",
+    "agentica[bocha]",
+]
+tools-research = [
+    "agentica[arxiv]",
+    "agentica[wikipedia]",
+    "agentica[newspaper]",
+    "agentica[dblp]",
+]
+tools-finance = ["agentica[yfinance]"]
+tools-media = [
+    "agentica[dalle]",
+    "agentica[cogview]",
+    "agentica[cogvideo]",
+    "agentica[ocr]",
+    "agentica[image-analysis]",
+    "agentica[video-analysis]",
+]
+tools-browser = [
+    "agentica[browser]",
+    "agentica[crawl]",
+]
+tools-extra = [
+    "agentica[tools-search]",
+    "agentica[tools-research]",
+    "agentica[tools-finance]",
+    "agentica[crawl]",
+]
+
+# Vector DBs 超级组合
+vectordbs = [
+    "agentica[chroma]",
+    "agentica[lancedb]",
+    "agentica[qdrant]",
+    "agentica[pgvector]",
+]
+
+# ═══════════════════════════════════════════════════════════
+# Storage
+# ═══════════════════════════════════════════════════════════
+postgres = ["psycopg[binary]>=3.1", "sqlalchemy>=2.0"]
+mysql    = ["pymysql>=1.1", "sqlalchemy>=2.0"]
+redis    = ["redis>=5.0"]
+mongo    = ["pymongo>=4.6"]
+storage  = [
+    "agentica[sql]",
+    "agentica[postgres]",
+    "agentica[mysql]",
+    "agentica[redis]",
+]
+
+# ═══════════════════════════════════════════════════════════
+# Gateway (FastAPI + IM + cron)
+# ═══════════════════════════════════════════════════════════
+gateway = [
+    "fastapi[standard]>=0.109",
+    "uvicorn[standard]>=0.27",
+    "websockets>=12.0",
+    "lark-oapi>=1.0",
+    "apscheduler>=3.10",
+    "croniter>=1.3",
+]
+telegram = ["agentica[gateway]", "python-telegram-bot>=20.0"]
+discord  = ["agentica[gateway]", "discord.py>=2.0"]
+slack    = ["agentica[gateway]", "slack_sdk>=3.40"]
+
+# ═══════════════════════════════════════════════════════════
+# Tracing / Observability
+# ═══════════════════════════════════════════════════════════
+langfuse      = ["langfuse>=2.0"]
+opentelemetry = ["opentelemetry-sdk", "opentelemetry-exporter-otlp"]
+tracing = [
+    "agentica[langfuse]",
+    "agentica[opentelemetry]",
+]
+
+# ═══════════════════════════════════════════════════════════
+# Models 超级组合
+# ═══════════════════════════════════════════════════════════
+models = [
+    "agentica[ollama]",
+    "agentica[azure]",
+    "agentica[litellm]",
+    "agentica[google]",
+    "agentica[groq]",
+    "agentica[mistral]",
+    "agentica[cohere]",
+]
+
+# ═══════════════════════════════════════════════════════════
+# Full (一键装全家桶，对标 v1.3.5 完整能力)
+# ═══════════════════════════════════════════════════════════
+full = [
+    "agentica[models]",
+    "agentica[mcp]",
+    "agentica[acp]",
+    "agentica[rag]",
+    "agentica[vectordbs]",
+    "agentica[storage]",
+    "agentica[tools-extra]",
+    "agentica[tools-browser]",
+    "agentica[tools-media]",
+    "agentica[gateway]",
+    "agentica[tracing]",
+    "agentica[huggingface]",
+]
+
+# ═══════════════════════════════════════════════════════════
+# Dev
+# ═══════════════════════════════════════════════════════════
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "pytest-cov>=4.0",
+    "pytest-mock>=3.10",
+    "ruff>=0.1",
+    "mypy>=1.7",
+    "twine>=4.0",
+    "build>=1.0",
+]
+
+[project.scripts]
+agentica = "agentica.cli:main"
+agentica-gateway = "agentica.gateway.main:main"
+
+[project.urls]
+Homepage      = "https://github.com/shibing624/agentica"
+Documentation = "https://shibing624.github.io/agentica"
+Repository    = "https://github.com/shibing624/agentica"
+Issues        = "https://github.com/shibing624/agentica/issues"
+Changelog     = "https://github.com/shibing624/agentica/blob/main/CHANGELOG.md"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["agentica*"]
+exclude = ["tests*", "examples*", "docs*", "scripts*"]
+
+[tool.setuptools.package-data]
+agentica = ["py.typed", "**/*.md", "**/*.js", "**/*.html", "**/*.css", "**/*.yaml", "**/*.json"]
+
+[tool.pytest.ini_options]
+log_cli = true
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+
+[tool.mypy]
+python_version = "3.10"
+check_untyped_defs = true
+no_implicit_optional = true
+warn_unused_configs = true
+ignore_missing_imports = true
+exclude = ["tests*"]

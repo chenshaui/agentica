@@ -19,6 +19,56 @@ A "public API" is anything importable from `agentica` top-level `__init__.py`.
 
 ## [Unreleased]
 
+<!-- Pending v1.3.6 items below will be released when sdk-dev merges to main -->
+
+### Added (Stage 2 + Stage 3)
+- **`_DEPRECATED_TOP_LEVEL` mapping** in `agentica/__init__.py`: 35+ symbols flagged for v2.0 migration
+- **DeprecationWarning** emitted when accessing top-level deprecated paths like `from agentica import Knowledge` / `Claude` / `VectorDb` / `SqliteDb` / `Swarm` etc., guiding users to explicit sub-module imports
+- **`agentica.workspace` package**: Split monolithic `workspace.py` (1402 lines) into a package structure for incremental modularization
+
+### Changed (Stage 2 + Stage 3)
+- `agentica/__init__.py` docstring: rewritten with v1.3.6+ recommended import style guide + backward-compat note
+- `agentica/workspace.py` → `agentica/workspace/base.py` (file move, zero business code change)
+- `agentica/workspace/__init__.py` re-exports `Workspace`, `WorkspaceConfig`, plus module-level constants for test mocking
+- `tests/test_workspace.py`: updated 3 patch paths from `agentica.workspace.AGENTICA_HOME` → `agentica.workspace.base.AGENTICA_HOME` (reflects new package structure)
+- `tests/test_skill_lazy_loading.py`: updated `importlib.reload` target from `agentica.workspace` → `agentica.workspace.base`
+
+### Compatibility
+- **100% backward compatible**: all top-level imports still work; only emit DeprecationWarning
+- `from agentica.workspace import Workspace` path is unchanged for all 11 internal usages and external users
+
+## [1.3.6] - 2026-04-18 (sdk-dev branch)
+
+### Added
+- **`pyproject.toml`**: 新打包配置，对标 agno 细粒度 extras 风格 + 超级组合 extras
+- **`docs/API.md`**: Public API Tier 1/2/3 稳定度合约
+- **20+ 细粒度 extras**: `agentica[rag]` / `[qdrant]` / `[chroma]` / `[gateway]` / `[mcp]` / `[acp]` / `[arxiv]` / `[yfinance]` / `[browser]` / `[ddg]` / `[exa]` 等
+- **8 个超级组合 extras**: `[tools-search]` / `[tools-research]` / `[tools-finance]` / `[tools-media]` / `[tools-browser]` / `[vectordbs]` / `[storage]` / `[models]` / `[tracing]` / `[full]`
+- **`agentica.model.anthropic.Claude`**: Anthropic 直接默认装（核心 provider）
+- 友好 `ImportError` 提示：未安装对应 extras 时，`agentica.gateway` / `agentica.mcp` / `agentica.acp` / `agentica.db.SqliteDb` 等会抛出带 `pip install agentica[xxx]` 命令提示的清晰错误
+
+### Changed
+- **依赖瘦身**：默认 `install_requires` 从 23 个 → **19 个**（M1-核心 A+ 方案；瘦身 17%）
+- **默认产品化能力保留**：Workspace / CLI / DeepAgent 内置工具（web_search, fetch_url, file, shell, todo, task）全部默认可用
+- **核心新增 6 个**：`beautifulsoup4` / `lxml` / `markdownify` / `requests` / `puremagic` / `tqdm`，确保 `agentica` CLI 和 DeepAgent 默认工作
+- `setup.py` → `pyproject.toml`（PEP 621 标准）
+- `requirements.txt`：更新为核心 19 个依赖的参考清单，实际以 `pyproject.toml` 为准
+- `agentica/__init__.py` lazy loading：增加 `_LAZY_ATTR_OVERRIDES` 修复 `LiteLLM` / `DeepSeek` / `Moonshot` 等 alias 的延迟加载（pre-existing bug）
+
+### Fixed
+- `test_lazy_loading.py::test_all_public_names_accessible`：修正对缺失 extras 时的友好 ImportError 处理，不再误报
+- **CLI 默认可用性**：之前一度把 `bs4` 移到 `[crawl]` extras 导致 `agentica --query` crash；本版通过把 6 个工具依赖纳入核心保证 CLI / DeepAgent 默认开箱即用
+
+### Removed
+- 无（1.3.6 是内部收敛 + 打包优化，不删除 Public API）
+
+### Migration Notes
+- **向后兼容 100%**：装 `pip install agentica` 即可获得 v1.3.5 的"开箱即用 DeepAgent + CLI"完整体验
+- **`pip install agentica[full]`** 等价于 v1.3.5 完整能力（含 RAG / Gateway / MCP / 40+ 第三方工具）
+- 仍使用 `setup.py` 等旧安装方式的场景需迁移到 `pyproject.toml`（PEP 621 自 Python 3.10 标准）
+
+## [1.3.5]
+
 ### Added
 - `MemoryType` enum — four-type memory classification (`user`, `feedback`, `project`, `reference`) for workspace memory entries
 - `MemoryEntry` Pydantic model — typed memory entry with `name`, `description`, `memory_type`, `file_path`, `content` fields

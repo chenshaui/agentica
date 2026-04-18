@@ -1509,6 +1509,9 @@ class BuiltinWebSearchTool(Tool):
     def __init__(self):
         """
         Initialize BuiltinWebSearchTool.
+
+        Note: BaiduSearchTool's bs4 dependency is in agentica core (since v1.3.6),
+        so this always works after `pip install agentica`.
         """
         super().__init__(name="builtin_web_search_tool")
         from agentica.tools.baidu_search_tool import BaiduSearchTool

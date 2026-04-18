@@ -18,6 +18,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import os
 import sys
 
+# bs4 / lxml / markdownify / requests are in agentica core deps (since v1.3.6),
+# so no skip needed for builtin web search / fetch url tools.
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 

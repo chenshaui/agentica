@@ -1,7 +1,11 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# Created by Charles on 2018/10/10
-# Function:
+"""
+@author: XuMing(xuming624@qq.com)
+@description: Baidu search tool.
+
+bs4 is included in agentica core dependencies (since v1.3.6).
+"""
 
 import re
 import json

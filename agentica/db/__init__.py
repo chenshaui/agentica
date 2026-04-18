@@ -22,24 +22,36 @@ from agentica.db.base import (
     BASE64_PLACEHOLDER,
 )
 
-# Lazy imports mapping
+# Lazy imports mapping (module_path, required_extras)
 _LAZY_DB_IMPORTS = {
-    "SqliteDb": "agentica.db.sqlite",
-    "PostgresDb": "agentica.db.postgres",
-    "InMemoryDb": "agentica.db.memory",
-    "JsonDb": "agentica.db.json",
-    "MysqlDb": "agentica.db.mysql",
-    "RedisDb": "agentica.db.redis",
+    # Zero external deps: InMemoryDb, JsonDb (stdlib only)
+    "InMemoryDb": ("agentica.db.memory", None),
+    "JsonDb": ("agentica.db.json", None),
+    # sqlite: Python stdlib, but SqliteDb impl uses sqlalchemy
+    "SqliteDb": ("agentica.db.sqlite", "sql"),
+    "PostgresDb": ("agentica.db.postgres", "postgres"),
+    "MysqlDb": ("agentica.db.mysql", "mysql"),
+    "RedisDb": ("agentica.db.redis", "redis"),
 }
 
 _DB_CACHE = {}
 
 
 def __getattr__(name: str):
-    """Lazy import handler for database implementations."""
+    """Lazy import handler for database implementations with friendly ImportError."""
     if name in _LAZY_DB_IMPORTS:
         if name not in _DB_CACHE:
-            module = importlib.import_module(_LAZY_DB_IMPORTS[name])
+            module_path, extras = _LAZY_DB_IMPORTS[name]
+            try:
+                module = importlib.import_module(module_path)
+            except ImportError as e:
+                if extras is None:
+                    raise
+                raise ImportError(
+                    f"agentica.db.{name} requires the [{extras}] extras. "
+                    f"Install with:\n\n"
+                    f"    pip install agentica[{extras}]\n"
+                ) from e
             _DB_CACHE[name] = getattr(module, name)
         return _DB_CACHE[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
