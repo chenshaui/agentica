@@ -24,9 +24,9 @@ classifiers = [
 ]
 
 # ─────────────────────────────────────────────────────────
-# Core dependencies (M1-核心方案：13 个)
-#   包含 Agent 运行时 + 默认产品化能力（Workspace + CLI）
-#   对标 agno 的 `dependencies` 风格，精简
+# Core dependencies (M1-核心 A+ 方案：19 个)
+#   包含 Agent 运行时 + 默认产品化能力（Workspace + CLI + DeepAgent 内置工具）
+#   对标 agno 的 `dependencies` 风格，但保证 `agentica` CLI 开箱即用
 # ─────────────────────────────────────────────────────────
 dependencies = [
     # ── 真核心（Agent / Model / Tool 运行时）──
@@ -44,6 +44,14 @@ dependencies = [
     "python-frontmatter>=1.0",    # workspace: AGENTS.md / MEMORY.md / skills 解析
     "prompt-toolkit>=3.0",        # cli: 交互式终端
     "rich>=13.0",                 # cli: 终端渲染（workspace 也用）
+    # ── DeepAgent 默认内置工具的依赖（CLI 开箱即用）──
+    # 没有这些 `agentica --query "..."` 会立即 crash
+    "beautifulsoup4>=4.12",       # BaiduSearchTool / UrlCrawlerTool 解析 HTML
+    "lxml>=4.9",                  # bs4 高性能后端
+    "markdownify>=0.11",          # MarkdownConverter: HTML → Markdown
+    "requests>=2.31",             # UrlCrawlerTool 同步请求
+    "puremagic>=1.15",            # MarkdownConverter 识别文件 MIME 类型
+    "tqdm>=4.65",                 # 通用进度条
 ]
 
 [project.optional-dependencies]
@@ -112,14 +120,9 @@ video-analysis = []
 
 # 浏览器自动化 / 爬虫
 browser = ["playwright>=1.40"]
-crawl   = [
-    "beautifulsoup4>=4.12",
-    "lxml>=4.9",
-    "markdownify>=0.11",
-    "requests>=2.31",
-    "puremagic>=1.15",
-    "tqdm>=4.65",
-]
+# Note: bs4 / lxml / markdownify / requests / puremagic / tqdm 已在核心默认装
+# crawl extras 保留为占位（未来可加 trafilatura / readability 等高级解析能力）
+crawl   = []
 
 # 代码 / 数据
 jupyter = ["jupyter>=1.0", "ipykernel>=6.0"]

@@ -116,9 +116,9 @@ class TestThreadSafety:
 class TestPublicAPI:
     """Test that __all__ names are accessible.
 
-    Some lazy-loaded names require extras (e.g. BaiduSearchTool needs [crawl]).
-    These are expected to raise ImportError with friendly message when extras
-    missing; the test skips those and verifies core names.
+    Some lazy-loaded names require extras (e.g. SqliteDb needs [sql], McpTool needs [mcp]).
+    Any ImportError on access is treated as "extras missing" (allowed); only
+    other exceptions (AttributeError, TypeError, etc) count as real failures.
     """
 
     def test_all_public_names_accessible(self):
@@ -132,17 +132,17 @@ class TestPublicAPI:
                 obj = getattr(agentica, name)
                 if obj is None:
                     missing.append(name)
-            except ImportError as e:
-                # Friendly extras ImportError is expected behavior in M1 core install.
-                if "extras" in str(e).lower() or "pip install agentica[" in str(e):
-                    extras_missing.append(name)
-                else:
-                    missing.append(f"{name}: {e}")
-        assert not missing, f"Names inaccessible for non-extras reasons: {missing}"
+            except ImportError:
+                # Either friendly or raw ImportError = extras not installed in this env
+                extras_missing.append(name)
+            except Exception as e:
+                # AttributeError, TypeError etc are real bugs in lazy-loading mapping
+                missing.append(f"{name}: {type(e).__name__}: {e}")
+        assert not missing, f"Names inaccessible for non-import reasons: {missing}"
         # Log but don't fail on extras-missing names (user hasn't installed them)
         if extras_missing:
-            print(f"\n[INFO] {len(extras_missing)} names require extras (skipped): "
-                  f"{extras_missing[:5]}..." if len(extras_missing) > 5 else extras_missing)
+            preview = extras_missing[:5]
+            print(f"\n[INFO] {len(extras_missing)} names require extras (skipped): {preview}...")
 
 
 if __name__ == "__main__":

@@ -12,9 +12,6 @@ import pytest
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# UrlCrawlerTool requires [crawl] extras (bs4, lxml). Skip tests if not installed.
-pytest.importorskip("bs4", reason="UrlCrawlerTool tests require agentica[crawl] extras")
-
 from agentica.tools.url_crawler_tool import UrlCrawlerTool
 
 

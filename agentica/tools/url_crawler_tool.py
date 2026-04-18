@@ -2,8 +2,7 @@
 """
 URL Crawler Tool.
 
-Requires the [crawl] extras:
-    pip install agentica[crawl]
+bs4 is included in agentica core dependencies (since v1.3.6).
 """
 import asyncio
 import hashlib
@@ -13,13 +12,7 @@ import json
 from urllib.parse import ParseResult, urlparse, urljoin
 
 import httpx
-try:
-    from bs4 import BeautifulSoup
-except ImportError as e:
-    raise ImportError(
-        "UrlCrawlerTool requires the [crawl] extras. Install with:\n\n"
-        "    pip install agentica[crawl]\n"
-    ) from e
+from bs4 import BeautifulSoup
 
 from agentica.tools.base import Tool
 from agentica.config import AGENTICA_HOME

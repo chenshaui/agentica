@@ -2,8 +2,7 @@
 # -*- coding: utf-8 -*-
 """Baidu search tool.
 
-Requires the [crawl] extras:
-    pip install agentica[crawl]
+bs4 is included in agentica core dependencies (since v1.3.6).
 """
 
 import re
@@ -11,13 +10,7 @@ import json
 from typing import Optional, List, Dict, Any, Union
 
 import httpx
-try:
-    from bs4 import BeautifulSoup
-except ImportError as e:
-    raise ImportError(
-        "BaiduSearchTool requires the [crawl] extras. Install with:\n\n"
-        "    pip install agentica[crawl]\n"
-    ) from e
+from bs4 import BeautifulSoup
 
 from agentica.tools.base import Tool
 from agentica.utils.log import logger

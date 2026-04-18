@@ -2,17 +2,7 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
-import pytest
 
-# DeepAgent defaults include BuiltinWebSearchTool which needs [crawl] extras.
-try:
-    import bs4  # noqa: F401
-    _has_crawl_extras = True
-except ImportError:
-    _has_crawl_extras = False
-
-
-@pytest.mark.skipif(not _has_crawl_extras, reason="DeepAgent defaults need agentica[crawl]")
 class TestDeepAgentDefaults(unittest.TestCase):
     """DeepAgent should be the batteries-included default."""
 

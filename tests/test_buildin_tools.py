@@ -18,17 +18,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import os
 import sys
 
-# Some builtin tools (BuiltinWebSearchTool, BuiltinFetchUrlTool) delegate to
-# Baidu/UrlCrawler tools that require [crawl] extras (bs4).
-try:
-    import bs4  # noqa: F401
-    _has_crawl_extras = True
-except ImportError:
-    _has_crawl_extras = False
-
-_requires_crawl = pytest.mark.skipif(
-    not _has_crawl_extras, reason="requires agentica[crawl] extras"
-)
+# bs4 / lxml / markdownify / requests are in agentica core deps (since v1.3.6),
+# so no skip needed for builtin web search / fetch url tools.
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -339,7 +330,6 @@ print(f(21))"'''
 # BuiltinWebSearchTool tests
 # ===========================================================================
 
-@_requires_crawl
 class TestBuiltinWebSearchTool:
     def test_web_search_delegates_to_baidu(self):
         """Verify web_search calls BaiduSearchTool.baidu_search under the hood."""
@@ -376,7 +366,6 @@ class TestBuiltinWebSearchTool:
 # BuiltinFetchUrlTool tests
 # ===========================================================================
 
-@_requires_crawl
 class TestBuiltinFetchUrlTool:
     def test_fetch_url_delegates_to_crawler(self):
         """Verify fetch_url calls UrlCrawlerTool.url_crawl under the hood."""

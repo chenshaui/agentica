@@ -11,11 +11,9 @@ from typing import List, Optional, Iterator, Dict, Any, Union
 from pydantic import BaseModel, ConfigDict
 
 from agentica.document import Document
+from agentica.utils.markdown_converter import MarkdownConverter
 from agentica.utils.log import logger
 from agentica.vectordb.base import VectorDb
-
-# Lazy import: MarkdownConverter requires `puremagic` (from [crawl] extras).
-# Imported on first use in file-loading methods below.
 
 
 class Knowledge(BaseModel):
@@ -119,7 +117,6 @@ class Knowledge(BaseModel):
         if not path.exists():
             raise FileNotFoundError(f"Could not find file: {path}")
         try:
-            from agentica.utils.markdown_converter import MarkdownConverter  # lazy: needs [crawl]
             file_name = path.name.split("/")[-1].split(".")[0].replace("/", "_").replace(" ", "_")
             content = MarkdownConverter().convert(str(path)).text_content
             return self._convert_to_documents(file_name, content)
@@ -130,7 +127,6 @@ class Knowledge(BaseModel):
     def read_pdf_url(self, path: str) -> List[Document]:
         """Reads a pdf from a URL and returns a list of documents."""
         try:
-            from agentica.utils.markdown_converter import MarkdownConverter  # lazy: needs [crawl]
             content = MarkdownConverter().convert(str(path)).text_content
             return self._convert_to_documents(path, content)
         except Exception as e:
@@ -140,7 +136,6 @@ class Knowledge(BaseModel):
     def read_url(self, url: str) -> List[Document]:
         """Reads a website and returns a list of documents."""
         try:
-            from agentica.utils.markdown_converter import MarkdownConverter  # lazy: needs [crawl]
             content = MarkdownConverter().convert(url).text_content
             return self._convert_to_documents(url, content)
         except Exception as e:
