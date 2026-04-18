@@ -1,9 +1,16 @@
-"""Unit tests for gateway services: ModelFactory, LRUCache, Router, ChannelManager, ResponseFormatter, Settings."""
+"""Unit tests for gateway services: ModelFactory, LRUCache, Router, ChannelManager, ResponseFormatter, Settings.
+
+Requires the [gateway] extras:
+    pip install agentica[gateway]
+"""
 import asyncio
 import os
 from unittest.mock import patch, MagicMock
 
 import pytest
+
+# Gateway tests require fastapi + lark-oapi etc. Skip cleanly if not installed.
+pytest.importorskip("fastapi", reason="Gateway tests require agentica[gateway] extras")
 
 
 # ============== TestSettings ==============

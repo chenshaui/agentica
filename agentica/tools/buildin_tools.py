@@ -1511,7 +1511,20 @@ class BuiltinWebSearchTool(Tool):
         Initialize BuiltinWebSearchTool.
         """
         super().__init__(name="builtin_web_search_tool")
-        from agentica.tools.baidu_search_tool import BaiduSearchTool
+        # Lazy-load BaiduSearchTool (requires [crawl] extras for bs4).
+        # If user hasn't installed extras, raise a friendly hint here.
+        try:
+            from agentica.tools.baidu_search_tool import BaiduSearchTool
+        except ImportError as e:
+            raise ImportError(
+                "BuiltinWebSearchTool requires the [crawl] extras for web search. "
+                "Install with:\n\n"
+                "    pip install agentica[crawl]\n"
+                "Or use a dedicated search tool that doesn't need bs4:\n"
+                "    pip install agentica[ddg]      # DuckDuckGo search\n"
+                "    pip install agentica[exa]      # Exa search\n"
+                "    pip install agentica[tavily]   # Tavily search\n"
+            ) from e
         self._search = BaiduSearchTool()
         self.register(self.web_search, concurrency_safe=True, is_read_only=True)
 

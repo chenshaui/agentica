@@ -114,14 +114,35 @@ class TestThreadSafety:
 
 
 class TestPublicAPI:
-    """Test that __all__ names are accessible."""
+    """Test that __all__ names are accessible.
+
+    Some lazy-loaded names require extras (e.g. BaiduSearchTool needs [crawl]).
+    These are expected to raise ImportError with friendly message when extras
+    missing; the test skips those and verifies core names.
+    """
 
     def test_all_public_names_accessible(self):
         import agentica
-        if hasattr(agentica, '__all__'):
-            for name in agentica.__all__:
-                assert hasattr(agentica, name) or callable(getattr(agentica, name, None)) is not None, \
-                    f"'{name}' in __all__ but not accessible"
+        if not hasattr(agentica, '__all__'):
+            return
+        missing = []
+        extras_missing = []
+        for name in agentica.__all__:
+            try:
+                obj = getattr(agentica, name)
+                if obj is None:
+                    missing.append(name)
+            except ImportError as e:
+                # Friendly extras ImportError is expected behavior in M1 core install.
+                if "extras" in str(e).lower() or "pip install agentica[" in str(e):
+                    extras_missing.append(name)
+                else:
+                    missing.append(f"{name}: {e}")
+        assert not missing, f"Names inaccessible for non-extras reasons: {missing}"
+        # Log but don't fail on extras-missing names (user hasn't installed them)
+        if extras_missing:
+            print(f"\n[INFO] {len(extras_missing)} names require extras (skipped): "
+                  f"{extras_missing[:5]}..." if len(extras_missing) > 5 else extras_missing)
 
 
 if __name__ == "__main__":

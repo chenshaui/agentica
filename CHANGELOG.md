@@ -19,6 +19,39 @@ A "public API" is anything importable from `agentica` top-level `__init__.py`.
 
 ## [Unreleased]
 
+<!-- Pending v1.3.6 items below will be released when sdk-dev merges to main -->
+
+## [1.3.6] - 2026-04-18 (sdk-dev branch)
+
+### Added
+- **`pyproject.toml`**: 新打包配置，对标 agno 细粒度 extras 风格 + 超级组合 extras
+- **`docs/API.md`**: Public API Tier 1/2/3 稳定度合约
+- **20+ 细粒度 extras**: `agentica[rag]` / `[qdrant]` / `[chroma]` / `[gateway]` / `[mcp]` / `[acp]` / `[arxiv]` / `[yfinance]` / `[browser]` / `[crawl]` / `[ddg]` / `[exa]` 等
+- **8 个超级组合 extras**: `[tools-search]` / `[tools-research]` / `[tools-finance]` / `[tools-media]` / `[tools-browser]` / `[vectordbs]` / `[storage]` / `[models]` / `[tracing]` / `[full]`
+- **`agentica.model.anthropic.Claude`**: Anthropic 直接默认装（核心 provider）
+- 友好 `ImportError` 提示：未安装对应 extras 时，`agentica.knowledge` / `agentica.gateway` / `agentica.mcp` / `agentica.acp` / `agentica.db.SqliteDb` 等会抛出带 `pip install agentica[xxx]` 命令提示的清晰错误
+
+### Changed
+- **依赖瘦身**：默认 `install_requires` 从 23 个 → **13 个**（瘦身 43%）
+- **默认产品化能力保留**：Workspace / CLI 仍在核心（差异化卖点，不要求装 extras）
+- `setup.py` → `pyproject.toml`（PEP 621 标准）
+- `requirements.txt`：更新为核心 13 个依赖的参考清单，实际以 `pyproject.toml` 为准
+- `agentica/knowledge/base.py`：`MarkdownConverter` 改为 lazy import（仅在文件加载方法被调用时才 import，避免基础 Knowledge 类强依赖 [crawl]）
+- `agentica/__init__.py` lazy loading：增加 `_LAZY_ATTR_OVERRIDES` 修复 `LiteLLM` / `DeepSeek` / `Moonshot` 等 alias 的延迟加载（pre-existing bug）
+
+### Fixed
+- `test_lazy_loading.py::test_all_public_names_accessible`：修正对缺失 extras 时的友好 ImportError 处理，不再误报
+
+### Removed
+- 无（1.3.6 是内部收敛 + 打包优化，不删除 Public API）
+
+### Migration Notes
+- **向后兼容 100%**：装 `pip install agentica[full]` 行为等价于 v1.3.5 默认行为
+- **推荐迁移方式**：用户按需装需要的 extras；完整迁移指南见后续 `MIGRATION-v2.md`（v2.0 发布时提供）
+- 仍使用 `setup.py` 等旧安装方式的场景需迁移到 `pyproject.toml`（PEP 621 自 Python 3.10 标准）
+
+## [1.3.5]
+
 ### Added
 - `MemoryType` enum — four-type memory classification (`user`, `feedback`, `project`, `reference`) for workspace memory entries
 - `MemoryEntry` Pydantic model — typed memory entry with `name`, `description`, `memory_type`, `file_path`, `content` fields

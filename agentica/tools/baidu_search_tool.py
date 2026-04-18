@@ -1,14 +1,23 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# Created by Charles on 2018/10/10
-# Function:
+"""Baidu search tool.
+
+Requires the [crawl] extras:
+    pip install agentica[crawl]
+"""
 
 import re
 import json
 from typing import Optional, List, Dict, Any, Union
 
 import httpx
-from bs4 import BeautifulSoup
+try:
+    from bs4 import BeautifulSoup
+except ImportError as e:
+    raise ImportError(
+        "BaiduSearchTool requires the [crawl] extras. Install with:\n\n"
+        "    pip install agentica[crawl]\n"
+    ) from e
 
 from agentica.tools.base import Tool
 from agentica.utils.log import logger

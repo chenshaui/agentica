@@ -291,6 +291,24 @@ _LAZY_CACHE = {}
 _LAZY_LOCK = threading.Lock()
 
 
+# Attribute name overrides: when the lazy-loaded symbol name differs from
+# the actual attribute in the target module (e.g. LiteLLM is an alias for LiteLLMChat).
+_LAZY_ATTR_OVERRIDES = {
+    "LiteLLM": "LiteLLMChat",
+    "DeepSeek": "DeepSeekChat",  # see provider aliases above
+    "Moonshot": "MoonshotChat",
+    "Doubao": "DoubaoChat",
+    "Yi": "YiChat",
+    "Together": "TogetherChat",
+    "Xai": "XaiChat",
+    "Nvidia": "NvidiaChat",
+    "Sambanova": "SambanovaChat",
+    "Groq": "GroqChat",
+    "Cerebras": "CerebrasChat",
+    "Mistral": "MistralChat",
+}
+
+
 def __getattr__(name: str):
     """Lazy import handler for optional modules."""
     if name in _LAZY_IMPORTS:
@@ -299,7 +317,12 @@ def __getattr__(name: str):
                 if name not in _LAZY_CACHE:
                     module_path = _LAZY_IMPORTS[name]
                     module = importlib.import_module(module_path)
-                    _LAZY_CACHE[name] = getattr(module, name)
+                    attr_name = _LAZY_ATTR_OVERRIDES.get(name, name)
+                    try:
+                        _LAZY_CACHE[name] = getattr(module, attr_name)
+                    except AttributeError:
+                        # Fallback: original name
+                        _LAZY_CACHE[name] = getattr(module, name)
         return _LAZY_CACHE[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 

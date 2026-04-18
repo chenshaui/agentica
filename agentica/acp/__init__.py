@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-@author:XuMing(xuming624@qq.com)
-@description: Agent Client Protocol (ACP) support for Agentica
+Agent Client Protocol (ACP) support for Agentica.
 
-This module enables Agentica to work as an ACP-compatible agent,
-allowing integration with IDEs like Zed, JetBrains, etc.
+Enables Agentica to work as an ACP-compatible agent, allowing integration
+with IDEs like Zed, JetBrains, etc.
+
+Requires the [acp] extras:
+    pip install agentica[acp]
 
 Usage:
     agentica acp          # Start ACP server mode
-    
+
 Or configure in IDE:
     {
       "agent_servers": {
@@ -20,6 +22,13 @@ Or configure in IDE:
       }
     }
 """
+try:
+    import websockets  # noqa: F401
+except ImportError as e:
+    raise ImportError(
+        "agentica.acp requires the [acp] extras. Install with:\n\n"
+        "    pip install agentica[acp]\n"
+    ) from e
 
 from agentica.acp.server import ACPServer
 from agentica.acp.types import (
