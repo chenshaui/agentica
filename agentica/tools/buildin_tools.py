@@ -336,19 +336,24 @@ class BuiltinFileTool(Tool):
         return path
 
     async def ls(self, directory: str = ".") -> str:
-        """Lists all files in the directory.
+        """List the immediate entries (files AND subdirectories) of a directory, NON-recursive.
 
         Usage:
-        - The directory parameter can be an absolute or relative path
-        - The ls tool will return a list of all files in the specified directory.
-        - This is very useful for exploring the file system and finding the right file to read or edit.
-        - You should almost ALWAYS use this tool before using the Read or Edit tools.
+        - The directory parameter can be absolute, relative, or `~`-prefixed
+        - Returns one entry per immediate child — both files and subdirectories.
+          Each entry has a ``type`` field: ``"file"`` or ``"dir"``. Hidden entries
+          (names starting with ``.``) are included.
+        - This tool does NOT recurse. To search a directory tree, use ``glob``
+          (e.g. ``glob("**/*.py", path=...)``) or ``grep`` instead — calling ``ls``
+          repeatedly on every subdirectory wastes turns.
+        - Useful for discovering what's at a known path before ``read_file`` / ``edit_file``.
 
         Args:
-            directory: Directory path to list files, defaults to current directory
+            directory: Directory path to list (default: current working directory).
 
         Returns:
-            str, JSON formatted file list
+            JSON-formatted list, e.g. ``[{"name": "src", "path": "...", "type": "dir"},
+            {"name": "main.py", "path": "...", "type": "file"}]``.
         """
         try:
             self._validate_path(directory)
@@ -995,7 +1000,7 @@ class BuiltinFileTool(Tool):
             path: str = ".",
             *,
             include: Optional[str] = None,
-            output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
+            output_mode: Literal["content", "files_with_matches", "count"] = "content",
             case_insensitive: bool = False,
             multiline: bool = False,
             context_lines: int = 0,
@@ -1004,27 +1009,30 @@ class BuiltinFileTool(Tool):
             limit: int = 100,
             fixed_strings: bool = False,
     ) -> str:
-        """Search for a pattern in files using ripgrep (rg).
+        """Search file contents for a pattern using ripgrep (rg).
+
+        Default output is matching lines with `file:line_number:content`.
+        Switch to "files_with_matches" only when you just need a path list,
+        or "count" when you only need totals — both modes drop the actual code,
+        which usually forces a follow-up read_file.
 
         Usage:
-        - Searches text patterns across files, powered by ripgrep for maximum speed
+        - Powered by ripgrep for speed (falls back to pure Python if rg missing)
         - The pattern parameter supports regex by default (e.g., 'class \\w+', 'def \\w+')
-        - Use fixed_strings=True to treat pattern as literal text (no regex interpretation)
+        - Use fixed_strings=True to treat pattern as literal text (no regex)
         - The path parameter specifies the search directory (default: current working directory)
         - The include parameter filters files by glob (e.g., "*.py", "*.{ts,tsx}")
-        - The output_mode parameter is a plain string, one of: "files_with_matches", "content", "count"
-          - "files_with_matches": List only file paths (default)
-          - "content": Show matching lines with file path and line numbers
-          - "count": Show match count per file
-        - To add context lines in "content" mode, use the separate context_lines / before_context / after_context parameters
-          e.g.: grep(pattern="foo", output_mode="content", context_lines=3)
-        - Automatically falls back to pure Python search if ripgrep is not installed
+        - output_mode (plain string):
+          - "content" (default): matching lines with file path + line numbers
+          - "files_with_matches": list of matching file paths only
+          - "count": match count per file
+        - Add context lines in "content" mode via context_lines / before_context / after_context.
 
         Args:
             pattern: Text/regex to search for
             path: Starting directory for search (default: ".")
             include: File glob filter, e.g., "*.py", "*.{js,ts}" (maps to rg --glob)
-            output_mode: Plain string, one of "files_with_matches" (default), "content", or "count". Do NOT pass a dict.
+            output_mode: "content" (default), "files_with_matches", or "count". Do NOT pass a dict.
             case_insensitive: Ignore case when matching (default: False)
             multiline: Enable multiline matching where . matches newlines (default: False)
             context_lines: Show N lines before and after each match (default: 0, content mode only)
@@ -1037,11 +1045,13 @@ class BuiltinFileTool(Tool):
             Search results as formatted string
 
         Examples:
-            grep(pattern="TODO", path="/project")
-            grep(pattern="class \\w+", include="*.py", output_mode="content")
-            grep(pattern="enable_agentic_prompt", output_mode="content", context_lines=3)
+            grep(pattern="def _close_box")                     # show matches with line numbers
+            grep(pattern="TODO", include="*.py", context_lines=2)
+            grep(pattern="class \\w+", include="*.py")
+            grep(pattern="enable_agentic_prompt", context_lines=3)
+            grep(pattern="exact phrase", fixed_strings=True)
             grep(pattern="import", include="*.py", output_mode="count")
-            grep(pattern="exact phrase", fixed_strings=True, output_mode="content")
+            grep(pattern="Foo", output_mode="files_with_matches")  # only when paths suffice
         """
         # Resolve and validate path
         self._validate_path(path)

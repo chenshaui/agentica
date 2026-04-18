@@ -253,12 +253,27 @@ class TestBuiltinFileToolGlob:
 
 
 class TestBuiltinFileToolGrep:
-    def test_grep_files_with_matches(self, file_tool, tmp_dir):
+    def test_grep_default_returns_content_with_line_numbers(self, file_tool, tmp_dir):
+        # Default output_mode is "content" — must return matching lines with
+        # line numbers, not just a path list. A bare path-only response was the
+        # root cause of dumb-model retry loops where the model couldn't tell
+        # whether it had actually seen the code yet.
         Path(tmp_dir, "a.txt").write_text("hello world\n")
         Path(tmp_dir, "b.txt").write_text("goodbye world\n")
         Path(tmp_dir, "c.txt").write_text("nothing here\n")
         result = asyncio.run(file_tool.grep("hello", tmp_dir))
         assert "a.txt" in result
+        assert "hello world" in result, "default mode must include matched line content"
+        assert "c.txt" not in result
+
+    def test_grep_files_with_matches_mode_returns_paths_only(self, file_tool, tmp_dir):
+        Path(tmp_dir, "a.txt").write_text("hello world\n")
+        Path(tmp_dir, "c.txt").write_text("nothing here\n")
+        result = asyncio.run(
+            file_tool.grep("hello", tmp_dir, output_mode="files_with_matches")
+        )
+        assert "a.txt" in result
+        assert "hello world" not in result
         assert "c.txt" not in result
 
     def test_grep_content_mode(self, file_tool, tmp_dir):

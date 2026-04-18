@@ -10,6 +10,7 @@ import hashlib
 import os
 import re
 import json
+from typing import Any, Dict, Optional
 from urllib.parse import ParseResult, urlparse, urljoin
 
 import httpx
@@ -165,12 +166,16 @@ class UrlCrawlerTool(Tool):
             url (str): The URL of the website to read, starting with http:// or https://
 
         Returns:
-            str: The content of the website as a json string.
+            str: JSON string with keys ``url``, ``content``, ``save_path``. On failure
+            the JSON additionally contains an ``error`` key describing what went wrong
+            (HTTP status, timeout, connection error, etc.) so the caller can react
+            instead of silently treating an empty page as a real result.
         """
         filename = self._generate_file_name_from_url(url)
         save_path = os.path.realpath(os.path.join(self.work_dir, filename))
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         content = ""
+        error_msg: Optional[str] = None
         try:
             logger.debug(f"Crawling URL: {url}")
             headers = {
@@ -208,13 +213,25 @@ class UrlCrawlerTool(Tool):
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._write_file, save_path, content)
             logger.debug(f"Successfully crawled: {url}, saved to: {save_path}, content length: {len(content)}")
+        except httpx.HTTPStatusError as e:
+            error_msg = f"HTTP {e.response.status_code} {e.response.reason_phrase}"
+            logger.warning(f"Failed to crawl {url}: {error_msg}")
+        except httpx.TimeoutException as e:
+            error_msg = f"Timeout after 10s ({type(e).__name__})"
+            logger.warning(f"Failed to crawl {url}: {error_msg}")
+        except (httpx.ConnectError, httpx.NetworkError) as e:
+            error_msg = f"Connection error: {e}"
+            logger.warning(f"Failed to crawl {url}: {error_msg}")
         except Exception as e:
-            logger.debug(f"Failed to crawl: {url}: {e}")
-        crawler_result = {
+            error_msg = f"{type(e).__name__}: {e}"
+            logger.warning(f"Failed to crawl {url}: {error_msg}")
+        crawler_result: Dict[str, Any] = {
             "url": url,
             "content": self._trim_content(content),
             "save_path": save_path,
         }
+        if error_msg is not None:
+            crawler_result["error"] = error_msg
         result = json.dumps(crawler_result, ensure_ascii=False)
         return result
 

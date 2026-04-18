@@ -99,6 +99,11 @@ def test_crawl_url_to_file_error():
         result_dict = json.loads(content)
         assert result_dict["url"] == url
         assert result_dict["content"] == ""  # Error case returns empty content
+        # Failure must surface an `error` field — silently returning empty
+        # content tricks the model into thinking the page is genuinely empty
+        # and re-fetching the same URL.
+        assert "error" in result_dict, "url_crawl must include an 'error' key on failure"
+        assert result_dict["error"], "'error' must be a non-empty description"
 
 
 def test_url_crawl_error():
@@ -114,6 +119,53 @@ def test_url_crawl_error():
         assert result is not None
         result_dict = json.loads(result)
         assert result_dict["url"] == url
+        assert "error" in result_dict
+        assert "404 Not Found" in result_dict["error"]
+
+
+def test_url_crawl_success_has_no_error_key():
+    """On success, the result must NOT contain an 'error' key — that key is
+    the model's signal that something went wrong."""
+    html_content = "<html><body><h1>OK</h1></body></html>"
+    mock_resp = _make_mock_response(
+        200, {"content-type": "text/html; charset=utf-8"},
+        html_content.encode('utf-8'), html_content,
+    )
+
+    async def mock_get(self, url, **kwargs):
+        return mock_resp
+
+    with patch('httpx.AsyncClient.get', new=mock_get):
+        tool = UrlCrawlerTool(work_dir="./tmp")
+        result = asyncio.run(tool.url_crawl("https://example.com/ok"))
+        result_dict = json.loads(result)
+        assert "error" not in result_dict
+        assert "OK" in result_dict["content"]
+
+
+def test_url_crawl_http_status_error_includes_status_code():
+    """HTTP 4xx/5xx must surface the status code so the model can decide
+    whether to retry, rewrite the URL, or give up — not a generic 'failed'."""
+    import httpx as _httpx
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 404
+    mock_resp.reason_phrase = "Not Found"
+
+    def _raise():
+        raise _httpx.HTTPStatusError("404", request=MagicMock(), response=mock_resp)
+
+    mock_resp.raise_for_status = _raise
+
+    async def mock_get(self, url, **kwargs):
+        return mock_resp
+
+    with patch('httpx.AsyncClient.get', new=mock_get):
+        tool = UrlCrawlerTool(work_dir="./tmp")
+        result = asyncio.run(tool.url_crawl("https://example.com/missing"))
+        result_dict = json.loads(result)
+        assert "error" in result_dict
+        assert "404" in result_dict["error"]
 
 
 if __name__ == '__main__':
