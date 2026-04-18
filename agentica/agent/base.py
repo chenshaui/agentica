@@ -847,22 +847,33 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
 
     def _resolve_context(self) -> None:
         logger.debug("Resolving context")
-        if self.context is not None:
-            for ctx_key, ctx_value in self.context.items():
-                if callable(ctx_value):
-                    try:
-                        sig = signature(ctx_value)
-                        resolved_ctx_value = None
-                        if "agent" in sig.parameters:
-                            resolved_ctx_value = ctx_value(agent=self)
-                        else:
-                            resolved_ctx_value = ctx_value()
-                        if resolved_ctx_value is not None:
-                            self.context[ctx_key] = resolved_ctx_value
-                    except Exception as e:
-                        logger.warning(f"Failed to resolve context for {ctx_key}: {e}")
-                else:
-                    self.context[ctx_key] = ctx_value
+        if self.context is None:
+            return
+        # context may be a dict / string / callable / any resolved object.
+        # Only dict-shaped context has per-key callables to resolve; everything
+        # else is treated as an already-resolved value and passed through.
+        if not isinstance(self.context, dict):
+            if callable(self.context):
+                sig = signature(self.context)
+                resolved = self.context(agent=self) if "agent" in sig.parameters else self.context()
+                if resolved is not None:
+                    self.context = resolved
+            return
+        for ctx_key, ctx_value in self.context.items():
+            if callable(ctx_value):
+                try:
+                    sig = signature(ctx_value)
+                    resolved_ctx_value = None
+                    if "agent" in sig.parameters:
+                        resolved_ctx_value = ctx_value(agent=self)
+                    else:
+                        resolved_ctx_value = ctx_value()
+                    if resolved_ctx_value is not None:
+                        self.context[ctx_key] = resolved_ctx_value
+                except Exception as e:
+                    logger.warning(f"Failed to resolve context for {ctx_key}: {e}")
+            else:
+                self.context[ctx_key] = ctx_value
 
     def update_model(self) -> None:
         if self.model is None:

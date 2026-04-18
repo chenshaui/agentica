@@ -768,9 +768,10 @@ def _setup_tui(state: SessionState, skills_registry, tui_state: dict,
 
         pending_queue.put(payload)
 
-        if state.agent_running and text and not text.startswith("/"):
-            preview = text[:60] + ("..." if len(text) > 60 else "")
-            _cprint(f"  Queued: {preview}")
+        # The queue bar above the input box renders queued items live (with
+        # per-item timestamps), so we deliberately do NOT print a notice
+        # into the chat stream — that would interleave with the running
+        # AI response box.
 
         event.app.current_buffer.reset(append_to_history=True)
         event.app.invalidate()
@@ -936,30 +937,32 @@ def _setup_tui(state: SessionState, skills_registry, tui_state: dict,
     )
 
     def _get_queue_bar():
-        items = pending_queue.peek_all()
-        if not items:
+        pairs = pending_queue.peek_all_with_timestamps()
+        if not pairs:
             return []
-        display_items = []
-        for item in items:
+        display_pairs = []
+        for item, ts in pairs:
             if isinstance(item, str) and (item.startswith("/") or item.startswith("__")):
                 continue
             if isinstance(item, tuple) and item[0] == "__BTW__":
                 continue
-            display_items.append(item)
-        if not display_items:
+            display_pairs.append((item, ts))
+        if not display_pairs:
             return []
-        frags = [("class:queue-label", f"  Queued ({len(display_items)}): ")]
-        for i, item in enumerate(display_items[:3]):
+        frags = [("class:queue-label", f"  Queued ({len(display_pairs)}): ")]
+        for i, (item, ts) in enumerate(display_pairs[:3]):
             if isinstance(item, tuple):
                 text = str(item[0])
             else:
                 text = str(item)
             preview = text[:40] + ("..." if len(text) > 40 else "")
+            ts_str = time.strftime("%H:%M:%S", time.localtime(ts))
             if i > 0:
                 frags.append(("class:queue-dim", "  |  "))
+            frags.append(("class:queue-time", f"({ts_str}) "))
             frags.append(("class:queue-dim", preview))
-        if len(display_items) > 3:
-            frags.append(("class:queue-dim", f"  ... +{len(display_items) - 3} more"))
+        if len(display_pairs) > 3:
+            frags.append(("class:queue-dim", f"  ... +{len(display_pairs) - 3} more"))
         return frags
 
     queue_bar = ConditionalContainer(
@@ -987,6 +990,7 @@ def _setup_tui(state: SessionState, skills_registry, tui_state: dict,
         "input-rule": "#CD7F32",
         "queue-label": "#FFD700 bold",
         "queue-dim": "#8B8682 italic",
+        "queue-time": "#8FBC8F",
         "spinner": "#FFD700 italic",
         "sb": "bg:#1a1a2e #C0C0C0",
         "sb-strong": "bg:#1a1a2e #FFD700 bold",

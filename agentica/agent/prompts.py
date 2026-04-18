@@ -504,12 +504,18 @@ class PromptsMixin:
             return yaml.dump(docs)
         return json.dumps(docs, indent=2, ensure_ascii=False)
 
-    def convert_context_to_string(self, context: Dict[str, Any]) -> str:
-        """Convert the context dictionary to a string representation."""
+    def convert_context_to_string(self, context: Any) -> str:
+        """Convert the context to a string representation.
+
+        ``context`` is typed as Any because it may be a dict, string, callable,
+        or any already-resolved object (see Agent._resolve_context).
+        """
         try:
             return json.dumps(context, indent=2, default=str, ensure_ascii=False)
         except (TypeError, ValueError, OverflowError) as e:
             logger.warning(f"Failed to convert context to JSON: {e}")
+            if not isinstance(context, dict):
+                return str(context)
             sanitized_context = {}
             for key, value in context.items():
                 try:

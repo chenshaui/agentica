@@ -319,6 +319,52 @@ class TestSwarmCloneContextRobustness(unittest.TestCase):
         self.assertEqual(source.context["k"], "v")
 
 
+class TestResolveContextNonDict(unittest.TestCase):
+    """Regression: ``Agent._resolve_context`` and ``convert_context_to_string``
+    must not crash when ``self.context`` is a non-dict. Runner calls
+    ``_resolve_context`` unconditionally on ``run()`` for Swarm clones, and
+    the prompt builder calls ``convert_context_to_string`` to inject context
+    into the user message.
+    """
+
+    def test_resolve_context_string_passthrough(self):
+        a = Agent(name="a", model=_model(), context="raw brief from upstream")
+        a._resolve_context()
+        self.assertEqual(a.context, "raw brief from upstream")
+
+    def test_resolve_context_callable_resolves_to_value(self):
+        a = Agent(name="a", model=_model(), context=lambda: {"resolved": True})
+        a._resolve_context()
+        self.assertEqual(a.context, {"resolved": True})
+
+    def test_resolve_context_callable_with_agent_param(self):
+        def _ctx(agent):
+            return f"name={agent.name}"
+
+        a = Agent(name="probe", model=_model(), context=_ctx)
+        a._resolve_context()
+        self.assertEqual(a.context, "name=probe")
+
+    def test_resolve_context_arbitrary_object_passthrough(self):
+        from types import SimpleNamespace
+        payload = SimpleNamespace(foo="bar")
+        a = Agent(name="a", model=_model(), context=payload)
+        a._resolve_context()
+        self.assertIs(a.context, payload)
+
+    def test_convert_context_to_string_accepts_string(self):
+        a = Agent(name="a", model=_model(), context="plain string")
+        out = a.convert_context_to_string(a.context)
+        self.assertIn("plain string", out)
+
+    def test_convert_context_to_string_accepts_non_serializable(self):
+        from types import SimpleNamespace
+        a = Agent(name="a", model=_model(), context=SimpleNamespace(x=1))
+        out = a.convert_context_to_string(a.context)
+        self.assertIsInstance(out, str)
+        self.assertIn("x", out)
+
+
 class TestAgentCloneRuntimeConfigIsolation(unittest.TestCase):
     """Agent.clone() must reset the per-agent ``_tool_runtime_configs`` /
     ``_skill_runtime_configs`` dicts. Without this, ``copy.copy`` aliases

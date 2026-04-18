@@ -7,6 +7,7 @@ import difflib
 import json
 import os
 import re
+import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -444,6 +445,7 @@ def _display_tool_impl(console_instance, tool_name: str, tool_args: dict,
 
 
 _BOX_COLOR = "bright_yellow"
+_BOX_DIM_COLOR = "dim"
 
 
 class StreamDisplayManager:
@@ -501,9 +503,23 @@ class StreamDisplayManager:
         fill = max(0, w - len(label) - 5)
         self.console.print(f"[{_BOX_COLOR}]╭─ {label} {'─' * fill}╮[/{_BOX_COLOR}]")
 
-    def _close_box(self):
+    def _close_box(self, right_label: Optional[str] = None):
+        """Close a box. If ``right_label`` is given, embed it on the right
+        side of the closing rule, e.g. ``╰─────────── (15:32:08) ─╯``.
+        """
         w = self._term_width
-        self.console.print(f"[{_BOX_COLOR}]╰{'─' * (w - 2)}╯[/{_BOX_COLOR}]")
+        if not right_label:
+            self.console.print(f"[{_BOX_COLOR}]╰{'─' * (w - 2)}╯[/{_BOX_COLOR}]")
+            return
+        # Layout: ╰─...─ <right_label> ─╯  (one space padding around label)
+        # Total width is ``w``; left rule + 1 space + label + 1 space + ─╯
+        label_len = len(right_label)
+        fill = max(2, w - label_len - 5)
+        self.console.print(
+            f"[{_BOX_COLOR}]╰{'─' * fill} [/{_BOX_COLOR}]"
+            f"[{_BOX_DIM_COLOR}]{right_label}[/{_BOX_DIM_COLOR}]"
+            f"[{_BOX_COLOR}] ─╯[/{_BOX_COLOR}]"
+        )
 
     def _flush_line_buffer(self):
         """Flush any accumulated partial line to output."""
@@ -893,18 +909,25 @@ class StreamDisplayManager:
         self.has_content_output = True
 
     def finalize(self):
-        """Finalize output: flush buffered text and close open boxes."""
+        """Finalize output: flush buffered text and close open boxes.
+
+        The Response box gets a small completion timestamp embedded in its
+        bottom-right corner, e.g. ``╰─...─ (15:32:08) ─╯``. Useful when a
+        long session is reviewed later — you can see when each answer landed.
+        """
         if self.in_thinking:
             self.end_thinking()
         if self.in_tool_section:
             self.end_tool_section()
+        ts = time.strftime("%H:%M:%S", time.localtime())
+        right_label = f"({ts})"
         if self.has_content_output:
             self._flush_line_buffer()
             if self._box_opened:
-                self._close_box()
+                self._close_box(right_label=right_label)
                 self._box_opened = False
         elif self._box_opened:
-            self._close_box()
+            self._close_box(right_label=right_label)
             self._box_opened = False
 
 

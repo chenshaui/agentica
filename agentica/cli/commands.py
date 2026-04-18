@@ -77,21 +77,28 @@ class CommandContext:
 # ==================== PendingQueue ====================
 
 class PendingQueue:
-    """Thread-safe observable queue with list/clear/remove support."""
+    """Thread-safe observable queue with list/clear/remove support.
+
+    Each enqueued item is paired with a wall-clock timestamp so the TUI
+    queue bar can show when each pending message was submitted.
+    """
 
     def __init__(self):
         self._deque = collections.deque()
+        self._timestamps = collections.deque()
         self._lock = threading.Lock()
 
     def put(self, item):
         with self._lock:
             self._deque.append(item)
+            self._timestamps.append(time.time())
 
     def get(self, timeout: float = 0.1):
         deadline = time.monotonic() + timeout
         while True:
             with self._lock:
                 if self._deque:
+                    self._timestamps.popleft()
                     return self._deque.popleft()
             if time.monotonic() >= deadline:
                 raise queue.Empty
@@ -100,6 +107,11 @@ class PendingQueue:
     def peek_all(self) -> list:
         with self._lock:
             return list(self._deque)
+
+    def peek_all_with_timestamps(self) -> list:
+        """Return ``[(item, ts_epoch_seconds), ...]`` snapshot."""
+        with self._lock:
+            return list(zip(self._deque, self._timestamps))
 
     def qsize(self) -> int:
         with self._lock:
@@ -112,11 +124,13 @@ class PendingQueue:
     def clear(self):
         with self._lock:
             self._deque.clear()
+            self._timestamps.clear()
 
     def remove_index(self, idx: int) -> bool:
         with self._lock:
             if 0 <= idx < len(self._deque):
                 del self._deque[idx]
+                del self._timestamps[idx]
                 return True
             return False
 
