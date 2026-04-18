@@ -198,8 +198,8 @@ def prepare_data(
 
 class RemoteSearcher:
     def __init__(self, server_url: str, searcher_name: Optional[str] = None) -> None:
-        import requests as _requests
-        self._requests = _requests
+        import requests
+        self._requests = requests
         self.server_url = server_url.rstrip("/")
         self.searcher_name = searcher_name
 
@@ -1096,10 +1096,10 @@ async def main() -> None:
         )
 
         # OpenAI client for Planner LLM call
-        from openai import OpenAI as _OpenAI
-        _planner_api_key = os.environ.get("OPENAI_API_KEY", "").strip()
-        _planner_base_url = os.environ.get("OPENAI_BASE_URL")
-        planner_client = _OpenAI(api_key=_planner_api_key, base_url=_planner_base_url)
+        from openai import OpenAI
+        planner_api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        planner_base_url = os.environ.get("OPENAI_BASE_URL")
+        planner_client = OpenAI(api_key=planner_api_key, base_url=planner_base_url)
     else:
         react_agent = ReactAgent(
             searcher=searcher,

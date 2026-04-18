@@ -789,8 +789,8 @@ class CompressionManager:
                     if _slog is not None:
                         _slog.append_compact_boundary(summary)
                         logger.debug("Compact boundary written to session log")
-        except Exception as _cb_err:
-            logger.warning(f"Failed to write compact boundary: {_cb_err}")
+        except Exception as cb_err:
+            logger.warning(f"Failed to write compact boundary: {cb_err}")
 
         return True
 

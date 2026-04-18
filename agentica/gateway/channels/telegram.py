@@ -28,9 +28,9 @@ def _ensure_telegram_sdk():
     if telegram is None:
         try:
             from telegram import Bot, Update
-            from telegram.ext import Application as _Application, MessageHandler, filters
+            from telegram.ext import Application as TelegramApplication, MessageHandler, filters
             telegram = type('telegram', (), {'Bot': Bot, 'Update': Update, 'MessageHandler': MessageHandler, 'filters': filters})()
-            Application = _Application
+            Application = TelegramApplication
         except ImportError:
             raise ImportError(
                 "Telegram SDK not installed. Run: pip install python-telegram-bot"

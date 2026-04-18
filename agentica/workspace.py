@@ -21,8 +21,8 @@ from agentica.config import (
     AGENTICA_MAX_MEMORY_CHARACTER_COUNT,
 )
 from agentica.utils.async_file import (
-    async_read_text as _async_read_text,
-    async_write_text as _async_write_text,
+    async_read_text,
+    async_write_text,
     extract_frontmatter_value,
     extract_frontmatter_int,
     strip_frontmatter,
@@ -304,7 +304,7 @@ You are a helpful AI assistant.
         """
         filepath = self.path / filename
         if filepath.exists() and filepath.is_file():
-            content = (await _async_read_text(filepath)).strip()
+            content = (await async_read_text(filepath)).strip()
             return content if content else None
         return None
 
@@ -385,7 +385,7 @@ You are a helpful AI assistant.
         # 3. User-specific USER.md
         user_md_path = self._get_user_md()
         if user_md_path.exists():
-            content = (await _async_read_text(user_md_path)).strip()
+            content = (await async_read_text(user_md_path)).strip()
             if content:
                 contents.append(f"<!-- USER.md (user: {self._user_id}) -->\n{content}")
 
@@ -683,7 +683,7 @@ You are a helpful AI assistant.
                 reverse=True,
             )
             for memory_file in memory_files:
-                raw = (await _async_read_text(memory_file)).strip()
+                raw = (await async_read_text(memory_file)).strip()
                 if not raw:
                     continue
 
@@ -719,7 +719,7 @@ You are a helpful AI assistant.
         global_agent_md = self._get_global_agent_md_path()
         existing = ""
         if global_agent_md.exists():
-            existing = (await _async_read_text(global_agent_md)).strip()
+            existing = (await async_read_text(global_agent_md)).strip()
 
         if existing:
             pattern = (
@@ -734,7 +734,7 @@ You are a helpful AI assistant.
         else:
             updated = "# Agent Instructions\n\n" + block
 
-        await _async_write_text(global_agent_md, updated.strip() + "\n")
+        await async_write_text(global_agent_md, updated.strip() + "\n")
         return str(global_agent_md)
 
     async def get_relevant_memories(
@@ -771,7 +771,7 @@ You are a helpful AI assistant.
         # --- Parse MEMORY.md index ---
         index_entries: List[Dict] = []
         if index_path.exists():
-            index_content = (await _async_read_text(index_path)).strip()
+            index_content = (await async_read_text(index_path)).strip()
             if index_content:
                 index_entries = self._parse_memory_index(index_content)
 
@@ -808,7 +808,7 @@ You are a helpful AI assistant.
         for entry in top_entries:
             content_path = memory_dir / entry["filename"]
             if content_path.exists():
-                raw = (await _async_read_text(content_path)).strip()
+                raw = (await async_read_text(content_path)).strip()
                 # Strip frontmatter (---...---) before injecting
                 body = strip_frontmatter(raw)
                 if body:
@@ -867,7 +867,7 @@ You are a helpful AI assistant.
             f"description: {hook}\n"
             f"type: {memory_type}\n---\n\n"
         )
-        await _async_write_text(filepath, frontmatter + content)
+        await async_write_text(filepath, frontmatter + content)
 
         # Update MEMORY.md index
         await self._update_memory_index(
@@ -898,7 +898,7 @@ You are a helpful AI assistant.
 
         existing = ""
         if index_path.exists():
-            existing = (await _async_read_text(index_path)).strip()
+            existing = (await async_read_text(index_path)).strip()
 
         lines = [l for l in existing.splitlines() if l.strip()] if existing else []
 
@@ -917,7 +917,7 @@ You are a helpful AI assistant.
             lines.pop(0)
             content = "\n".join(lines)
 
-        await _async_write_text(index_path, content)
+        await async_write_text(index_path, content)
 
     def _parse_memory_index(self, index_content: str) -> List[Dict]:
         """Parse MEMORY.md index lines into entry dicts.
@@ -1176,9 +1176,9 @@ You are a helpful AI assistant.
         async with lock:
             existing = ""
             if filepath.exists():
-                existing = (await _async_read_text(filepath)).strip()
+                existing = (await async_read_text(filepath)).strip()
             new_content = f"{existing}{archive_text}".strip() if existing else archive_text.strip()
-            await _async_write_text(filepath, new_content)
+            await async_write_text(filepath, new_content)
 
         return str(filepath)
 

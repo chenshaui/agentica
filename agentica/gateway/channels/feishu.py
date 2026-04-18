@@ -50,14 +50,14 @@ def _init_lark_in_thread():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    import lark_oapi as _lark
+    import lark_oapi
     from lark_oapi.api.im.v1 import (
-        CreateMessageRequest as _CreateMessageRequest,
-        CreateMessageRequestBody as _CreateMessageRequestBody,
+        CreateMessageRequest as LarkCreateMessageRequest,
+        CreateMessageRequestBody as LarkCreateMessageRequestBody,
     )
-    lark = _lark
-    CreateMessageRequest = _CreateMessageRequest
-    CreateMessageRequestBody = _CreateMessageRequestBody
+    lark = lark_oapi
+    CreateMessageRequest = LarkCreateMessageRequest
+    CreateMessageRequestBody = LarkCreateMessageRequestBody
 
 
 def _ensure_lark_sdk():

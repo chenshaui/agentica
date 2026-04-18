@@ -650,8 +650,8 @@ class Model(ABC):
                         session_id=_sid,
                         max_result_size_chars=function_call.function.max_result_size_chars,
                     )
-                except Exception as _persist_err:
-                    logger.debug(f"Tool result persistence skipped: {_persist_err}")
+                except Exception as persist_err:
+                    logger.debug(f"Tool result persistence skipped: {persist_err}")
 
             function_call_result = Message(
                 role=tool_role,
@@ -720,8 +720,8 @@ class Model(ABC):
                 tool_results=function_call_results,
                 session_id=_sid,
             )
-        except Exception as _budget_err:
-            logger.warning(f"Tool result budget enforcement failed: {_budget_err}")
+        except Exception as budget_err:
+            logger.warning(f"Tool result budget enforcement failed: {budget_err}")
 
     # ── Default tool call handling (OpenAI-compatible protocol) ──────────────
     # Providers using a different protocol (e.g. Anthropic) override these.

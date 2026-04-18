@@ -205,3 +205,5 @@ examples/builtin_tools/tmp_demo.py
 AGENT.md
 .transcripts/
 AGENTS.md
+.cursor/
+START_HERE.md

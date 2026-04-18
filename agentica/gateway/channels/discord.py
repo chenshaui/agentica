@@ -27,8 +27,7 @@ def _ensure_discord_sdk():
     global discord
     if discord is None:
         try:
-            import discord as _discord
-            discord = _discord
+            import discord
         except ImportError:
             raise ImportError(
                 "Discord SDK not installed. Run: pip install discord.py"

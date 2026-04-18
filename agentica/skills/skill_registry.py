@@ -3,6 +3,7 @@
 @author:XuMing(xuming624@qq.com)
 @description: Skill Registry - manages loaded skills and provides lookup functionality.
 """
+import re
 from typing import Dict, Optional, List
 
 from agentica.skills.skill import Skill
@@ -290,7 +291,6 @@ class SkillRegistry:
         Returns:
             Dict mapping ``/slug`` -> Skill
         """
-        import re as _re
         cmds: Dict[str, "Skill"] = {}
         for skill in self._skills.values():
             if not skill.user_invocable or skill.is_hidden:
@@ -299,8 +299,8 @@ class SkillRegistry:
                 slug = skill.trigger if skill.trigger.startswith("/") else f"/{skill.trigger}"
             else:
                 slug = skill.name.lower().replace(" ", "-").replace("_", "-")
-                slug = _re.sub(r"[^a-z0-9\-]", "", slug)
-                slug = _re.sub(r"-+", "-", slug).strip("-")
+                slug = re.sub(r"[^a-z0-9\-]", "", slug)
+                slug = re.sub(r"-+", "-", slug).strip("-")
                 slug = f"/{slug}"
             if slug and slug != "/":
                 cmds[slug] = skill

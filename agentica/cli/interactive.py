@@ -19,12 +19,12 @@ from typing import Any, Dict, List, Optional
 
 from io import StringIO
 
-from prompt_toolkit import print_formatted_text as _pt_print
+from prompt_toolkit import print_formatted_text
 from prompt_toolkit.application import Application
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.filters import Condition
-from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
+from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
@@ -103,7 +103,7 @@ def _cprint(text: str):
     swallowed.  Routing through ``print_formatted_text(ANSI(...))`` lets
     prompt_toolkit parse the escapes and render colors correctly.
     """
-    _pt_print(_PT_ANSI(text))
+    print_formatted_text(ANSI(text))
 
 
 class ChatConsole:

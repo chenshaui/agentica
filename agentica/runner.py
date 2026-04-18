@@ -398,31 +398,31 @@ class Runner:
         For non-stream: returns ModelResponse.
         For stream: returns the async iterator from response_stream().
         """
-        for _attempt in range(state.max_api_retry):
+        for attempt in range(state.max_api_retry):
             try:
                 if stream:
                     return model.response_stream(messages=messages)
                 else:
                     return await model.response(messages=messages)
-            except Exception as _exc:
-                _err = str(_exc).lower()
+            except Exception as exc:
+                err = str(exc).lower()
 
                 # Reactive compact: prompt_too_long -> emergency compress
-                _is_too_long = any(h in _err for h in state.PROMPT_TOO_LONG_HINTS)
-                if _is_too_long and not state.reactive_compact_done:
+                is_too_long = any(h in err for h in state.PROMPT_TOO_LONG_HINTS)
+                if is_too_long and not state.reactive_compact_done:
                     state.reactive_compact_done = True
                     if await Runner._try_reactive_compact(messages, agent, model):
                         continue  # retry with compacted context
 
                 # Retryable errors: exponential back-off
-                _is_retryable = any(r in _err for r in state.RETRYABLE_SUBSTRINGS)
-                if _is_retryable and _attempt < state.max_api_retry - 1:
-                    _wait = (2 ** _attempt) + random.uniform(0.0, 1.0)
+                is_retryable = any(r in err for r in state.RETRYABLE_SUBSTRINGS)
+                if is_retryable and attempt < state.max_api_retry - 1:
+                    wait = (2 ** attempt) + random.uniform(0.0, 1.0)
                     logger.warning(
-                        f"[APIRetry] attempt {_attempt + 1}/{state.max_api_retry}, "
-                        f"retrying in {_wait:.1f}s: {_exc}"
+                        f"[APIRetry] attempt {attempt + 1}/{state.max_api_retry}, "
+                        f"retrying in {wait:.1f}s: {exc}"
                     )
-                    await asyncio.sleep(_wait)
+                    await asyncio.sleep(wait)
                     continue
 
                 raise  # non-retryable or exhausted retries
