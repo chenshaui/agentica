@@ -12,7 +12,7 @@ import json
 import weakref
 from collections import OrderedDict
 from typing import Callable, get_type_hints, Any, Dict, Union, Optional, Type, TypeVar, List
-from pydantic import BaseModel, Field, validate_call
+from pydantic import BaseModel, Field, ValidationError, validate_call
 from agentica.model.message import Message
 from agentica.utils.log import logger
 
@@ -52,6 +52,37 @@ class StopAgentRun(ToolCallException):
         super().__init__(
             exc, user_message=user_message, agent_message=agent_message, messages=messages, stop_execution=True
         )
+
+
+def _format_tool_error(tool_name: str, exc: Exception) -> str:
+    """Render a tool execution error as a single human-readable line.
+
+    The CLI surfaces this string to the end user (and the model also sees it
+    as the tool result), so we strip the Python class boilerplate and — for
+    pydantic ``ValidationError`` — extract just the offending field + reason
+    instead of dumping the multi-line pydantic banner with a ``errors.pydantic.dev``
+    URL.
+    """
+    if isinstance(exc, ValidationError):
+        parts: List[str] = []
+        for err in exc.errors():
+            loc = ".".join(str(p) for p in err.get("loc", ())) or "?"
+            msg = err.get("msg", "invalid value")
+            given = err.get("input")
+            given_repr = ""
+            if given is not None:
+                gs = repr(given)
+                if len(gs) > 60:
+                    gs = gs[:57] + "..."
+                given_repr = f" (got {gs})"
+            parts.append(f"{loc}: {msg}{given_repr}")
+        joined = "; ".join(parts)
+        return f"invalid arguments for {tool_name}: {joined}"
+
+    text = str(exc).strip()
+    if not text:
+        text = exc.__class__.__name__
+    return text
 
 
 def _safe_validate_call(c: Callable) -> Callable:
@@ -432,9 +463,15 @@ class FunctionCall(BaseModel):
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.warning(f"Could not run function {self.get_call_str()}")
-            logger.exception(e)
-            self.error = str(e)
+            # Translate to a clean, actionable error: this is what the model
+            # sees as the tool result and what we surface in the CLI. Avoid
+            # ``logger.exception`` here — it dumps a full Python traceback to
+            # the user's terminal for routine "model passed bad args" cases.
+            # The traceback is preserved at DEBUG level for developers.
+            friendly = _format_tool_error(self.function.name, e)
+            logger.warning("Tool call failed: %s — %s", self.function.name, friendly)
+            logger.debug("Tool call traceback for %s:", self.function.name, exc_info=True)
+            self.error = friendly
             return False
 
         # Post-hook

@@ -22,7 +22,7 @@ tool calling, long-running task loops, multi-agent orchestration, cross-session 
 | Capability | What it means |
 |------------|---------------|
 | **Long-running Agent Loop** | `Runner` manages the LLM ↔ tool loop with compression, retries, cost budgets, and loop safety |
-| **Works Beyond Chat** | Files, execution, search, browser, MCP, multi-agent teams, and workflows instead of a single chat endpoint |
+| **Works Beyond Chat** | Files, execution, search, browser, MCP, multi-agent collaboration, and workflows instead of a single chat endpoint |
 | **Memory That Survives Sessions** | Workspace memory is stored as indexed entries with relevance recall, and confirmed preferences can sync into `~/.agentica/AGENTS.md` |
 | **Skill-Based Self-Learn** | SkillTool can load external skills, built-in agent self-learning strategy |
 | **Open Composable Harness** | Models, tools, memory, skills, guardrails, and MCP are replaceable building blocks instead of a closed hosted platform |

@@ -697,29 +697,21 @@ class SubagentRegistry:
                         "agent_type": str(spec.get("type", SubagentType.CODE)),
                         "content": "",
                     }
-                try:
-                    return await self.spawn(
-                        parent_agent=parent_agent,
-                        task=task,
-                        agent_type=spec.get("type", SubagentType.CODE),
-                        context=spec.get("context", ""),
-                    )
-                except (asyncio.TimeoutError, AgentCancelledError):
-                    # asyncio.CancelledError inherits BaseException since 3.8
-                    # so it bypasses ``Exception`` and properly cancels gather.
-                    raise
-                except Exception as e:
-                    # Narrow surface: only operational errors land here.
-                    # Programmer mistakes (TypeError on spec keys, etc.) are
-                    # surfaced with a full traceback so they don't disappear
-                    # into a status="error" dict.
-                    logger.exception("Subagent batch execution failed for task '%s'", task[:80])
-                    return {
-                        "status": "error",
-                        "error": f"{type(e).__name__}: {e}",
-                        "agent_type": str(spec.get("type", SubagentType.CODE)),
-                        "content": "",
-                    }
+                # No broad ``except Exception`` here on purpose: ``spawn()``
+                # already converts every operational failure (timeout, model
+                # error, tool failure, depth limit, …) into a ``status=error``
+                # dict. Anything that still propagates is a programmer error
+                # (e.g. wrong agent_type / context shape, AttributeError on
+                # parent_agent), and we WANT it to crash loudly instead of
+                # silently degrading the whole batch into "task failed".
+                # Cancellation / timeouts inherit BaseException (3.8+) and
+                # propagate through ``gather`` automatically.
+                return await self.spawn(
+                    parent_agent=parent_agent,
+                    task=task,
+                    agent_type=spec.get("type", SubagentType.CODE),
+                    context=spec.get("context", ""),
+                )
 
         return list(await asyncio.gather(*[_run_one(t) for t in tasks]))
 

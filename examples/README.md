@@ -333,7 +333,7 @@ for chunk in agent.run_stream_sync("Hello"):
 
 ### 高级
 
-1. `agent_patterns/03_team_collaboration.py` — 多 Agent 团队协作
+1. `agent_patterns/03_team_collaboration.py` — 多 Agent 协作（`as_tool()` 编排）
 2. `agent_patterns/08_swarm.py` — Swarm 并行/自治协作
 3. `workflow/01_data_pipeline.py` — 工作流编排
 4. `agent_patterns/10_subagent_demo.py` — 子 Agent 委派
