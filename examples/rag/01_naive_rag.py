@@ -13,11 +13,12 @@ import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from agentica import Agent, OpenAIChat, OpenAIEmbedding
+from agentica import Agent, OpenAIChat
 from agentica.agent.config import ToolConfig
+from agentica.embedding.openai import OpenAIEmbedding
 from agentica.knowledge import Knowledge
+from agentica.vectordb import SearchType
 from agentica.vectordb.lancedb_vectordb import LanceDb
-from agentica import SearchType
 
 # Create knowledge base with PDF document
 knowledge = Knowledge(

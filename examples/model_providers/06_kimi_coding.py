@@ -15,7 +15,8 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from agentica import Agent, KimiChat
+from agentica import Agent
+from agentica.model.kimi.chat import KimiChat
 
 # Part 1: Basic streaming output
 print("=" * 60)

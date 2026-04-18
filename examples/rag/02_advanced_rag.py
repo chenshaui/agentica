@@ -18,10 +18,11 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from agentica import Agent, OpenAIChat
 from agentica.agent.config import ToolConfig, PromptConfig
+from agentica.embedding.openai import OpenAIEmbedding
 from agentica.knowledge.base import Knowledge
-from agentica.vectordb.lancedb_vectordb import LanceDb
-from agentica import SearchType, OpenAIEmbedding
 from agentica.rerank.zhipuai import ZhipuAIRerank
+from agentica.vectordb import SearchType
+from agentica.vectordb.lancedb_vectordb import LanceDb
 
 # Get the correct path to data file
 data_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
