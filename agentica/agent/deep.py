@@ -55,12 +55,14 @@ from typing import Any, Callable, Dict, List, Optional, Union
 
 from agentica.agent.base import Agent
 from agentica.agent.config import (
+    ExperienceConfig,
     PromptConfig,
     SandboxConfig,
     ToolConfig,
     WorkspaceMemoryConfig,
 )
 from agentica.model.base import Model
+from agentica.model.openai import OpenAIChat
 from agentica.tools.base import Tool, ModelTool, Function
 from agentica.workspace import Workspace
 
@@ -68,16 +70,23 @@ from agentica.workspace import Workspace
 class DeepAgent(Agent):
     """Full-featured Agent — batteries included.
 
-    DeepAgent = Agent + builtin tools + Runner agentic loop features.
+    DeepAgent = Agent + builtin tools + Runner agentic loop features + self-evolution.
 
     Enabled by default:
     - 5-stage compression pipeline (compress_tool_results=True)
     - Context overflow handling at 80% (context_overflow_threshold=0.8)
-    - Repeated tool-call detection at 3 (max_repeated_tool_calls=3)
     - MCP auto-loading from local mcp_config.json/yaml when available
     - Workspace memory with relevance recall (max_memory_entries=10)
     - Conversation auto-archive (auto_archive=True)
+    - Memory auto-extract after each run (auto_extract_memory=True) —
+      falls back to auxiliary_model to extract memories when the LLM did
+      not call save_memory during the run.
+    - auxiliary_model (gpt-4o-mini by default): a cheaper sibling used for
+      side tasks — compression, memory extraction, correction
+      classification, experience lifecycle.
     - Agentic prompt with datetime and agent name
+    - Self-evolution: experience=True + ExperienceConfig with all capture_*
+      switches on (tool errors, user corrections, success patterns)
 
     All parameters are optional — sensible defaults are applied.
     Any Agent parameter can be overridden via **kwargs.
@@ -87,6 +96,7 @@ class DeepAgent(Agent):
         self,
         *,
         model: Optional[Model] = None,
+        auxiliary_model: Optional[Model] = None,
         name: str = "DeepAgent",
         tools: Optional[List[Union[ModelTool, Tool, Callable, Dict, Function]]] = None,
         workspace: Optional[Union[Any, str]] = None,
@@ -97,6 +107,7 @@ class DeepAgent(Agent):
         prompt_config: Optional[PromptConfig] = None,
         tool_config: Optional[ToolConfig] = None,
         long_term_memory_config: Optional[WorkspaceMemoryConfig] = None,
+        experience_config: Optional[ExperienceConfig] = None,
         sandbox_config: Optional[SandboxConfig] = None,
         # Builtin tool toggles — mirror get_builtin_tools() params
         include_file_tools: bool = True,
@@ -113,10 +124,15 @@ class DeepAgent(Agent):
         user_input_callback: Optional[Callable] = None,
         **kwargs,
     ):
-        # Default model
+        # Default main model
         if model is None:
-            from agentica.model.openai import OpenAIChat
             model = OpenAIChat(id="gpt-4o")
+
+        # Default auxiliary_model — a cheaper sibling used for side tasks:
+        # compression, memory extraction, correction classification, experience
+        # lifecycle. Falls back to the main model if nothing is passed.
+        if auxiliary_model is None:
+            auxiliary_model = OpenAIChat(id="gpt-4o-mini")
 
         # Default workspace
         if workspace is None:
@@ -162,20 +178,33 @@ class DeepAgent(Agent):
                 auto_load_mcp=True,
                 compress_tool_results=True,
                 context_overflow_threshold=0.8,
-                max_repeated_tool_calls=3,
             )
 
         if long_term_memory_config is None:
             long_term_memory_config = WorkspaceMemoryConfig(
                 auto_archive=True,
+                auto_extract_memory=True,
                 load_workspace_context=True,
                 load_workspace_memory=True,
                 max_memory_entries=10,
                 sync_memories_to_global_agent_md=True,
             )
 
+        # DeepAgent is the self-evolving flagship: enable all capture switches.
+        # Users can pass their own experience_config to override.
+        if experience_config is None:
+            experience_config = ExperienceConfig(
+                capture_tool_errors=True,
+                capture_user_corrections=True,
+                capture_success_patterns=True,
+            )
+        # Honor an explicit experience=False override if passed via kwargs;
+        # otherwise DeepAgent enables experience capture by default.
+        kwargs.setdefault("experience", True)
+
         super().__init__(
             model=model,
+            auxiliary_model=auxiliary_model,
             name=name,
             tools=all_tools,
             workspace=workspace,
@@ -187,6 +216,7 @@ class DeepAgent(Agent):
             prompt_config=prompt_config,
             tool_config=tool_config,
             long_term_memory_config=long_term_memory_config,
+            experience_config=experience_config,
             sandbox_config=sandbox_config,
             **kwargs,
         )

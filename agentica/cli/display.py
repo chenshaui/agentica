@@ -7,8 +7,9 @@ import difflib
 import json
 import os
 import re
+from collections import OrderedDict
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from rich.markdown import Markdown
 from rich.syntax import Syntax
@@ -452,9 +453,21 @@ class StreamDisplayManager:
     Reasoning/thinking gets a separate ``╭─ Thinking ─╮`` box.
     """
 
-    def __init__(self, console_instance):
+    # Subagent rendering verbosity. Three explicit modes (see PR notes):
+    #   "all"     — default. Show ``tool_started`` only (one line per call,
+    #               consecutive same-tool dedup, ``[N]`` prefix when multiple
+    #               subagents are concurrently active). Final response shown.
+    #   "verbose" — also show ``tool_completed`` with elapsed time.
+    #   "off"     — silent during execution; only the final response summary
+    #               at ``subagent.end`` is shown.
+    SUBAGENT_VERBOSITIES = ("all", "verbose", "off")
+
+    def __init__(self, console_instance, subagent_verbosity: str = "all"):
         self.console = console_instance
         self._term_width = min(console_instance.width or 80, 120)
+        if subagent_verbosity not in self.SUBAGENT_VERBOSITIES:
+            subagent_verbosity = "all"
+        self._subagent_verbosity = subagent_verbosity
         self.reset()
 
     def reset(self):
@@ -473,6 +486,15 @@ class StreamDisplayManager:
         # already streamed live subagent steps; the after-completion summary
         # in display_tool_result() should be suppressed in that case.
         self._subagent_live_shown = 0
+        # Per-run state for batch prefixes + consecutive-tool dedup.
+        # ``_subagent_index`` maps run_id → 1-based slot. Slots are reclaimed
+        # at ``subagent.end`` so a long-lived parent can run many batches
+        # without leaking. ``_subagent_last_tool`` stores the previous
+        # (tool_name, info) per run_id to suppress consecutive duplicates
+        # (e.g. an agent retrying the same read_file call).
+        self._subagent_index: "OrderedDict[str, int]" = OrderedDict()
+        self._subagent_last_tool: Dict[str, tuple] = {}
+        self._next_subagent_slot: int = 0
 
     def _open_box(self, label: str = "Response"):
         w = self._term_width
@@ -698,50 +720,115 @@ class StreamDisplayManager:
         elif et.startswith("compact."):
             self._handle_compact_event(et, event)
 
+    def _subagent_prefix(self, run_id: Optional[str]) -> str:
+        """Return ``[N] `` if multiple subagents are concurrently active.
+
+        Single-subagent runs render with no numeric prefix to avoid noise.
+        """
+        if not run_id or len(self._subagent_index) < 2:
+            return ""
+        slot = self._subagent_index.get(run_id)
+        return f"[dim]\\[{slot}][/dim] " if slot is not None else ""
+
     def _handle_subagent_event(self, et: str, event: dict) -> None:
+        verbosity = self._subagent_verbosity
+        run_id = event.get("run_id")
+
         if et == "subagent.start":
             self._subagent_live_shown += 1
+            self._next_subagent_slot += 1
+            if run_id:
+                self._subagent_index[run_id] = self._next_subagent_slot
+                self._subagent_last_tool.pop(run_id, None)
+
+            if verbosity == "off":
+                return
+
             agent_name = event.get("agent_name", "Subagent")
             task = event.get("task", "")
             preview = task.replace("\n", " ").strip()
             if len(preview) > 100:
                 preview = preview[:97] + "..."
             self.console.print(
-                f"{self._SUB_INDENT}[dim cyan]⮕ {agent_name}[/dim cyan] "
+                f"{self._SUB_INDENT}{self._subagent_prefix(run_id)}"
+                f"[dim cyan]⮕ {agent_name}[/dim cyan] "
                 f"[dim italic]{preview}[/dim italic]"
             )
+
         elif et == "subagent.tool_started":
-            # Intentionally not rendered: render on completion to keep one
-            # line per tool (tool name + args + elapsed), and to handle
-            # parallel tool execution correctly (completions arrive out of
-            # start order in that case).
-            return
+            if verbosity == "off":
+                return
+            tool_name = event.get("tool_name", "")
+            info = event.get("info", "") or ""
+            # Consecutive same-(tool, args) dedup: an agent that retries the
+            # exact same call (or a stuck loop) shouldn't produce N identical
+            # CLI lines. Only suppress when the previous tool from THIS run
+            # had the same key — different runs / interleaved tools still
+            # render normally.
+            key = (tool_name, info)
+            if run_id and self._subagent_last_tool.get(run_id) == key:
+                return
+            if run_id:
+                self._subagent_last_tool[run_id] = key
+            if len(info) > 100:
+                info = info[:97] + "..."
+            line = (
+                f"{self._SUB_INDENT}{self._subagent_prefix(run_id)}"
+                f"[dim magenta]{tool_name}[/dim magenta]"
+            )
+            if info:
+                line += f" [dim]{info}[/dim]"
+            self.console.print(line)
+
         elif et == "subagent.tool_completed":
+            # Default ``all`` mode is tool-first: completion is hidden because
+            # the started line already told the user "agent is doing X".
+            # Verbose mode adds completion + elapsed for debugging.
+            if verbosity != "verbose":
+                # Always surface errors though — silent failures are worse
+                # than slightly noisier output.
+                if not event.get("is_error"):
+                    return
             tool_name = event.get("tool_name", "")
             info = event.get("info", "") or ""
             if len(info) > 100:
                 info = info[:97] + "..."
             is_error = event.get("is_error", False)
             elapsed_str = self._fmt_elapsed(event.get("elapsed"))
+            prefix = self._subagent_prefix(run_id)
             if is_error:
                 self.console.print(
-                    f"{self._SUB_INDENT}[dim red]⚠ {tool_name}[/dim red] [dim]{info}[/dim]"
+                    f"{self._SUB_INDENT}{prefix}"
+                    f"[dim red]⚠ {tool_name}[/dim red] [dim]{info}[/dim]"
                 )
                 return
-            line = f"{self._SUB_INDENT}[dim magenta]{tool_name}[/dim magenta]"
+            line = (
+                f"{self._SUB_INDENT}{prefix}"
+                f"[dim green]✓ {tool_name}[/dim green]"
+            )
             if info:
                 line += f" [dim]{info}[/dim]"
             if elapsed_str:
                 line += f"[dim]{elapsed_str}[/dim]"
             self.console.print(line)
+
         elif et == "subagent.end":
+            # Reclaim the slot before rendering so the prefix on the final
+            # line reflects the active count after this subagent exits.
+            if run_id:
+                self._subagent_index.pop(run_id, None)
+                self._subagent_last_tool.pop(run_id, None)
+
             response = event.get("response", "") or ""
             if response:
                 preview = response.replace("\n", " ").strip()
                 if len(preview) > 200:
                     preview = preview[:197] + "..."
+                # Final response is shown in every mode (including ``off``):
+                # it's the actual answer the parent agent will consume.
                 self.console.print(
-                    f"{self._SUB_INDENT}[dim cyan]⤷[/dim cyan] [dim italic]{preview}[/dim italic]"
+                    f"{self._SUB_INDENT}[dim cyan]⤷[/dim cyan] "
+                    f"[dim italic]{preview}[/dim italic]"
                 )
 
     def _handle_compact_event(self, et: str, event: dict) -> None:

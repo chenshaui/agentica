@@ -89,11 +89,6 @@ class ToolConfig:
     # 0.0 = disabled. Recommended: 0.8 (warn at 80%, hard-truncate at 90%).
     context_overflow_threshold: float = 0.0
 
-    # Repetition detection: if the same tool+args pair appears N times consecutively
-    # in function_call_stack, inject a "you're stuck in a loop, change strategy" message.
-    # 0 = disabled. Recommended: 3.
-    max_repeated_tool_calls: int = 0
-
 
 @dataclass
 class WorkspaceMemoryConfig:
@@ -150,10 +145,11 @@ class ExperienceConfig:
         3. Demote: unused > demotion_days → tier=warm
         4. Archive: unused > archive_days → tier=cold
     """
-    # Capture switches
-    capture_tool_errors: bool = True
-    capture_user_corrections: bool = True
-    capture_success_patterns: bool = True
+    # Capture switches. Default to False so libraries do not silently persist
+    # behavioral data to disk; opt in explicitly when self-evolution is desired.
+    capture_tool_errors: bool = False
+    capture_user_corrections: bool = False
+    capture_success_patterns: bool = False
 
     # LLM classification confidence threshold for persisting corrections
     feedback_confidence_threshold: float = 0.8

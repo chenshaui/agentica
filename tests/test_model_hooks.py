@@ -2,14 +2,13 @@
 """
 Tests for Model-layer pre/post tool hooks:
 - _build_pre_tool_hook() injection via update_model()
-- Context overflow handling (context_overflow_threshold)
-- Repetition detection (max_repeated_tool_calls)
-- Fast path: neither feature enabled → hook is None
+- Context overflow handling (context_overflow_threshold) — compress then evict
+- Fast path: feature disabled → hook is None
 All tests mock LLM API keys — no real API calls.
 """
 import asyncio
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from agentica.agent.config import ToolConfig
 from agentica.model.message import Message
@@ -24,179 +23,28 @@ def _make_agent(tool_config=None):
     )
 
 
-def _make_fc(name: str, args: dict):
-    """Make a minimal FunctionCall-like mock."""
-    fc = MagicMock()
-    fc.function.name = name
-    fc.arguments = args
-    return fc
-
-
 class TestHookInjection(unittest.TestCase):
     """_build_pre_tool_hook() must return None or callable based on ToolConfig."""
 
-    def test_both_disabled_hook_is_none(self):
+    def test_disabled_hook_is_none(self):
         agent = _make_agent(ToolConfig())
         self.assertIsNone(agent._build_pre_tool_hook())
 
-    def test_overflow_only_hook_is_set(self):
+    def test_overflow_enabled_hook_is_set(self):
         agent = _make_agent(ToolConfig(context_overflow_threshold=0.8))
-        self.assertIsNotNone(agent._build_pre_tool_hook())
-
-    def test_repetition_only_hook_is_set(self):
-        agent = _make_agent(ToolConfig(max_repeated_tool_calls=3))
-        self.assertIsNotNone(agent._build_pre_tool_hook())
-
-    def test_both_enabled_hook_is_set(self):
-        agent = _make_agent(ToolConfig(context_overflow_threshold=0.8, max_repeated_tool_calls=3))
         self.assertIsNotNone(agent._build_pre_tool_hook())
 
     def test_hook_cleared_on_subsequent_config_change(self):
         """Switching to disabled config makes _build_pre_tool_hook() return None."""
-        agent = _make_agent(ToolConfig(max_repeated_tool_calls=3))
+        agent = _make_agent(ToolConfig(context_overflow_threshold=0.8))
         self.assertIsNotNone(agent._build_pre_tool_hook())
         # Switch to disabled
         agent.tool_config = ToolConfig()
         self.assertIsNone(agent._build_pre_tool_hook())
 
 
-class TestRepetitionDetection(unittest.TestCase):
-    """_build_pre_tool_hook must detect and break repetitive tool call loops."""
-
-    def _make_hook(self, n=3):
-        agent = _make_agent(ToolConfig(max_repeated_tool_calls=n))
-        agent.update_model()
-        hook = agent._build_pre_tool_hook()
-        return agent, hook
-
-    def test_identical_calls_triggers_injection(self):
-        agent, hook = self._make_hook(n=3)
-        agent.model.function_call_stack = [
-            _make_fc("web_search", {"query": "python async"}),
-            _make_fc("web_search", {"query": "python async"}),
-            _make_fc("web_search", {"query": "python async"}),
-        ]
-        messages = [Message(role="user", content="search")]
-        result = asyncio.run(hook(messages, []))
-        self.assertTrue(result, "Hook should return True to skip the tool batch")
-
-    def test_injection_adds_user_message_naming_the_tool(self):
-        agent, hook = self._make_hook(n=3)
-        agent.model.function_call_stack = [
-            _make_fc("read_file", {"path": "/foo"}),
-            _make_fc("read_file", {"path": "/foo"}),
-            _make_fc("read_file", {"path": "/foo"}),
-        ]
-        messages = [Message(role="user", content="read file")]
-        asyncio.run(hook(messages, []))
-        injected = messages[-1]
-        self.assertEqual(injected.role, "user")
-        self.assertIn("read_file", injected.content)
-        self.assertIn("3 times", injected.content)
-
-    def test_mixed_tools_no_trigger(self):
-        agent, hook = self._make_hook(n=3)
-        agent.model.function_call_stack = [
-            _make_fc("web_search", {"q": "a"}),
-            _make_fc("read_file", {"path": "x"}),
-            _make_fc("web_search", {"q": "b"}),
-        ]
-        messages = [Message(role="user", content="search")]
-        original_len = len(messages)
-        result = asyncio.run(hook(messages, []))
-        self.assertFalse(result)
-        self.assertEqual(len(messages), original_len)
-
-    def test_same_tool_different_args_no_trigger(self):
-        agent, hook = self._make_hook(n=3)
-        agent.model.function_call_stack = [
-            _make_fc("web_search", {"query": "python"}),
-            _make_fc("web_search", {"query": "golang"}),
-            _make_fc("web_search", {"query": "rust"}),
-        ]
-        messages = [Message(role="user", content="search")]
-        result = asyncio.run(hook(messages, []))
-        self.assertFalse(result)
-
-    def test_fewer_than_n_calls_no_trigger(self):
-        agent, hook = self._make_hook(n=3)
-        agent.model.function_call_stack = [
-            _make_fc("web_search", {"query": "test"}),
-            _make_fc("web_search", {"query": "test"}),
-        ]
-        messages = [Message(role="user", content="x")]
-        result = asyncio.run(hook(messages, []))
-        self.assertFalse(result)
-
-    def test_empty_stack_no_trigger(self):
-        agent, hook = self._make_hook(n=3)
-        agent.model.function_call_stack = []
-        messages = [Message(role="user", content="x")]
-        result = asyncio.run(hook(messages, []))
-        self.assertFalse(result)
-
-    def test_identical_repetition_notice_injected_only_once(self):
-        agent, hook = self._make_hook(n=3)
-        agent.model.function_call_stack = [
-            _make_fc("grep", {"pattern": "TODO", "path": "."}),
-            _make_fc("grep", {"pattern": "TODO", "path": "."}),
-            _make_fc("grep", {"pattern": "TODO", "path": "."}),
-        ]
-        messages = [Message(role="user", content="search")]
-
-        # Repetition notice is logged at DEBUG level to avoid flooding the CLI;
-        # patch logger.debug to assert it fires at most once per (tool, args).
-        with patch("agentica.agent.base.logger.debug") as mock_debug:
-            first_result = asyncio.run(hook(messages, []))
-            second_result = asyncio.run(hook(messages, []))
-
-        self.assertTrue(first_result)
-        self.assertTrue(second_result)
-        self.assertEqual(len(messages), 2, "Same repetition notice should not be injected twice")
-        repetition_debug_calls = [
-            c for c in mock_debug.call_args_list
-            if "repetition detected" in (c.args[0] if c.args else "")
-        ]
-        self.assertEqual(
-            len(repetition_debug_calls), 1,
-            "Same repetition debug log should only be emitted once per (tool, args)",
-        )
-
-    def test_repetition_notice_persists_across_calls_without_reset(self):
-        """Dedup state is intentionally persistent across runs (no auto-reset).
-
-        This prevents CLI spam: once an overflow/repetition notice has been
-        emitted for a given (tool, args) key, subsequent triggers on the same
-        Agent instance must stay silent.
-        """
-        agent, hook = self._make_hook(n=3)
-        agent.model.function_call_stack = [
-            _make_fc("read_file", {"path": "a.py"}),
-            _make_fc("read_file", {"path": "a.py"}),
-            _make_fc("read_file", {"path": "a.py"}),
-        ]
-        messages_turn1 = [Message(role="user", content="turn1")]
-        asyncio.run(hook(messages_turn1, []))
-        # Simulate a brand new user turn — Runner no longer resets hook state.
-        messages_turn2 = [Message(role="user", content="turn2")]
-        with patch("agentica.agent.base.logger.debug") as mock_debug:
-            asyncio.run(hook(messages_turn2, []))
-        self.assertEqual(
-            len(messages_turn2), 1,
-            "Notice must not be re-injected on a second run with same (tool, args)",
-        )
-        repetition_debug_calls = [
-            c for c in mock_debug.call_args_list
-            if "repetition detected" in (c.args[0] if c.args else "")
-        ]
-        self.assertEqual(
-            len(repetition_debug_calls), 0,
-            "Repetition log must not fire again after the first occurrence",
-        )
-
-
 class TestContextOverflowHandling(unittest.TestCase):
-    """_build_pre_tool_hook must evict old messages when context is near capacity."""
+    """_build_pre_tool_hook must handle context overflow without dropping system msg."""
 
     def _make_hook(self, threshold=0.5, window=200):
         agent = _make_agent(ToolConfig(context_overflow_threshold=threshold))
@@ -214,8 +62,8 @@ class TestContextOverflowHandling(unittest.TestCase):
             Message(role="user", content="C" * 150),
         ]
         result = asyncio.run(hook(messages, []))
-        self.assertFalse(result, "Overflow evicts but does not skip tool batch")
-        self.assertLess(len(messages), 4, "At least one message should be evicted")
+        self.assertFalse(result, "Overflow handling does not skip tool batch")
+        self.assertLess(len(messages), 4, "At least one message should be dropped")
 
     def test_system_message_always_preserved(self):
         hook = self._make_hook(threshold=0.1, window=50)
@@ -226,7 +74,7 @@ class TestContextOverflowHandling(unittest.TestCase):
         asyncio.run(hook(messages, []))
         self.assertEqual(messages[0].role, "system")
 
-    def test_no_overflow_no_eviction(self):
+    def test_no_overflow_no_change(self):
         hook = self._make_hook(threshold=0.9, window=100000)
         messages = [
             Message(role="system", content="System."),
@@ -237,7 +85,7 @@ class TestContextOverflowHandling(unittest.TestCase):
         self.assertEqual(len(messages), original_len)
 
     def test_overflow_returns_false_not_true(self):
-        """Context overflow evicts messages but does NOT skip the tool batch."""
+        """Context overflow handling does NOT skip the tool batch."""
         hook = self._make_hook(threshold=0.1, window=10)
         messages = [
             Message(role="system", content="Sys"),
@@ -245,6 +93,40 @@ class TestContextOverflowHandling(unittest.TestCase):
         ]
         result = asyncio.run(hook(messages, []))
         self.assertFalse(result)
+
+    def test_compression_tried_before_eviction(self):
+        """When a compression_manager is wired, compress() must run before FIFO evict.
+
+        If compression alone brings usage below the hard limit, no messages are
+        evicted. This preserves information when possible.
+        """
+        agent = _make_agent(ToolConfig(context_overflow_threshold=0.5))
+        agent.update_model()
+        agent.model.context_window = 200
+
+        # Wire a mock compression manager that "compresses" by replacing content
+        # with a short stub — dropping total chars below the hard limit.
+        async def fake_compress(msgs, tools=None, model=None, response_format=None):
+            for m in msgs:
+                if m.role != "system":
+                    m.content = "x"
+        cm = MagicMock()
+        cm.compress = AsyncMock(side_effect=fake_compress)
+        agent.tool_config.compression_manager = cm
+
+        hook = agent._build_pre_tool_hook()
+        messages = [
+            Message(role="system", content="sys"),
+            Message(role="user", content="A" * 200),
+            Message(role="assistant", content="B" * 200),
+            Message(role="user", content="C" * 200),
+        ]
+        n_before = len(messages)
+        result = asyncio.run(hook(messages, []))
+        self.assertFalse(result)
+        cm.compress.assert_awaited_once()
+        # With effective compression, no eviction should occur.
+        self.assertEqual(len(messages), n_before, "Compression alone should suffice")
 
 
 class TestPostToolHook(unittest.TestCase):
@@ -257,7 +139,6 @@ class TestPostToolHook(unittest.TestCase):
 
     def test_post_tool_hook_is_set_with_todo_tool(self):
         """With BuiltinTodoTool, _build_post_tool_hook should return an async callable."""
-        from agentica.tools.buildin_tools import BuiltinTodoTool
         agent = _make_agent_with_todo_tool()
         self.assertIsNotNone(agent._build_post_tool_hook())
 

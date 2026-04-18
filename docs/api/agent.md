@@ -243,7 +243,6 @@ from agentica.agent.config import ToolConfig
 | `compress_tool_results` | `bool` | `False` | 压缩工具结果（节省 token） |
 | `compression_manager` | `CompressionManager` | `None` | 自定义压缩管理器实例 |
 | `context_overflow_threshold` | `float` | `0.0` | context_window 使用率触发截断的阈值（0-1，0=禁用，推荐 0.8） |
-| `max_repeated_tool_calls` | `int` | `0` | 相同工具+参数连续调用 N 次后注入"你在循环"提示（0=禁用，推荐 3） |
 
 ## WorkspaceMemoryConfig
 

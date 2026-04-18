@@ -945,7 +945,8 @@ class TestCrossLayerCleanup(unittest.TestCase):
         """Correction classified as experience should be written to compiled store."""
         from agentica.hooks import ExperienceCaptureHooks
 
-        config = ExperienceConfig()
+        # capture_user_corrections is False by default; opt in explicitly for this test.
+        config = ExperienceConfig(capture_user_corrections=True)
         hooks = ExperienceCaptureHooks(config)
         agent = MagicMock()
         agent.agent_id = "test"

@@ -210,10 +210,6 @@ result = await agent.run(
 )
 ```
 
-### Repetition Detection
-
-当 Agent 反复用相同参数调用同一工具时（`max_repeated_tool_calls=3`），自动注入"你在循环，换策略"的提示，打破死循环。
-
 ## 多 Agent 编排
 
 ### as_tool（编排器模式）

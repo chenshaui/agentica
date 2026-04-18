@@ -296,7 +296,6 @@ agent = Agent(
         tool_call_limit=30,            # 单次 run 最多调用工具 30 次（防止无限循环）
         compress_tool_results=True,    # 大工具结果自动压缩（节省 token）
         context_overflow_threshold=0.8, # 上下文达 80% 时触发压缩
-        max_repeated_tool_calls=3,     # 相同工具+参数出现 3 次→注入"你在循环"提示
         search_knowledge=True,         # 允许 Agent 主动搜索知识库
     ),
 )
@@ -394,7 +393,6 @@ result = await agent.run("""
 - `enable_agentic_prompt=True`（Soul + Tools Guide + Heartbeat + Self Verification）
 - `compress_tool_results=True`（大工具结果自动压缩）
 - `context_overflow_threshold=0.8`（上下文 80% 触发压缩）
-- `max_repeated_tool_calls=3`（循环检测）
 - Workspace 长期记忆
 - Session Log 会话持久化
 

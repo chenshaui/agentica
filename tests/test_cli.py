@@ -254,6 +254,140 @@ class TestCLIHelpers(unittest.TestCase):
         calls = [str(c) for c in fake.print.call_args_list]
         self.assertTrue(any("compact" in c for c in calls))
 
+
+class TestStreamDisplayManagerSubagent(unittest.TestCase):
+    """Subagent rendering policy: tool-first by default, dedup, batch prefix."""
+
+    def _make(self, verbosity: str = "all"):
+        from agentica.cli.display import StreamDisplayManager
+        fake = MagicMock()
+        fake.width = 80
+        return fake, StreamDisplayManager(fake, subagent_verbosity=verbosity)
+
+    @staticmethod
+    def _printed(fake) -> str:
+        return "\n".join(str(c) for c in fake.print.call_args_list)
+
+    def test_default_renders_tool_started_not_completed(self):
+        fake, dm = self._make("all")
+        dm.handle_event({"type": "subagent.start", "run_id": "r1",
+                         "agent_name": "explore", "task": "look"})
+        dm.handle_event({"type": "subagent.tool_started", "run_id": "r1",
+                         "agent_name": "explore", "tool_name": "read_file",
+                         "info": "a.py", "args": {}})
+        dm.handle_event({"type": "subagent.tool_completed", "run_id": "r1",
+                         "agent_name": "explore", "tool_name": "read_file",
+                         "info": "a.py", "elapsed": 0.5, "is_error": False})
+        out = self._printed(fake)
+        self.assertIn("read_file", out, "tool_started must render in default mode")
+        self.assertNotIn("✓", out, "tool_completed checkmark must not render in default mode")
+
+    def test_default_dedups_consecutive_identical_tool(self):
+        fake, dm = self._make("all")
+        dm.handle_event({"type": "subagent.start", "run_id": "r1",
+                         "agent_name": "explore", "task": "loop"})
+        for _ in range(3):
+            dm.handle_event({"type": "subagent.tool_started", "run_id": "r1",
+                             "agent_name": "explore", "tool_name": "read_file",
+                             "info": "a.py", "args": {}})
+        out = self._printed(fake)
+        self.assertEqual(out.count("read_file"), 1,
+                         "consecutive identical tool calls must collapse to one line")
+
+    def test_default_does_not_dedup_when_args_change(self):
+        fake, dm = self._make("all")
+        dm.handle_event({"type": "subagent.start", "run_id": "r1",
+                         "agent_name": "explore", "task": "loop"})
+        for path in ("a.py", "b.py", "c.py"):
+            dm.handle_event({"type": "subagent.tool_started", "run_id": "r1",
+                             "agent_name": "explore", "tool_name": "read_file",
+                             "info": path, "args": {}})
+        out = self._printed(fake)
+        self.assertEqual(out.count("read_file"), 3,
+                         "different args must each render their own line")
+
+    def test_concurrent_subagents_get_index_prefix(self):
+        fake, dm = self._make("all")
+        dm.handle_event({"type": "subagent.start", "run_id": "r1",
+                         "agent_name": "a", "task": "t1"})
+        dm.handle_event({"type": "subagent.start", "run_id": "r2",
+                         "agent_name": "b", "task": "t2"})
+        dm.handle_event({"type": "subagent.tool_started", "run_id": "r1",
+                         "agent_name": "a", "tool_name": "glob",
+                         "info": "*.py", "args": {}})
+        dm.handle_event({"type": "subagent.tool_started", "run_id": "r2",
+                         "agent_name": "b", "tool_name": "glob",
+                         "info": "*.md", "args": {}})
+        out = self._printed(fake)
+        self.assertIn("[1]", out, "first concurrent subagent must get [1] prefix")
+        self.assertIn("[2]", out, "second concurrent subagent must get [2] prefix")
+
+    def test_single_subagent_has_no_index_prefix(self):
+        fake, dm = self._make("all")
+        dm.handle_event({"type": "subagent.start", "run_id": "r1",
+                         "agent_name": "solo", "task": "t"})
+        dm.handle_event({"type": "subagent.tool_started", "run_id": "r1",
+                         "agent_name": "solo", "tool_name": "glob",
+                         "info": "*.py", "args": {}})
+        out = self._printed(fake)
+        self.assertNotIn("[1]", out, "single subagent must not get noisy [N] prefix")
+
+    def test_verbose_mode_renders_completion_with_elapsed(self):
+        fake, dm = self._make("verbose")
+        dm.handle_event({"type": "subagent.start", "run_id": "r1",
+                         "agent_name": "x", "task": "t"})
+        dm.handle_event({"type": "subagent.tool_completed", "run_id": "r1",
+                         "agent_name": "x", "tool_name": "read_file",
+                         "info": "a.py", "elapsed": 1.234, "is_error": False})
+        out = self._printed(fake)
+        self.assertIn("✓", out, "verbose mode must render completion checkmark")
+        self.assertIn("1.2", out, "verbose mode must surface elapsed time")
+
+    def test_off_mode_suppresses_intermediate_events_but_keeps_end(self):
+        fake, dm = self._make("off")
+        dm.handle_event({"type": "subagent.start", "run_id": "r1",
+                         "agent_name": "x", "task": "t"})
+        dm.handle_event({"type": "subagent.tool_started", "run_id": "r1",
+                         "agent_name": "x", "tool_name": "read_file",
+                         "info": "a.py", "args": {}})
+        dm.handle_event({"type": "subagent.end", "run_id": "r1",
+                         "agent_name": "x", "response": "done", "tool_count": 1})
+        out = self._printed(fake)
+        self.assertNotIn("read_file", out, "off mode must hide intermediate tools")
+        self.assertNotIn("⮕", out, "off mode must hide start banner")
+        self.assertIn("done", out, "off mode must still surface the final response")
+
+    def test_default_still_surfaces_tool_errors_even_at_completion(self):
+        # is_error completions are exempt from the "hide completed" policy:
+        # silent failures are worse than slightly noisier output.
+        fake, dm = self._make("all")
+        dm.handle_event({"type": "subagent.start", "run_id": "r1",
+                         "agent_name": "x", "task": "t"})
+        dm.handle_event({"type": "subagent.tool_completed", "run_id": "r1",
+                         "agent_name": "x", "tool_name": "exec",
+                         "info": "boom", "elapsed": 0.1, "is_error": True})
+        out = self._printed(fake)
+        self.assertIn("⚠", out, "errors must surface even in default mode")
+        self.assertIn("exec", out)
+
+    def test_subagent_slot_reclaimed_on_end(self):
+        fake, dm = self._make("all")
+        dm.handle_event({"type": "subagent.start", "run_id": "r1",
+                         "agent_name": "a", "task": "t1"})
+        dm.handle_event({"type": "subagent.end", "run_id": "r1",
+                         "agent_name": "a", "response": "x", "tool_count": 0})
+        # New subagent — only one active at a time again, so no [N] prefix.
+        dm.handle_event({"type": "subagent.start", "run_id": "r2",
+                         "agent_name": "b", "task": "t2"})
+        dm.handle_event({"type": "subagent.tool_started", "run_id": "r2",
+                         "agent_name": "b", "tool_name": "glob",
+                         "info": "*.py", "args": {}})
+        out = self._printed(fake)
+        self.assertNotIn("[2]", out)
+        self.assertNotIn("[1]", out)
+
+
+class TestSuppressConsoleLogging(unittest.TestCase):
     def test_suppress_console_logging_removes_all_non_file_stream_handlers(self):
         from agentica.utils.log import logger, suppress_console_logging
 

@@ -47,9 +47,11 @@ class TestExperienceConfig(unittest.TestCase):
 
     def test_defaults(self):
         config = ExperienceConfig()
-        self.assertTrue(config.capture_tool_errors)
-        self.assertTrue(config.capture_user_corrections)
-        self.assertTrue(config.capture_success_patterns)
+        # capture_* default to False so libraries do not silently persist
+        # behavioral data; users opt in explicitly.
+        self.assertFalse(config.capture_tool_errors)
+        self.assertFalse(config.capture_user_corrections)
+        self.assertFalse(config.capture_success_patterns)
         self.assertEqual(config.promotion_count, 3)
         self.assertEqual(config.promotion_window_days, 7)
         self.assertEqual(config.demotion_days, 30)
@@ -79,7 +81,15 @@ class TestExperienceCaptureHooks(unittest.TestCase):
     """Test experience capture via hooks."""
 
     def _make_hooks(self, **config_overrides):
-        config = ExperienceConfig(**config_overrides)
+        # Library defaults have capture_* = False (opt-in). Tests in this class
+        # exercise the capture pipeline, so flip them on unless a test overrides.
+        defaults = {
+            "capture_tool_errors": True,
+            "capture_user_corrections": True,
+            "capture_success_patterns": True,
+        }
+        defaults.update(config_overrides)
+        config = ExperienceConfig(**defaults)
         return ExperienceCaptureHooks(config)
 
     def _mock_agent(self, agent_id="test-agent-1"):

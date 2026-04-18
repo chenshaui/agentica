@@ -24,7 +24,6 @@ from typing import (
     List,
     Optional,
     Sequence,
-    Tuple,
     Type,
     Union,
 )
@@ -302,11 +301,9 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
         # Prevents the same memory entry from occupying system prompt slots every turn.
         self._surfaced_memories: set = set()
 
-        # Per-run model-hook state. These guards prevent the same protection
-        # warning / injected strategy notice from being emitted on every loop
-        # iteration when the model gets stuck.
+        # Context-overflow protection dedup state. Guards prevent the same
+        # overflow warning from being emitted on every loop iteration.
         self._overflow_warning_emitted: bool = False
-        self._repetition_notice_keys: set[Tuple[str, str]] = set()
 
         # Create Runner instance
         self._runner = Runner(self)
@@ -820,10 +817,8 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
         clone._enabled_skills = None
         clone._session_log = None
         # Inherit hook dedup state from source so cloned sub-agents do not
-        # re-emit the same overflow/repetition notice that the parent already
-        # handled. ``set(...)`` produces an independent copy.
+        # re-emit the same overflow warning that the parent already handled.
         clone._overflow_warning_emitted = self._overflow_warning_emitted
-        clone._repetition_notice_keys = set(self._repetition_notice_keys)
         # Fresh working memory (don't share session state)
         clone.working_memory = WorkingMemory()
         # Fresh session-level memory dedup set
@@ -941,124 +936,87 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
     def _build_pre_tool_hook(self):
         """Build the pre-tool hook function based on ToolConfig settings.
 
-        Returns an async callable (messages, function_calls) -> bool, or None if no
-        hooks are active.  Returning True tells run_function_calls to skip the batch.
+        Returns an async callable (messages, function_calls) -> bool, or None
+        if no hook is active. Returning False tells the Runner to proceed with
+        tool execution normally.
 
-        Capabilities bundled in the hook (both are opt-in via ToolConfig):
+        Capability (opt-in via ToolConfig):
 
-        1. Context overflow handling
+        Context overflow handling
            Triggered when: tool_config.context_overflow_threshold > 0 and
            estimated token usage / context_window >= threshold.
-           Action: FIFO-evict oldest non-system messages until usage drops below
-           a hard limit (threshold + 5pp), then log a warning.
-           This is a best-effort heuristic — accurate token counting requires the
-           tokenizer; here we estimate ~4 chars/token for speed.
-
-        2. Repetition detection
-           Triggered when: tool_config.max_repeated_tool_calls > 0 and the last
-           N calls in function_call_stack all have the same (tool_name, args) pair.
-           Action: inject a role="user" message telling the model it's looping and
-           must change strategy, then return True (skip the current batch) so the
-           model can reconsider on the next LLM call.
+           Two-stage action (compress-then-evict):
+             1. If a compression_manager is wired, try reversible compression
+                first (summarize/truncate tool results). Compression preserves
+                information — prefer it over destructive eviction.
+             2. Only if usage still exceeds the hard limit (threshold + 5pp)
+                after compression, FIFO-evict oldest non-system messages.
+           Estimation uses ~4 chars/token heuristic for speed; accurate token
+           counting requires the tokenizer.
 
         Returning None means no hook is registered (fast path, no overhead).
         """
         overflow_threshold = self.tool_config.context_overflow_threshold
-        max_repeat = self.tool_config.max_repeated_tool_calls
 
-        # Fast path: neither feature is enabled
-        if overflow_threshold <= 0.0 and max_repeat <= 0:
+        # Fast path: feature is disabled
+        if overflow_threshold <= 0.0:
             return None
 
         agent_ref = self  # captured in closure
+
+        def _estimate_usage_ratio(msgs: list, ctx_window: int) -> float:
+            total_chars = sum(
+                len(str(m.content)) if m.content else 0
+                for m in msgs
+            )
+            return (total_chars / 4.0) / ctx_window
 
         async def _pre_tool_hook(messages: list, function_calls: list) -> bool:
             model = agent_ref.model
             if model is None:
                 return False
 
-            # ---- 1. Context overflow handling ----
-            if overflow_threshold > 0.0:
-                context_window = model.context_window or 128000
-                # Estimate tokens: sum of all message content lengths / 4 (chars-per-token heuristic)
-                total_chars = sum(
-                    len(str(m.content)) if m.content else 0
-                    for m in messages
+            if overflow_threshold <= 0.0:
+                return False
+
+            context_window = model.context_window or 128000
+            usage_ratio = _estimate_usage_ratio(messages, context_window)
+
+            if usage_ratio < overflow_threshold:
+                return False
+
+            hard_limit = min(overflow_threshold + 0.05, 0.95)
+
+            # ---- Stage 1: reversible compression (prefer over eviction) ----
+            compression_manager = agent_ref.tool_config.compression_manager
+            compressed = False
+            if compression_manager is not None:
+                await compression_manager.compress(messages)
+                compressed = True
+                usage_ratio = _estimate_usage_ratio(messages, context_window)
+
+            # ---- Stage 2: FIFO evict oldest non-system messages if still over ----
+            evicted = 0
+            while usage_ratio >= hard_limit and len(messages) > 2:
+                for idx, m in enumerate(messages):
+                    if m.role != "system":
+                        messages.pop(idx)
+                        evicted += 1
+                        break
+                else:
+                    break  # Only system messages left
+                usage_ratio = _estimate_usage_ratio(messages, context_window)
+
+            # Demote to debug + only once per Agent instance lifetime to
+            # avoid flooding the CLI across multiple user turns.
+            if not agent_ref._overflow_warning_emitted:
+                logger.debug(
+                    f"Agent '{agent_ref.identifier}': context overflow handled "
+                    f"(estimated {usage_ratio:.0%} of {context_window} tokens). "
+                    f"Compressed={compressed}, evicted {evicted} old messages. "
+                    "Set tool_config=ToolConfig(context_overflow_threshold=0.0) to disable."
                 )
-                estimated_tokens = total_chars / 4.0
-                usage_ratio = estimated_tokens / context_window
-
-                if usage_ratio >= overflow_threshold:
-                    # Evict oldest non-system messages until we drop below threshold + 5pp hard limit
-                    hard_limit = min(overflow_threshold + 0.05, 0.95)
-                    evicted = 0
-                    while usage_ratio >= hard_limit and len(messages) > 2:
-                        # Find first non-system message
-                        for idx, m in enumerate(messages):
-                            if m.role != "system":
-                                messages.pop(idx)
-                                evicted += 1
-                                break
-                        else:
-                            break  # Only system messages left
-                        total_chars = sum(
-                            len(str(m.content)) if m.content else 0
-                            for m in messages
-                        )
-                        usage_ratio = (total_chars / 4.0) / context_window
-
-                    # Demote to debug + only once per Agent instance lifetime to
-                    # avoid flooding the CLI across multiple user turns.
-                    if not agent_ref._overflow_warning_emitted:
-                        logger.debug(
-                            f"Agent '{agent_ref.identifier}': context overflow detected "
-                            f"(estimated {usage_ratio:.0%} of {context_window} tokens). "
-                            f"Evicted {evicted} old messages. "
-                            "Set tool_config=ToolConfig(context_overflow_threshold=0.0) to disable."
-                        )
-                        agent_ref._overflow_warning_emitted = True
-
-            # ---- 2. Repetition detection ----
-            if max_repeat > 0 and model.function_call_stack is not None:
-                stack = model.function_call_stack
-                if len(stack) >= max_repeat:
-                    # Check if last N calls are all identical (same name + same args)
-                    last_n = stack[-max_repeat:]
-                    first = last_n[0]
-                    first_key = (
-                        first.function.name,
-                        str(sorted(first.arguments.items())) if first.arguments else "",
-                    )
-                    all_same = all(
-                        (
-                            fc.function.name,
-                            str(sorted(fc.arguments.items())) if fc.arguments else "",
-                        ) == first_key
-                        for fc in last_n
-                    )
-                    if all_same:
-                        tool_name, args_key = first_key
-                        repetition_key: Tuple[str, str] = (tool_name, args_key)
-                        notice = (
-                            f"[System notice] You have called '{tool_name}' {max_repeat} times "
-                            f"in a row with identical arguments and it has not resolved the problem. "
-                            "Stop repeating this call. Try a fundamentally different approach: "
-                            "use a different tool, decompose the problem differently, or "
-                            "report what you know so far and ask for clarification."
-                        )
-                        if repetition_key not in agent_ref._repetition_notice_keys:
-                            # Demote to debug — the notice is already injected
-                            # into the prompt so the LLM sees it; no need to
-                            # also flood the CLI console across user turns.
-                            logger.debug(
-                                f"Agent '{agent_ref.identifier}': repetition detected — "
-                                f"tool '{tool_name}' called with identical args {max_repeat}x in a row. "
-                                "Injecting strategy-change message."
-                            )
-                            messages.append(Message(role="user", content=notice))
-                            agent_ref._repetition_notice_keys.add(repetition_key)
-                        # Skip the current tool batch — let the model reconsider
-                        return True
+                agent_ref._overflow_warning_emitted = True
 
             return False  # proceed with tool execution
 

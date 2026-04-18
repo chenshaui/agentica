@@ -516,7 +516,13 @@ def _process_stream_response(
 
             _set_spinner("")
 
-        display = StreamDisplayManager(con)
+        # Subagent verbosity follows the global ``--debug`` flag (carried
+        # via ``tui_state`` since this helper has no direct access to the
+        # CLI args): developers debugging a flow want completion + elapsed
+        # for every child tool; end users get the tool-first single-line
+        # view by default.
+        subagent_verbosity = "verbose" if tui_state.get("debug") else "all"
+        display = StreamDisplayManager(con, subagent_verbosity=subagent_verbosity)
         # Register live-event callback so the subagent's tool calls and
         # compression events render in real time (instead of being a black
         # box until the parent tool result arrives).
@@ -1087,6 +1093,7 @@ def run_interactive(agent_config: dict, extra_tool_names: Optional[List[str]] = 
         "statusbar_visible": True,
         "session_start": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "total_api_calls": 0,
+        "debug": bool(agent_config.get("debug")),
     }
 
     pending_queue = PendingQueue()

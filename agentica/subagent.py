@@ -387,12 +387,15 @@ class SubagentRegistry:
         parent_agent: "Agent",
         child: "Agent",
         task: str,
+        run_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Drive the subagent through ``run_stream`` and bubble events to parent CLI.
 
         Always streams (zero-cost when no ``_event_callback`` is wired) so
         ``BuiltinTaskTool`` and any external caller share the same execution
-        loop. Returns ``{content, tool_calls_summary}``.
+        loop. ``run_id`` is propagated into every emitted event so the CLI can
+        correlate concurrent subagents (e.g. for ``[1] [2]`` batch prefixes).
+        Returns ``{content, tool_calls_summary}``.
         """
         from agentica.run_config import RunConfig
         from agentica.tools.builtin_task_tool import BuiltinTaskTool
@@ -402,6 +405,7 @@ class SubagentRegistry:
             child._event_callback = cb
             cb({
                 "type": "subagent.start",
+                "run_id": run_id,
                 "agent_name": child.name,
                 "task": task,
             })
@@ -439,6 +443,8 @@ class SubagentRegistry:
                         if cb is not None:
                             cb({
                                 "type": "subagent.tool_started",
+                                "run_id": run_id,
+                                "agent_name": child.name,
                                 "tool_name": tool_name,
                                 "info": brief,
                                 "args": tool_args if isinstance(tool_args, dict) else {},
@@ -459,6 +465,8 @@ class SubagentRegistry:
                             elapsed_t = (tool_info.get("metrics") or {}).get("time")
                             cb({
                                 "type": "subagent.tool_completed",
+                                "run_id": run_id,
+                                "agent_name": child.name,
                                 "tool_name": tool_name,
                                 "info": brief,
                                 "elapsed": elapsed_t,
@@ -470,6 +478,7 @@ class SubagentRegistry:
         if cb is not None:
             cb({
                 "type": "subagent.end",
+                "run_id": run_id,
                 "agent_name": child.name,
                 "response": final_content,
                 "tool_count": len(tool_calls_log),
@@ -618,7 +627,7 @@ class SubagentRegistry:
 
         start_time = time.time()
         try:
-            run_coro = self._run_child_streaming(parent_agent, child, task)
+            run_coro = self._run_child_streaming(parent_agent, child, task, run_id=run_id)
             if config.timeout > 0:
                 stream_result = await asyncio.wait_for(run_coro, timeout=config.timeout)
             else:

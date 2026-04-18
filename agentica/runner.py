@@ -715,10 +715,10 @@ class Runner:
                 agent.model.run_tools = False
 
                 # Build hooks from Agent (they live on Agent, not Model).
-                # De-dup state (_overflow_warning_emitted, _repetition_notice_keys)
-                # is intentionally persistent across runs for the same Agent
-                # instance, so the CLI does not repeatedly emit the same
-                # overflow/repetition notices every user turn.
+                # De-dup state (_overflow_warning_emitted) is intentionally
+                # persistent across runs for the same Agent instance, so the CLI
+                # does not repeatedly emit the same overflow notice every user
+                # turn.
                 _pre_tool_hook = agent._build_pre_tool_hook()
                 _post_tool_hook = agent._build_post_tool_hook()
 
@@ -752,7 +752,7 @@ class Runner:
                         # Safety: cancellation
                         agent._check_cancelled()
 
-                        # Pre-tool hook (context overflow + repetition detection)
+                        # Pre-tool hook (context overflow handling)
                         if _pre_tool_hook is not None and loop_state.turn_count > 1:
                             _skip = await _pre_tool_hook(messages_for_model, [])
                             if _skip:
@@ -862,7 +862,7 @@ class Runner:
                             model_response.content = (model_response.content or "") + _break_msg
                             break
 
-                        # Pre-tool hook (context overflow + repetition detection)
+                        # Pre-tool hook (context overflow handling)
                         if _pre_tool_hook is not None and loop_state.turn_count > 1:
                             _skip = await _pre_tool_hook(messages_for_model, [])
                             if _skip:
