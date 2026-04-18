@@ -144,14 +144,55 @@ class TestRepetitionDetection(unittest.TestCase):
         ]
         messages = [Message(role="user", content="search")]
 
-        with patch("agentica.agent.base.logger.warning") as mock_warning:
+        # Repetition notice is logged at DEBUG level to avoid flooding the CLI;
+        # patch logger.debug to assert it fires at most once per (tool, args).
+        with patch("agentica.agent.base.logger.debug") as mock_debug:
             first_result = asyncio.run(hook(messages, []))
             second_result = asyncio.run(hook(messages, []))
 
         self.assertTrue(first_result)
         self.assertTrue(second_result)
         self.assertEqual(len(messages), 2, "Same repetition notice should not be injected twice")
-        self.assertEqual(mock_warning.call_count, 1, "Same repetition warning should only be logged once per run")
+        repetition_debug_calls = [
+            c for c in mock_debug.call_args_list
+            if "repetition detected" in (c.args[0] if c.args else "")
+        ]
+        self.assertEqual(
+            len(repetition_debug_calls), 1,
+            "Same repetition debug log should only be emitted once per (tool, args)",
+        )
+
+    def test_repetition_notice_persists_across_calls_without_reset(self):
+        """Dedup state is intentionally persistent across runs (no auto-reset).
+
+        This prevents CLI spam: once an overflow/repetition notice has been
+        emitted for a given (tool, args) key, subsequent triggers on the same
+        Agent instance must stay silent.
+        """
+        agent, hook = self._make_hook(n=3)
+        agent.model.function_call_stack = [
+            _make_fc("read_file", {"path": "a.py"}),
+            _make_fc("read_file", {"path": "a.py"}),
+            _make_fc("read_file", {"path": "a.py"}),
+        ]
+        messages_turn1 = [Message(role="user", content="turn1")]
+        asyncio.run(hook(messages_turn1, []))
+        # Simulate a brand new user turn — Runner no longer resets hook state.
+        messages_turn2 = [Message(role="user", content="turn2")]
+        with patch("agentica.agent.base.logger.debug") as mock_debug:
+            asyncio.run(hook(messages_turn2, []))
+        self.assertEqual(
+            len(messages_turn2), 1,
+            "Notice must not be re-injected on a second run with same (tool, args)",
+        )
+        repetition_debug_calls = [
+            c for c in mock_debug.call_args_list
+            if "repetition detected" in (c.args[0] if c.args else "")
+        ]
+        self.assertEqual(
+            len(repetition_debug_calls), 0,
+            "Repetition log must not fire again after the first occurrence",
+        )
 
 
 class TestContextOverflowHandling(unittest.TestCase):

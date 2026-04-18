@@ -714,8 +714,11 @@ class Runner:
                 # the assistant message, but won't execute them.
                 agent.model.run_tools = False
 
-                # Build hooks from Agent (they live on Agent, not Model)
-                agent._reset_model_hook_state()
+                # Build hooks from Agent (they live on Agent, not Model).
+                # De-dup state (_overflow_warning_emitted, _repetition_notice_keys)
+                # is intentionally persistent across runs for the same Agent
+                # instance, so the CLI does not repeatedly emit the same
+                # overflow/repetition notices every user turn.
                 _pre_tool_hook = agent._build_pre_tool_hook()
                 _post_tool_hook = agent._build_post_tool_hook()
 

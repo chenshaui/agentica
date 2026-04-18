@@ -516,16 +516,6 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
         )
         return experiences if experiences else None
 
-    def _reset_model_hook_state(self) -> None:
-        """Reset per-run protection dedup state.
-
-        Context-overflow and repetition hooks may trigger multiple times during
-        a run, but they should not spam the CLI or keep injecting the same
-        strategy-change notice into the prompt over and over.
-        """
-        self._overflow_warning_emitted = False
-        self._repetition_notice_keys = set()
-
     def _load_mcp_tools(self):
         """Auto-load MCP tools from mcp_config.json/yaml if available."""
         try:
@@ -829,8 +819,11 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
         clone._enabled_tools = None
         clone._enabled_skills = None
         clone._session_log = None
-        clone._overflow_warning_emitted = False
-        clone._repetition_notice_keys = set()
+        # Inherit hook dedup state from source so cloned sub-agents do not
+        # re-emit the same overflow/repetition notice that the parent already
+        # handled. ``set(...)`` produces an independent copy.
+        clone._overflow_warning_emitted = self._overflow_warning_emitted
+        clone._repetition_notice_keys = set(self._repetition_notice_keys)
         # Fresh working memory (don't share session state)
         clone.working_memory = WorkingMemory()
         # Fresh session-level memory dedup set
@@ -1014,12 +1007,16 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
                         )
                         usage_ratio = (total_chars / 4.0) / context_window
 
-                    logger.warning(
-                        f"Agent '{agent_ref.identifier}': context overflow detected "
-                        f"(estimated {usage_ratio:.0%} of {context_window} tokens). "
-                        f"Evicted {evicted} old messages. "
-                        "Set tool_config=ToolConfig(context_overflow_threshold=0.0) to disable."
-                    )
+                    # Demote to debug + only once per Agent instance lifetime to
+                    # avoid flooding the CLI across multiple user turns.
+                    if not agent_ref._overflow_warning_emitted:
+                        logger.debug(
+                            f"Agent '{agent_ref.identifier}': context overflow detected "
+                            f"(estimated {usage_ratio:.0%} of {context_window} tokens). "
+                            f"Evicted {evicted} old messages. "
+                            "Set tool_config=ToolConfig(context_overflow_threshold=0.0) to disable."
+                        )
+                        agent_ref._overflow_warning_emitted = True
 
             # ---- 2. Repetition detection ----
             if max_repeat > 0 and model.function_call_stack is not None:
@@ -1050,7 +1047,10 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
                             "report what you know so far and ask for clarification."
                         )
                         if repetition_key not in agent_ref._repetition_notice_keys:
-                            logger.warning(
+                            # Demote to debug — the notice is already injected
+                            # into the prompt so the LLM sees it; no need to
+                            # also flood the CLI console across user turns.
+                            logger.debug(
                                 f"Agent '{agent_ref.identifier}': repetition detected — "
                                 f"tool '{tool_name}' called with identical args {max_repeat}x in a row. "
                                 "Injecting strategy-change message."
