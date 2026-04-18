@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Agentica - Build AI Agents with ease.
+@author: XuMing(xuming624@qq.com)
+@description: Agentica - Build AI Agents with ease.
 
 ═══════════════════════════════════════════════════════════════
 v1.3.6+ Recommended Import Style (clearer; aligns with v2.0 plan)

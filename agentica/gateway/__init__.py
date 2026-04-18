@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Agentica Gateway - FastAPI server + IM bots + cron scheduler.
+@author: XuMing(xuming624@qq.com)
+@description: Agentica Gateway - FastAPI server + IM bots + cron scheduler.
 
 Requires the [gateway] extras:
     pip install agentica[gateway]            # FastAPI + IM + cron

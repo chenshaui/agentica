@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Vector databases for RAG.
+@author: XuMing(xuming624@qq.com)
+@description: Vector databases for RAG.
 
 Base classes (VectorDb, Distance) are dependency-free.
 Specific backends require their own extras:

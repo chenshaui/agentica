@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Knowledge module: RAG knowledge base orchestration.
+@author: XuMing(xuming624@qq.com)
+@description: Knowledge module: RAG knowledge base orchestration.
 
 Base class (Knowledge) is dependency-free.
 Integrations (LangChainKnowledge, LlamaIndexKnowledge) require their own libs.

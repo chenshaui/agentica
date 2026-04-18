@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Agent Client Protocol (ACP) support for Agentica.
+@author: XuMing(xuming624@qq.com)
+@description: Agent Client Protocol (ACP) support for Agentica.
 
 Enables Agentica to work as an ACP-compatible agent, allowing integration
 with IDEs like Zed, JetBrains, etc.

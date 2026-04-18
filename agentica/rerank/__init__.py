@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Rerank module for document reranking.
+@author: XuMing(xuming624@qq.com)
+@description: Rerank module for document reranking.
 
 Base class (Rerank) is dependency-free.
 Specific providers (JinaRerank, ZhipuAIRerank, ...) may require additional

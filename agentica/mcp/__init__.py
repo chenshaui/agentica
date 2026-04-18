@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-MCP: Model Context Protocol client/server.
+@author: XuMing(xuming624@qq.com)
+@description: MCP: Model Context Protocol client/server.
 
 Requires the [mcp] extras:
     pip install agentica[mcp]

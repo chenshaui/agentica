@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-@tool decorator for attaching metadata to tool functions.
+@author: XuMing(xuming624@qq.com)
+@description: @tool decorator for attaching metadata to tool functions.
 
 Supports BOTH bare and parameterized usage (since v1.3.6):
 

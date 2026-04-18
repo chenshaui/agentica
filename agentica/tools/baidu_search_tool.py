@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""Baidu search tool.
+"""
+@author: XuMing(xuming624@qq.com)
+@description: Baidu search tool.
 
 bs4 is included in agentica core dependencies (since v1.3.6).
 """

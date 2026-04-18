@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Embedding providers for RAG.
+@author: XuMing(xuming624@qq.com)
+@description: Embedding providers for RAG.
 
 Base class (Embedding) is dependency-free.
 Specific providers (OpenAIEmbedding, OllamaEmbedding, ...) require [rag] extras:

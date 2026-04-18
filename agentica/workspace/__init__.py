@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Workspace: Persistent project context, long-term memory, skills, experience.
+@author: XuMing(xuming624@qq.com)
+@description: Workspace: Persistent project context, long-term memory, skills, experience.
 
 This is a default-installed core capability (no extras required).
 

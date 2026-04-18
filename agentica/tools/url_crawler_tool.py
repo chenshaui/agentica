@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-URL Crawler Tool.
+@author: XuMing(xuming624@qq.com)
+@description: URL Crawler Tool.
 
 bs4 is included in agentica core dependencies (since v1.3.6).
 """
