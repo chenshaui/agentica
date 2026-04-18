@@ -604,5 +604,99 @@ class TestToolRegistryIntegrity(unittest.TestCase):
         self.assertEqual(len(tool_names), len(set(tool_names)))
 
 
+class TestPendingQueueTimestamps(unittest.TestCase):
+    """``PendingQueue`` must expose per-item submission timestamps so the TUI
+    queue bar can label each pending message with when it was submitted.
+    Timestamps must stay aligned with items across get / remove_index / clear.
+    """
+
+    def test_put_records_timestamp_for_each_item(self):
+        import time as _t
+        from agentica.cli.commands import PendingQueue
+
+        q = PendingQueue()
+        before = _t.time()
+        q.put("first")
+        q.put("second")
+        after = _t.time()
+
+        pairs = q.peek_all_with_timestamps()
+        self.assertEqual([p[0] for p in pairs], ["first", "second"])
+        for _, ts in pairs:
+            self.assertGreaterEqual(ts, before)
+            self.assertLessEqual(ts, after)
+
+    def test_get_pops_item_and_timestamp_in_lockstep(self):
+        from agentica.cli.commands import PendingQueue
+
+        q = PendingQueue()
+        q.put("a")
+        q.put("b")
+        q.put("c")
+
+        self.assertEqual(q.get(timeout=0.1), "a")
+        remaining = q.peek_all_with_timestamps()
+        self.assertEqual([p[0] for p in remaining], ["b", "c"])
+        self.assertEqual(len(remaining), 2)
+
+    def test_remove_index_keeps_timestamps_aligned(self):
+        from agentica.cli.commands import PendingQueue
+
+        q = PendingQueue()
+        q.put("a"); q.put("b"); q.put("c")
+        ts_b = q.peek_all_with_timestamps()[1][1]
+
+        self.assertTrue(q.remove_index(0))
+        pairs = q.peek_all_with_timestamps()
+        self.assertEqual([p[0] for p in pairs], ["b", "c"])
+        self.assertEqual(pairs[0][1], ts_b,
+                         "after removing index 0, 'b' must keep its original timestamp")
+
+    def test_clear_drops_timestamps(self):
+        from agentica.cli.commands import PendingQueue
+
+        q = PendingQueue()
+        q.put("a"); q.put("b")
+        q.clear()
+        self.assertEqual(q.peek_all_with_timestamps(), [])
+        self.assertTrue(q.empty())
+
+
+class TestStreamDisplayManagerCompletionTimestamp(unittest.TestCase):
+    """The Response box must close with a small ``(HH:MM:SS)`` label embedded
+    on its bottom-right corner so users reviewing a long session can see
+    when each answer landed.
+    """
+
+    def _capture(self, render):
+        from io import StringIO
+        from rich.console import Console
+        from agentica.cli.display import StreamDisplayManager
+
+        buf = StringIO()
+        con = Console(file=buf, width=80, force_terminal=False, no_color=True)
+        mgr = StreamDisplayManager(con)
+        render(mgr)
+        return buf.getvalue()
+
+    def test_finalize_embeds_completion_timestamp_in_close_rule(self):
+        import re
+
+        def render(mgr):
+            mgr.start_response()
+            mgr.stream_response("hello")
+            mgr.finalize()
+
+        out = self._capture(render)
+        self.assertIn("Response", out)
+        self.assertRegex(out, r"\(\d{2}:\d{2}:\d{2}\)",
+                         "close rule must embed a HH:MM:SS timestamp")
+        # Timestamp must appear on the closing rule (the line containing ╯),
+        # not somewhere in the body.
+        close_lines = [ln for ln in out.splitlines() if "╯" in ln]
+        self.assertTrue(close_lines, "response box must have a close rule")
+        self.assertRegex(close_lines[-1], r"\(\d{2}:\d{2}:\d{2}\)")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2,6 +2,13 @@
 
 Swarm 模式实现对等自主多智能体协作，与 `Agent.as_tool()`（轻量黑盒组合）和 Workflow（确定性管道）相比，更适合需要多 worker 并行/自治分工的场景。
 
+`mode` 是 `Swarm(...)` 的构造参数，不是 `swarm.run(...)` 的参数。当前 API 形态是：
+
+```python
+swarm = Swarm(agents=[...], mode="parallel")
+result = await swarm.run("your task")
+```
+
 ## 核心概念
 
 - **Coordinator** 分析任务并分配子任务给 Worker
@@ -23,8 +30,8 @@ agents = [
     Agent(name="Analyst-3", model=OpenAIChat(id="gpt-4o")),
 ]
 
-swarm = Swarm(agents=agents)
-result = await swarm.run("分析2024年AI市场趋势", mode="parallel")
+swarm = Swarm(agents=agents, mode="parallel")
+result = await swarm.run("分析2024年AI市场趋势")
 print(result.content)
 ```
 
@@ -33,20 +40,24 @@ print(result.content)
 Coordinator 分解任务，分配给最合适的 Worker：
 
 ```python
-from agentica import Swarm, Agent, OpenAIChat, BaiduSearchTool, ShellTool
+from agentica import Swarm, Agent, OpenAIChat
 
 researcher = Agent(
     name="researcher",
     model=OpenAIChat(id="gpt-4o"),
-    tools=[BaiduSearchTool()],
     description="负责信息搜索和资料整理",
 )
 
 coder = Agent(
     name="coder",
     model=OpenAIChat(id="gpt-4o"),
-    tools=[ShellTool()],
     description="负责代码编写和执行",
+)
+
+reviewer = Agent(
+    name="reviewer",
+    model=OpenAIChat(id="gpt-4o"),
+    description="负责综合结果、指出风险和补充遗漏",
 )
 
 coordinator = Agent(
@@ -56,12 +67,13 @@ coordinator = Agent(
 
 swarm = Swarm(
     agents=[researcher, coder],
+    mode="autonomous",
     coordinator=coordinator,
+    synthesizer=reviewer,
 )
 
 result = await swarm.run(
-    "搜索最新的 Transformer 论文，并用 PyTorch 实现一个简单的 Transformer encoder",
-    mode="autonomous",
+    "搜索最新的 Transformer 论文，并用 PyTorch 实现一个简单的 Transformer encoder"
 )
 print(result.content)
 ```

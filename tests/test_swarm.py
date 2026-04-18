@@ -5,6 +5,7 @@ All tests mock LLM calls — no real API usage.
 """
 import asyncio
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from agentica.swarm import Swarm, SwarmResult
@@ -111,6 +112,37 @@ class TestSwarmEdgeCases(unittest.TestCase):
         except RuntimeError:
             # Acceptable if swarm propagates the error — document the behavior
             pass
+
+
+class TestSwarmExampleContracts(unittest.TestCase):
+    """Keep public Swarm examples aligned with the real API surface."""
+
+    def test_swarm_docs_do_not_pass_mode_to_run(self):
+        docs_path = Path(__file__).resolve().parents[1] / "docs" / "multi-agent" / "swarm.md"
+        content = docs_path.read_text(encoding="utf-8")
+
+        self.assertNotRegex(
+            content,
+            r"swarm\.run\([^)]*\bmode\s*=",
+            "Swarm mode is configured on Swarm(..., mode=...), not swarm.run(..., mode=...).",
+        )
+
+    def test_swarm_demo_uses_constructor_mode_not_run_mode(self):
+        demo_path = (
+            Path(__file__).resolve().parents[1]
+            / "examples"
+            / "agent_patterns"
+            / "08_swarm.py"
+        )
+        content = demo_path.read_text(encoding="utf-8")
+
+        self.assertRegex(content, r'Swarm\([\s\S]*mode="parallel"')
+        self.assertRegex(content, r'Swarm\([\s\S]*mode="autonomous"')
+        self.assertNotRegex(
+            content,
+            r"swarm\.run\([^)]*\bmode\s*=",
+            "The demo should mirror the real Swarm.run(task, config=None) API.",
+        )
 
 
 if __name__ == "__main__":

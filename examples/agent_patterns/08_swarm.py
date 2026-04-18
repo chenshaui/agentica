@@ -3,21 +3,21 @@
 @author:XuMing(xuming624@qq.com)
 @description: Swarm multi-agent parallel collaboration demo
 
+Run with:
+    OPENAI_API_KEY=... python examples/agent_patterns/08_swarm.py
+
 Demonstrates Swarm — a peer-to-peer autonomous collaboration system. Compared
 with the lighter ``Agent.as_tool()`` composition primitive and ``Workflow``
 (deterministic, hand-wired pipeline), Swarm fans out subtasks across multiple
 worker agents and merges their results:
 
-1. **Parallel mode**: All agents run the same task concurrently, results are merged
-2. **Autonomous mode**: A coordinator decomposes tasks, assigns to workers, synthesizes results
-
-Key features shown:
-- Swarm parallel execution
-- Swarm autonomous mode with coordinator
-- SwarmResult structure (content, agent_results, mode, total_time)
+1. **Parallel mode**: All agents run the same task concurrently, results are merged.
+2. **Autonomous mode**: A coordinator decomposes tasks, assigns to workers, and a
+   synthesizer combines the worker outputs into the final answer.
 """
 import sys
 import os
+from textwrap import shorten
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -26,86 +26,116 @@ from agentica import Agent, OpenAIChat
 from agentica.swarm import Swarm
 
 
+MODEL_ID = "gpt-4o-mini"
+
+
+def _build_model() -> OpenAIChat:
+    """Build a fresh model for each demo agent.
+
+    Using fresh Agent instances per demo keeps working memory and runtime state
+    isolated, so the parallel example does not leak context into the autonomous
+    example when this file is run top-to-bottom.
+    """
+    return OpenAIChat(id=MODEL_ID)
+
+
+def _build_specialists():
+    """Create a fresh set of specialist agents for one demo run."""
+    return {
+        "researcher": Agent(
+            name="researcher",
+            model=_build_model(),
+            description="Research specialist focused on factual analysis and source discovery.",
+            instructions="Provide factual, well-scoped analysis. Call out uncertainty explicitly.",
+        ),
+        "coder": Agent(
+            name="coder",
+            model=_build_model(),
+            description="Engineering specialist focused on clean Python solutions.",
+            instructions="Write practical, readable Python guidance with implementation details.",
+        ),
+        "reviewer": Agent(
+            name="reviewer",
+            model=_build_model(),
+            description="Review specialist focused on correctness, risk, and missing tests.",
+            instructions="Stress-test proposals, identify risks, and suggest focused improvements.",
+        ),
+        "coordinator": Agent(
+            name="coordinator",
+            model=_build_model(),
+            description="Task coordinator that decomposes requests and routes work to the best worker.",
+        ),
+    }
+
+
+def _print_header(title: str, description: str) -> None:
+    print("\n" + "=" * 72)
+    print(title)
+    print("=" * 72)
+    print(description)
+
+
+def _preview(text: str, width: int = 88) -> str:
+    return shorten(text.replace("\n", " "), width=width, placeholder="...")
+
+
+def _print_agent_results(agent_results) -> None:
+    print(f"Agent results: {len(agent_results)}")
+    for result in agent_results:
+        status = "OK" if result.get("success") else "FAILED"
+        name = result.get("agent", "?")
+        subtask = result.get("subtask")
+        token_count = result.get("total_tokens", 0)
+        extra = f" [{token_count} tokens]" if token_count else ""
+        if subtask:
+            extra += f" subtask={_preview(subtask, width=56)}"
+        print(f"  - {name}: [{status}]{extra}")
+        print(f"    {_preview(str(result.get('content', '')), width=100)}")
+
+
 # ---------------------------------------------------------------------------
-# 1. Define specialized agents
-# ---------------------------------------------------------------------------
-
-researcher = Agent(
-    name="researcher",
-    model=OpenAIChat(id="gpt-4o-mini"),
-    description="An expert researcher skilled at finding information and providing factual analysis.",
-    instructions="You are a researcher. Provide factual, well-sourced analysis. Be concise.",
-)
-
-coder = Agent(
-    name="coder",
-    model=OpenAIChat(id="gpt-4o-mini"),
-    description="An expert programmer skilled at writing clean Python code and technical solutions.",
-    instructions="You are a coder. Write clean, well-documented Python code. Be practical.",
-)
-
-reviewer = Agent(
-    name="reviewer",
-    model=OpenAIChat(id="gpt-4o-mini"),
-    description="A senior code reviewer who evaluates quality, correctness, and best practices.",
-    instructions="You are a reviewer. Evaluate code quality, find potential issues, suggest improvements.",
-)
-
-# Coordinator (used in autonomous mode)
-coordinator = Agent(
-    name="coordinator",
-    model=OpenAIChat(id="gpt-4o-mini"),
-    description="A task coordinator that analyzes tasks and assigns them to the right team members.",
-)
-
-
-# ---------------------------------------------------------------------------
-# 2. Parallel mode demo
+# 1. Parallel mode demo
 # ---------------------------------------------------------------------------
 
 async def demo_parallel():
     """All agents run the same task, results are merged."""
-    print("=" * 60)
-    print("Demo 1: Swarm Parallel Mode")
-    print("=" * 60)
-    print("All agents answer the same question, results are synthesized.\n")
+    agents = _build_specialists()
+    _print_header(
+        "Demo 1: Swarm Parallel Mode",
+        "Each worker answers the same question independently; Swarm then synthesizes the results.",
+    )
 
     swarm = Swarm(
-        agents=[researcher, coder, reviewer],
+        agents=[agents["researcher"], agents["coder"], agents["reviewer"]],
         mode="parallel",
     )
 
     result = await swarm.run("What are the top 3 best practices for building AI agents?")
 
     print(f"Mode: {result.mode}")
-    print(f"Time: {result.total_time:.2f}s")
-    print(f"Agent results: {len(result.agent_results)}")
-    for r in result.agent_results:
-        status = "OK" if r["success"] else "FAILED"
-        name = r.get("agent", "?")
-        tokens = r.get("total_tokens", 0)
-        token_str = f"  [{tokens} tokens]" if tokens else ""
-        print(f"  - {name}: [{status}]{token_str} {r['content'][:80]}...")
-
-    print(f"\nSynthesized response:\n{result.content[:500]}...")
+    print(f"Time: {result.total_time:.3f}s")
+    _print_agent_results(result.agent_results)
+    print(f"\nSynthesized response:\n{result.content}\n")
 
 
 # ---------------------------------------------------------------------------
-# 3. Autonomous mode demo
+# 2. Autonomous mode demo
 # ---------------------------------------------------------------------------
 
 async def demo_autonomous():
-    """Coordinator decomposes task, assigns to agents, synthesizes."""
-    print("\n" + "=" * 60)
-    print("Demo 2: Swarm Autonomous Mode")
-    print("=" * 60)
-    print("Coordinator decomposes the task and assigns subtasks to agents.\n")
+    """Coordinator decomposes task, assigns to workers, synthesizer merges."""
+    agents = _build_specialists()
+    _print_header(
+        "Demo 2: Swarm Autonomous Mode",
+        "The coordinator decomposes the task, the workers execute in parallel, and the reviewer synthesizes the final answer.",
+    )
 
     swarm = Swarm(
-        agents=[researcher, coder, reviewer],
+        agents=[agents["researcher"], agents["coder"]],
         mode="autonomous",
-        coordinator=coordinator,
-        max_concurrent=3,
+        coordinator=agents["coordinator"],
+        synthesizer=agents["reviewer"],
+        max_concurrent=2,
     )
 
     result = await swarm.run(
@@ -114,33 +144,36 @@ async def demo_autonomous():
     )
 
     print(f"Mode: {result.mode}")
-    print(f"Time: {result.total_time}s")
-    print(f"Agent results: {len(result.agent_results)}")
-    for r in result.agent_results:
-        status = "OK" if r["success"] else "FAILED"
-        subtask = r.get("subtask", "N/A")
-        print(f"  - {r['agent']}: [{status}] subtask={subtask[:60]}")
-
-    print(f"\nSynthesized response:\n{result.content[:800]}...")
+    print(f"Time: {result.total_time:.3f}s")
+    _print_agent_results(result.agent_results)
+    print(f"\nSynthesized response:\n{result.content}\n")
 
 
 # ---------------------------------------------------------------------------
-# 4. Run all demos
+# 3. Run all demos
 # ---------------------------------------------------------------------------
 
 async def main():
-    print("Agentica Swarm: Multi-Agent Parallel Collaboration\n")
+    if not os.getenv("OPENAI_API_KEY"):
+        raise RuntimeError(
+            "This demo requires OPENAI_API_KEY in the environment. "
+            "Example: OPENAI_API_KEY=... python examples/agent_patterns/08_swarm.py"
+        )
+
+    print("Agentica Swarm Demo\n")
+    print(f"Model: {MODEL_ID}")
+    print("Note: Swarm mode is configured on Swarm(..., mode=...), not on swarm.run().")
 
     await demo_parallel()
     await demo_autonomous()
 
-    print("\n" + "=" * 60)
+    print("\n" + "=" * 72)
     print("Swarm vs Agent.as_tool() vs Workflow")
-    print("=" * 60)
+    print("=" * 72)
     print("""
-    Swarm           — Peer-to-peer parallel collaboration (parallel / autonomous)
-    Agent.as_tool() — Lightweight black-box composition (single function call)
-    Workflow        — Deterministic pipeline (fixed execution order)
+    Swarm           — Multi-agent fan-out + synthesis (parallel / autonomous)
+    Agent.as_tool() — Lightweight black-box delegation (single tool call)
+    Workflow        — Deterministic pipeline with fixed execution order
     """)
 
 
