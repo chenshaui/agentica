@@ -82,7 +82,7 @@ export DEEPSEEK_API_KEY="your-api-key"      # DeepSeek
 - **20+ 模型** — OpenAI / DeepSeek / Claude / 智谱 / Qwen / Moonshot / Ollama / LiteLLM 等
 - **40+ 内置工具** — 搜索、代码执行、文件操作、浏览器、OCR、图像生成
 - **RAG** — 知识库管理、混合检索、Rerank，集成 LangChain / LlamaIndex
-- **多智能体** — Team（动态委派）、Swarm（并行/自治）和 Workflow（确定性编排）
+- **多智能体** — `Agent.as_tool()`（轻量组合）、Swarm（并行/自治）和 Workflow（确定性编排）
 - **安全守卫** — 输入/输出/工具级 Guardrails，流式实时检测
 - **MCP / ACP** — Model Context Protocol 和 Agent Communication Protocol 支持
 - **Skill 系统** — 基于 Markdown 的技能注入，支持项目级、用户级和外部托管 skill 目录

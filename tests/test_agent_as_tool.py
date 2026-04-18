@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 @author:XuMing(xuming624@qq.com)
-@description: Unit tests for Agent.as_tool(), clone(), when_to_use, and team tools.
+@description: Unit tests for Agent.as_tool(), clone(), and when_to_use.
 """
 import asyncio
 import sys
@@ -14,7 +14,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agentica import Agent
 from agentica.agent.config import PromptConfig
-from agentica.agent.team import _serialize_content
+from agentica.agent.as_tool import _serialize_content
 from agentica.tools.base import Function
 from agentica.run_response import RunResponse
 
@@ -46,13 +46,6 @@ class TestClone(unittest.TestCase):
         agent._default_run_hooks = ConversationArchiveHooks()
         clone = agent.clone()
         self.assertIsNone(clone._default_run_hooks)
-
-    def test_clone_resets_transfer_caller(self):
-        agent = Agent(name="Worker", instructions="Test")
-        parent = Agent(name="Parent", instructions="Parent")
-        agent._transfer_caller = parent
-        clone = agent.clone()
-        self.assertIsNone(clone._transfer_caller)
 
     def test_clone_shares_config(self):
         """Clone shares heavy config (model def, tools, instructions)."""
@@ -210,47 +203,6 @@ class TestWhenToUse(unittest.TestCase):
         )
         tool = agent.as_tool()
         self.assertEqual(tool.description, "Use for code generation and debugging tasks")
-
-    def test_when_to_use_in_transfer_function(self):
-        agent = Agent(
-            name="Coder",
-            when_to_use="Use for code generation and debugging tasks",
-            instructions="Generate code",
-        )
-        transfer = agent.get_transfer_function()
-        self.assertEqual(transfer.description, "Use for code generation and debugging tasks")
-
-    def test_when_to_use_in_transfer_prompt(self):
-        child = Agent(
-            name="Coder",
-            when_to_use="Use for code generation",
-            instructions="Code",
-        )
-        parent = Agent(name="Lead", instructions="Manage", team=[child])
-        prompt = parent.get_transfer_prompt()
-        self.assertIn("Use for code generation", prompt)
-        self.assertIn("Coder", prompt)
-
-
-class TestTeamTools(unittest.TestCase):
-    """Test get_tools() with team transfer functions."""
-
-    def test_team_adds_transfer_tools(self):
-        child = Agent(name="Worker", instructions="Work")
-        parent = Agent(
-            name="Orchestrator",
-            instructions="Orchestrate",
-            team=[child],
-        )
-        tools = parent.get_tools()
-        tool_names = [t.name if hasattr(t, 'name') else str(t) for t in tools]
-        self.assertIn("transfer_to_worker", tool_names)
-
-    def test_no_team_no_transfer_tools(self):
-        agent = Agent(name="Solo", instructions="Work alone")
-        tools = agent.get_tools()
-        tool_names = [t.name if hasattr(t, 'name') else str(t) for t in tools]
-        self.assertNotIn("transfer_to_worker", tool_names)
 
 
 class TestIntegration(unittest.TestCase):

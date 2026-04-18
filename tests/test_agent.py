@@ -11,7 +11,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agentica.agent import Agent
-from agentica.agent.config import PromptConfig, ToolConfig, WorkspaceMemoryConfig, TeamConfig
+from agentica.agent.config import PromptConfig, ToolConfig, WorkspaceMemoryConfig
 from agentica.memory import WorkingMemory
 from agentica.model.message import Message
 from agentica.model.response import ModelResponse
@@ -152,18 +152,8 @@ class TestAgentSystemPrompt(unittest.TestCase):
         self.assertEqual(len(agent.instructions), 3)
 
 
-class TestAgentTeam(unittest.TestCase):
-    """Test cases for Agent team functionality."""
-
-    def test_agent_with_team(self):
-        """Test Agent with team members."""
-        member1 = Agent(name="Member1", prompt_config=PromptConfig(role="researcher"))
-        member2 = Agent(name="Member2", prompt_config=PromptConfig(role="writer"))
-        leader = Agent(name="Leader", team=[member1, member2])
-
-        self.assertEqual(len(leader.team), 2)
-        self.assertEqual(leader.team[0].name, "Member1")
-        self.assertEqual(leader.team[1].name, "Member2")
+class TestAgentRole(unittest.TestCase):
+    """Test cases for Agent role configuration."""
 
     def test_agent_role(self):
         """Test Agent role setting via PromptConfig."""

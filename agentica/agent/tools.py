@@ -7,9 +7,11 @@ enabled on the Agent (knowledge base search, memory, etc.)
 import json
 from typing import (
     Any,
+    Callable,
     Dict,
     List,
     Optional,
+    Union,
 )
 
 from agentica.utils.log import logger
@@ -17,11 +19,32 @@ from agentica.utils.timer import Timer
 from agentica.document import Document
 from agentica.model.message import MessageReferences
 from agentica.run_response import RunResponseExtraData
-from agentica.tools.base import Function
+from agentica.tools.base import Function, ModelTool, Tool
 
 
 class ToolsMixin:
     """Mixin class containing default tool implementations for Agent."""
+
+    def get_tools(self) -> Optional[List[Union[ModelTool, Tool, Callable, Dict, Function]]]:
+        """Get all tools available to this agent.
+
+        Includes user-provided tools plus knowledge-base tools when configured.
+        Multi-agent composition is handled separately by ``Agent.as_tool()`` and
+        the explicit ``Swarm`` / ``BuiltinTaskTool`` runtimes; this method does
+        not inject any implicit delegation tools.
+        """
+        tools: List[Union[ModelTool, Tool, Callable, Dict, Function]] = []
+
+        if self.tools is not None:
+            tools.extend(self.tools)
+
+        if self.knowledge is not None:
+            if self.tool_config.search_knowledge:
+                tools.append(self.search_knowledge_base)
+            if self.tool_config.update_knowledge:
+                tools.append(self.add_to_knowledge)
+
+        return tools if len(tools) > 0 else []
 
     def search_knowledge_base(self, query: str) -> str:
         """Use this function to search the knowledge base for information about a query.

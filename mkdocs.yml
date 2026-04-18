@@ -43,7 +43,6 @@ nav:
       - Memory & Workspace: concepts/memory.md
       - Knowledge (RAG): concepts/rag.md
   - Multi-Agent:
-      - Team: multi-agent/team.md
       - Workflow: multi-agent/workflow.md
       - Swarm: multi-agent/swarm.md
       - Subagent: multi-agent/subagent.md

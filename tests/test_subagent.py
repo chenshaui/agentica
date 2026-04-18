@@ -21,22 +21,49 @@ class FakeToolConfig:
 
 
 class RecordingAgent:
+    """Minimal Agent stand-in.
+
+    The new ``SubagentRegistry.spawn`` drives the child via ``run_stream`` and
+    yields a single ``RunResponse``-shaped chunk to capture the final content.
+    The shim also exposes ``model.usage.merge`` so the registry's usage
+    aggregation step is exercised without instantiating a real model.
+    """
+
     last_init_kwargs = None
     run_delay = 0.0
 
     def __init__(self, **kwargs):
         RecordingAgent.last_init_kwargs = kwargs
+        self.name = kwargs.get("name", "child")
+        # Preserve the cloned model passed by ``SubagentRegistry.spawn`` so the
+        # registry's ``parent.usage.merge(child.usage)`` step gets a real
+        # ``Usage`` instance.
+        self.model = kwargs.get("model")
 
-    async def run(self, task):
+    async def run_stream(self, task, config=None):
         await asyncio.sleep(self.run_delay)
-        return SimpleNamespace(content=f"done:{task}")
+        yield SimpleNamespace(event="RunResponse", content=f"done:{task}", tools=None)
+
+
+class _FakeModel:
+    """Stand-in for ``Model`` so ``copy.copy`` clones cleanly during tests."""
+
+    def __init__(self):
+        self.tools = None
+        self.functions = None
+        self.function_call_stack = None
+        self.tool_choice = None
+        self.metrics = {}
+        from agentica.model.usage import Usage
+        self.usage = Usage()
 
 
 def _make_parent_agent():
     working_memory = SimpleNamespace(summary=SimpleNamespace(summary="parent summary"))
     return SimpleNamespace(
         name="parent",
-        model=object(),
+        agent_id="parent-agent-id",
+        model=_FakeModel(),
         tools=[
             Function(name="read_file", entrypoint=lambda: None),
             Function(name="write_file", entrypoint=lambda: None),
@@ -46,6 +73,7 @@ def _make_parent_agent():
         knowledge="knowledge-ref",
         working_memory=working_memory,
         context={},
+        _event_callback=None,
     )
 
 
@@ -165,6 +193,76 @@ def test_spawn_honors_timeout():
 
     assert result["status"] == "error"
     assert "timed out" in result["error"].lower()
+
+
+class _CumulativeToolStreamAgent:
+    """Mimics ``Agent.run_stream`` producing the cumulative ``chunk.tools`` list
+    that ``Runner`` actually emits — every ToolCall* event includes ALL tool
+    calls so far in the run, not just the newly-affected one. The registry is
+    expected to dedupe by ``tool_call_id``.
+    """
+
+    last_init_kwargs = None
+
+    def __init__(self, **kwargs):
+        _CumulativeToolStreamAgent.last_init_kwargs = kwargs
+        self.name = kwargs.get("name", "child")
+        self.model = kwargs.get("model")
+
+    async def run_stream(self, task, config=None):
+        # Simulate two tool calls (read_file + ls), each going through
+        # started -> completed, with the cumulative list growing each chunk.
+        t1 = {"id": "call_1", "tool_name": "read_file",
+              "tool_args": {"file_path": "a.py"}}
+        t2 = {"id": "call_2", "tool_name": "ls",
+              "tool_args": {"directory": "."}}
+        # call_1 started
+        yield SimpleNamespace(event="ToolCallStarted", content=None, tools=[dict(t1)])
+        # call_1 completed (cumulative list still has call_1, now with content)
+        t1_done = {**t1, "content": "file content"}
+        yield SimpleNamespace(event="ToolCallCompleted", content=None, tools=[t1_done])
+        # call_2 started — chunk.tools now has both
+        yield SimpleNamespace(event="ToolCallStarted", content=None,
+                              tools=[t1_done, dict(t2)])
+        # call_2 completed — chunk.tools still has both, both with content
+        t2_done = {**t2, "content": "listing"}
+        yield SimpleNamespace(event="ToolCallCompleted", content=None,
+                              tools=[t1_done, t2_done])
+        yield SimpleNamespace(event="RunResponse", content=f"done:{task}", tools=None)
+
+
+def test_spawn_dedupes_subagent_tool_events_by_call_id():
+    """Regression: cumulative chunk.tools must not cause duplicate
+    subagent.tool_started/completed events or inflate tool_count."""
+    registry = SubagentRegistry()
+    _CUSTOM_SUBAGENT_CONFIGS["coder"] = SubagentConfig(
+        type=SubagentType.CUSTOM,
+        name="coder",
+        description="coder",
+        system_prompt="prompt",
+    )
+    parent = _make_parent_agent()
+    received = []
+    parent._event_callback = received.append
+
+    with patch("agentica.agent.Agent", _CumulativeToolStreamAgent), patch(
+        "agentica.agent.config.ToolConfig", FakeToolConfig
+    ):
+        result = asyncio.run(
+            registry.spawn(parent_agent=parent, task="do work", agent_type="coder")
+        )
+
+    assert result["status"] == "completed"
+    assert result["tool_count"] == 2, (
+        f"Expected exactly 2 tool calls, got {result['tool_count']}. "
+        "Cumulative chunk.tools must be deduped by tool_call_id."
+    )
+    started = [e for e in received if e["type"] == "subagent.tool_started"]
+    completed = [e for e in received if e["type"] == "subagent.tool_completed"]
+    assert len(started) == 2
+    assert len(completed) == 2
+    assert [e["tool_name"] for e in started] == ["read_file", "ls"]
+    assert [e["tool_name"] for e in completed] == ["read_file", "ls"]
 
 
 def test_spawn_batch_returns_error_for_invalid_spec_and_keeps_order():

@@ -9,7 +9,7 @@ All tests mock LLM API keys — no real API calls.
 """
 import asyncio
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from agentica.agent.config import ToolConfig
 from agentica.model.message import Message
@@ -134,6 +134,24 @@ class TestRepetitionDetection(unittest.TestCase):
         messages = [Message(role="user", content="x")]
         result = asyncio.run(hook(messages, []))
         self.assertFalse(result)
+
+    def test_identical_repetition_notice_injected_only_once(self):
+        agent, hook = self._make_hook(n=3)
+        agent.model.function_call_stack = [
+            _make_fc("grep", {"pattern": "TODO", "path": "."}),
+            _make_fc("grep", {"pattern": "TODO", "path": "."}),
+            _make_fc("grep", {"pattern": "TODO", "path": "."}),
+        ]
+        messages = [Message(role="user", content="search")]
+
+        with patch("agentica.agent.base.logger.warning") as mock_warning:
+            first_result = asyncio.run(hook(messages, []))
+            second_result = asyncio.run(hook(messages, []))
+
+        self.assertTrue(first_result)
+        self.assertTrue(second_result)
+        self.assertEqual(len(messages), 2, "Same repetition notice should not be injected twice")
+        self.assertEqual(mock_warning.call_count, 1, "Same repetition warning should only be logged once per run")
 
 
 class TestContextOverflowHandling(unittest.TestCase):

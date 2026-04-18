@@ -118,6 +118,6 @@ class NewsWorkflow(Workflow):
 
 ## 下一步
 
-- [Team](team.md) -- 动态委派模式
 - [Swarm](swarm.md) -- 自主多智能体协作
+- [Subagent](subagent.md) -- 子任务委派
 - [Agent 核心概念](../concepts/agent.md) -- 回顾 Agent 基础

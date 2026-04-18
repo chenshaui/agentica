@@ -48,28 +48,42 @@ config = SubagentConfig(
 
 ## SubagentRegistry
 
-注册和管理 Subagent 类型：
+`SubagentRegistry` 是 Subagent 执行的唯一入口，负责：模型克隆 + 工具继承（自动按 `BLOCKED_TOOLS` / `allowed_tools` / `denied_tools` 过滤父 Agent 工具）+ 嵌套深度限制（`MAX_DEPTH=2`）+ 注册表跟踪 + 实时事件冒泡 + usage 合并 + 超时控制。
 
 ```python
-from agentica.subagent import SubagentRegistry, SubagentType
+from agentica import Agent, OpenAIChat
+from agentica.subagent import (
+    SubagentRegistry,
+    SubagentType,
+    register_custom_subagent,
+)
 
-registry = SubagentRegistry()
-
-# 注册自定义类型
-registry.register(SubagentConfig(
-    type=SubagentType.CUSTOM,
-    name="Data Analyst",
+# 注册自定义 Subagent 类型（模块级，全局生效）
+register_custom_subagent(
+    name="data_analyst",
     description="数据分析专家",
     system_prompt="你是一个数据分析师...",
     allowed_tools=["sql_query", "python_eval"],
-))
-
-# 生成子任务
-result = await registry.spawn(
-    "analyze_data",
-    agent_type=SubagentType.CUSTOM,
-    task="分析销售数据趋势",
 )
+
+parent = Agent(model=OpenAIChat(id="gpt-4o"), tools=[...])
+
+# 直接调用 spawn() 启动子 Agent
+result = await SubagentRegistry().spawn(
+    parent_agent=parent,
+    task="分析销售数据趋势",
+    agent_type="data_analyst",
+)
+# result = {
+#   "status": "completed",
+#   "content": "...",
+#   "agent_type": "custom",
+#   "subagent_name": "data_analyst",
+#   "run_id": "...",
+#   "tool_calls_summary": [...],
+#   "tool_count": N,
+#   "execution_time": 12.345,
+# }
 ```
 
 ## SubagentRun
@@ -81,12 +95,15 @@ result = await registry.spawn(
 class SubagentRun:
     run_id: str              # 唯一标识
     subagent_type: SubagentType
-    parent_agent_id: str     # 父 Agent ID
-    task_label: str          # 任务描述
-    status: str              # pending/running/completed/failed
-    result: Optional[str]    # 执行结果
+    parent_agent_id: str     # 父 Agent agent_id
+    task_label: str          # 截短的任务标签
+    task_description: str    # 完整任务描述
     started_at: datetime
-    completed_at: Optional[datetime]
+    status: str              # pending / running / completed / error / cancelled
+    ended_at: Optional[datetime]
+    result: Optional[str]
+    error: Optional[str]
+    token_usage: Optional[Dict[str, int]]
 ```
 
 ## 与 DeepAgent 内置 task 工具的关系
@@ -103,6 +120,6 @@ result = await agent.run("分析项目代码结构并生成文档")
 
 ## 下一步
 
-- [Team](team.md) -- 团队协作
 - [Swarm](swarm.md) -- 自主多智能体协作
+- [Workflow](workflow.md) -- 确定性工作流编排
 - [Hooks](../advanced/hooks.md) -- 监控子任务执行

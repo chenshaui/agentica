@@ -115,9 +115,13 @@ def suppress_console_logging():
     
     Use this in CLI mode to prevent logger output from interfering with
     interactive UI elements like spinners and status displays.
+    
+    Remove all non-file stream handlers, not just ``sys.stdout``. In TUI/IDE
+    environments stdout/stderr may be wrapped, so identity checks against the
+    current ``sys.stdout`` are not reliable enough.
     """
     for handler in logger.handlers[:]:
-        if isinstance(handler, logging.StreamHandler) and handler.stream == sys.stdout:
+        if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
             logger.removeHandler(handler)
 
 
@@ -127,9 +131,9 @@ def restore_console_logging(log_level: str = "INFO"):
     Args:
         log_level: Log level for the console handler
     """
-    # Check if console handler already exists
+    # Check if a non-file console handler already exists
     has_console = any(
-        isinstance(h, logging.StreamHandler) and h.stream == sys.stdout 
+        isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
         for h in logger.handlers
     )
     if not has_console:

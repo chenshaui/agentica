@@ -17,13 +17,12 @@ from agentica import Agent
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `model` | `Model` | `None` | LLM 模型实例。未指定时使用默认 OpenAI 模型 |
-| `name` | `str` | `None` | Agent 名称，用于日志和团队标识 |
+| `name` | `str` | `None` | Agent 名称，用于日志和多智能体协作标识 |
 | `agent_id` | `str` | 自动 UUID | Agent 唯一标识 |
-| `description` | `str` | `None` | Agent 描述，在 Team 模式下帮助协调者理解成员能力 |
+| `description` | `str` | `None` | Agent 描述，在多智能体协作（Swarm/`as_tool()`）中帮助协调者理解成员能力 |
 | `instructions` | `str \| List[str] \| Callable` | `None` | 行为指令，注入到 system prompt |
 | `tools` | `List[Tool \| Callable]` | `None` | 工具列表 |
 | `knowledge` | `Knowledge` | `None` | 知识库实例 (RAG) |
-| `team` | `List[Agent]` | `None` | 团队成员列表 |
 | `workspace` | `Workspace \| str` | `None` | 工作空间（传 str 会自动创建 Workspace） |
 | `response_model` | `Type[BaseModel]` | `None` | Pydantic 模型，启用结构化输出 |
 
@@ -44,7 +43,6 @@ from agentica import Agent
 | `prompt_config` | `PromptConfig` | `PromptConfig()` | 提示词构建配置 |
 | `tool_config` | `ToolConfig` | `ToolConfig()` | 工具调用配置 |
 | `long_term_memory_config` | `WorkspaceMemoryConfig` | `WorkspaceMemoryConfig()` | 工作空间记忆配置 |
-| `team_config` | `TeamConfig` | `TeamConfig()` | 团队配置 |
 
 #### 运行时
 
@@ -260,18 +258,6 @@ from agentica.agent.config import WorkspaceMemoryConfig
 | `max_memory_entries` | `int` | `5` | 每次注入的最大记忆条数（按相关性排序） |
 | `auto_archive` | `bool` | `False` | 每次 run() 后自动归档对话（零 LLM 成本） |
 | `auto_extract_memory` | `bool` | `False` | 每次 run() 后自动提取记忆（有 LLM 成本，仅在 LLM 未主动调用 save_memory 时触发） |
-
-## TeamConfig
-
-```python
-from agentica.agent.config import TeamConfig
-```
-
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `respond_directly` | `bool` | `False` | 团队成员直接回复（不经协调者） |
-| `add_transfer_instructions` | `bool` | `True` | 自动添加委派指令 |
-| `team_response_separator` | `str` | `"\n"` | 团队响应分隔符 |
 
 ---
 

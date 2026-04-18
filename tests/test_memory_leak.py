@@ -10,14 +10,12 @@ The key fix is using weakref for Function._agent to break the circular reference
 Agent -> Model -> functions (Dict[str, Function]) -> Function._agent -> Agent
 
 测试	说明
-test_agent_team_no_circular_reference	验证 Agent team 不会创建循环引用
 test_function_agent_weakref	验证 Function._agent 使用 weakref
 test_model_functions_agent_weakref	验证 Model.functions 中的 weakref 行为
 test_run_response_no_agent_reference	验证 RunResponse 不持有 Agent 引用
 test_working_memory_no_agent_reference	验证 WorkingMemory 不持有 Agent 引用
 test_agent_with_real_model_no_memory_leak	验证真实 Model（不调用 API）无内存泄漏
 test_multiple_agents_no_memory_leak	验证创建/销毁多个 Agent 无内存泄漏
-test_agent_with_team_tools_no_leak	验证带 team 和 tools 的 Agent 无内存泄漏
 
 """
 import gc
@@ -32,27 +30,6 @@ from agentica import Agent
 
 class TestMemoryLeak(TestCase):
     """Test cases for memory leak detection in Agent framework."""
-
-    def test_agent_team_no_circular_reference(self):
-        """Test that Agent team doesn't create circular references that prevent GC."""
-        # Create a leader agent with a team member
-        member_agent = Agent(name="Member")
-        leader_agent = Agent(name="Leader", team=[member_agent])
-
-        # Create weak references to track if agents can be garbage collected
-        leader_ref = weakref.ref(leader_agent)
-        member_ref = weakref.ref(member_agent)
-
-        # Delete strong references
-        del leader_agent
-        del member_agent
-
-        # Force garbage collection
-        gc.collect()
-
-        # Agents should be collected (no circular reference)
-        self.assertIsNone(leader_ref(), "Leader agent should be garbage collected")
-        self.assertIsNone(member_ref(), "Member agent should be garbage collected")
 
     def test_function_agent_weakref(self):
         """Test that Function._agent uses weakref and doesn't prevent Agent GC."""
@@ -216,43 +193,6 @@ class TestMemoryLeak(TestCase):
         # All agents should be collected
         for i, ref in enumerate(refs):
             self.assertIsNone(ref(), f"Agent_{i} should be garbage collected")
-
-    def test_agent_with_team_tools_no_leak(self):
-        """Test agent with team and tools doesn't leak memory."""
-        from agentica import Agent
-
-        def search_tool(query: str) -> str:
-            """Search tool."""
-            return f"Found: {query}"
-
-        # Create team members with tools
-        researcher = Agent(name="Researcher", tools=[search_tool])
-        writer = Agent(name="Writer")
-
-        # Create leader with team
-        leader = Agent(
-            name="Leader",
-            team=[researcher, writer],
-            tools=[search_tool]
-        )
-        leader.update_model()
-
-        # Create weak references
-        leader_ref = weakref.ref(leader)
-        researcher_ref = weakref.ref(researcher)
-        writer_ref = weakref.ref(writer)
-
-        # Delete all agents
-        del leader
-        del researcher
-        del writer
-        gc.collect()
-
-        # All should be collected
-        self.assertIsNone(leader_ref(), "Leader should be garbage collected")
-        self.assertIsNone(researcher_ref(), "Researcher should be garbage collected")
-        self.assertIsNone(writer_ref(), "Writer should be garbage collected")
-
 
 if __name__ == "__main__":
     import unittest

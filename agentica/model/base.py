@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from types import GeneratorType
 from typing import List, Iterator, AsyncIterator, Optional, Dict, Any, Callable, Union, Sequence
 
+from agentica.run_response import AgentCancelledError
 from agentica.utils.log import logger
 from agentica.model.message import Message
 from agentica.model.metrics import Metrics
@@ -486,6 +487,9 @@ class Model(ABC):
             except ToolCallException as tce:
                 exceptions[idx] = tce
                 results[idx] = False
+            except AgentCancelledError:
+                # Hard cancellation must propagate (don't treat as tool failure).
+                raise
             except Exception as exc:
                 exceptions[idx] = exc
                 results[idx] = False
@@ -497,7 +501,12 @@ class Model(ABC):
                 *[_execute_safe(i, function_calls[i]) for i in safe_indices],
                 return_exceptions=True,
             )
-            # Handle any unhandled exceptions from gather (e.g. CancelledError)
+            # Re-raise CancelledError / AgentCancelledError immediately so
+            # user-initiated cancel propagates out of the runner instead of
+            # being captured as a tool failure result.
+            for r in gather_results:
+                if isinstance(r, (asyncio.CancelledError, AgentCancelledError)):
+                    raise r
             for gi, idx in enumerate(safe_indices):
                 if isinstance(gather_results[gi], BaseException) and exceptions[idx] is None:
                     exceptions[idx] = gather_results[gi]
@@ -567,6 +576,8 @@ class Model(ABC):
                 results[idx] = False
                 if fc.function.name in _SHELL_TOOL_NAMES:
                     bash_errored = True
+            except AgentCancelledError:
+                raise
             except Exception as exc:
                 exceptions[idx] = exc
                 results[idx] = False

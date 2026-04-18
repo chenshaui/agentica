@@ -3,9 +3,11 @@
 @author:XuMing(xuming624@qq.com)
 @description: Agent as Tool demo - Demonstrates how to use an Agent as a tool for another Agent
 
-This pattern differs from Team (transfer):
-- Team: Sub-agent receives task description + expected output + additional info (full context)
-- as_tool: Sub-agent only receives input_text, treated as a simple function call
+The sub-agent is treated as a simple function call: it receives only the
+``input_text`` the orchestrator passes in and returns its final response.
+No conversation history or additional context is shared. For long-running
+multi-step delegation, prefer the ``BuiltinTaskTool`` / ``SubagentRegistry``
+subagent runtime instead.
 
 Use cases:
 - Specialist agents that perform specific tasks (translation, summarization, etc.)

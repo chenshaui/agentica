@@ -13,9 +13,9 @@ except ImportError:
 
 class MemoriTool(Tool):
     """
-    Memori ToolKit for agentica Agents and Teams, providing persistent memory capabilities.
+    Memori ToolKit for agentica Agents, providing persistent memory capabilities.
 
-    This toolkit integrates Memori's memory system with agentica, allowing Agents and Teams to:
+    This toolkit integrates Memori's memory system with agentica, allowing Agents to:
     - Store and retrieve conversation history
     - Search through past interactions
     - Maintain user preferences and context

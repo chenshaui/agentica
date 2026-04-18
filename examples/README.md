@@ -78,7 +78,7 @@ asyncio.run(Agent().run('一句话介绍北京').then(print))
 |---|------|------|----------|
 | 01 | [agent_as_tool.py](agent_patterns/01_agent_as_tool.py) | Agent 作为工具嵌套调用 | `agent.as_tool()`, 编排器模式 |
 | 02 | [parallelization.py](agent_patterns/02_parallelization.py) | **asyncio.gather 并行执行**（含耗时对比） | `asyncio.gather()`, 并行 vs 串行 |
-| 03 | [team_collaboration.py](agent_patterns/03_team_collaboration.py) | 多 Agent 团队协作 | `team=[...]`, 自动委派 |
+| 03 | [team_collaboration.py](agent_patterns/03_team_collaboration.py) | 多 Agent 协作（as_tool 编排） | `agent.as_tool()`, 编排器模式 |
 | 04 | [debate.py](agent_patterns/04_debate.py) | 多 Agent 辩论 | 多角色对抗, 主持人总结 |
 | 05 | [context_passing.py](agent_patterns/05_context_passing.py) | 上下文传递与共享 | `context={}`, `add_context=True` |
 | 06 | [lifecycle_hooks.py](agent_patterns/06_lifecycle_hooks.py) | 生命周期钩子：Agent/Run/Archive 全链路事件 | `AgentHooks`, `RunHooks`, `ConversationArchiveHooks` |
@@ -215,16 +215,7 @@ Agent Communication Protocol 集成。
 |---|------|------|
 | 01 | [acp_demo.py](acp/acp_demo.py) | ACP 协议演示 |
 
-### 16. Temporal 工作流 (`temporal/`)
-
-分布式持久化工作流执行（基于 Temporal）。
-
-| # | 示例 | 描述 | 关键概念 |
-|---|------|------|----------|
-| 01 | [worker.py](temporal/01_worker.py) | Temporal Worker：监听任务队列执行 Workflow | `temporal`, Worker, Activity |
-| 02 | [client.py](temporal/02_client.py) | Temporal Client：启动和查询工作流 | Workflow Client, 持久化执行 |
-
-### 17. 完整应用 (`applications/`)
+### 16. 完整应用 (`applications/`)
 
 端到端的应用示例。
 

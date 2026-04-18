@@ -3,8 +3,10 @@
 @author:XuMing(xuming624@qq.com)
 @description: Swarm multi-agent parallel collaboration demo
 
-Demonstrates Swarm — a peer-to-peer autonomous collaboration system that differs
-from Team (master-slave, serial transfer) and Workflow (deterministic pipeline):
+Demonstrates Swarm — a peer-to-peer autonomous collaboration system. Compared
+with the lighter ``Agent.as_tool()`` composition primitive and ``Workflow``
+(deterministic, hand-wired pipeline), Swarm fans out subtasks across multiple
+worker agents and merges their results:
 
 1. **Parallel mode**: All agents run the same task concurrently, results are merged
 2. **Autonomous mode**: A coordinator decomposes tasks, assigns to workers, synthesizes results
@@ -133,12 +135,12 @@ async def main():
     await demo_autonomous()
 
     print("\n" + "=" * 60)
-    print("Swarm vs Team vs Workflow")
+    print("Swarm vs Agent.as_tool() vs Workflow")
     print("=" * 60)
     print("""
-    Swarm     — Peer-to-peer parallel collaboration (parallel / autonomous)
-    Team      — Master-slave serial transfer (coordinator delegates sequentially)
-    Workflow  — Deterministic pipeline (fixed execution order)
+    Swarm           — Peer-to-peer parallel collaboration (parallel / autonomous)
+    Agent.as_tool() — Lightweight black-box composition (single function call)
+    Workflow        — Deterministic pipeline (fixed execution order)
     """)
 
 

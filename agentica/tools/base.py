@@ -750,6 +750,23 @@ class Tool:
         """
         return None
 
+    def clone(self) -> "Tool":
+        """Return an instance safe to bind to a different agent.
+
+        Default: returns ``self`` (stateless tools can be shared across agents).
+        Subclasses that hold per-agent state (agent reference, workspace,
+        accumulated data) MUST override to return a fresh instance whose
+        ``functions`` entrypoints are bound to that fresh instance, so multiple
+        agents sharing the same logical tool config do not corrupt each other.
+
+        Stateful built-ins that override clone():
+        - ``BuiltinTodoTool``  (holds ``_agent``)
+        - ``BuiltinTaskTool``  (holds ``_parent_agent``)
+        - ``BuiltinMemoryTool`` (holds ``_workspace``)
+        - ``SkillTool``        (holds ``_agent``)
+        """
+        return self
+
     def __repr__(self):
         return f"<{self.__class__.__name__} name={self.name} functions={list(self.functions.keys())}>"
 

@@ -14,6 +14,7 @@ import os
 import tempfile
 import shutil
 from pathlib import Path
+from typing import Any, Dict
 from unittest.mock import AsyncMock, MagicMock, patch
 import os
 import sys
@@ -590,80 +591,71 @@ class TestBuiltinTodoTool:
 # ===========================================================================
 
 class TestBuiltinTaskTool:
-    def test_task_no_model_returns_error(self):
-        """If no model is available, task should return an error."""
-        tool = BuiltinTaskTool(model=None)
-        # No parent agent set either -> model is None
+    """``BuiltinTaskTool`` is a thin LLM-facing adapter around
+    ``SubagentRegistry.spawn``. Tests focus on the adapter contract; the
+    runtime behavior of ``spawn`` itself is covered by ``test_subagent.py``.
+    """
+
+    def test_task_without_parent_returns_error(self):
+        """Unbound tool (no parent agent) cannot spawn anything."""
+        tool = BuiltinTaskTool()
         result = asyncio.run(tool.task("do something"))
         parsed = json.loads(result)
         assert parsed["success"] is False
-        assert "No model" in parsed["error"]
+        assert "not bound" in parsed["error"]
 
-    def test_task_prevents_nested_subagent(self):
-        """Subagent nesting should be blocked."""
-        tool = BuiltinTaskTool(model=MagicMock())
+    def test_task_forwards_to_spawn_and_serializes_completed(self):
+        """Adapter calls ``SubagentRegistry().spawn`` and JSON-serializes the result."""
+        tool = BuiltinTaskTool()
+        tool.set_parent_agent(MagicMock())
 
-        # Create a mock parent agent with an agent_id
-        mock_parent = MagicMock()
-        mock_parent.agent_id = "test-agent-123"
-        tool.set_parent_agent(mock_parent)
+        spawn_result = {
+            "status": "completed",
+            "agent_type": "code",
+            "subagent_name": "Code Agent",
+            "content": "answer is 42",
+            "tool_calls_summary": [{"name": "read_file", "info": "x.py"}],
+            "tool_count": 1,
+            "execution_time": 0.123,
+            "run_id": "abc",
+        }
 
-        # Mock SubagentRegistry.is_subagent to return True (agent is already a subagent)
-        async def run():
-            with patch("agentica.subagent.SubagentRegistry.is_subagent", return_value=True):
-                return await tool.task("nested task")
+        async def fake_spawn(self, **kwargs):
+            assert kwargs["task"] == "compute 6 * 7"
+            assert kwargs["agent_type"] == "code"
+            return spawn_result
 
-        result = asyncio.run(run())
-        parsed = json.loads(result)
-        assert parsed["success"] is False
-        assert "Nested" in parsed["error"]
-
-    def test_task_with_mocked_agent(self):
-        """Full task flow with a mocked Agent that returns a stream."""
-        mock_model = MagicMock()
-
-        tool = BuiltinTaskTool(model=mock_model)
-
-        # Mock the Agent constructor and its run_stream
-        mock_chunk = MagicMock()
-        mock_chunk.event = "RunResponse"
-        mock_chunk.content = "Task result: 42"
-        mock_chunk.tools = None
-
-        async def mock_run_stream(*args, **kwargs):
-            yield mock_chunk
-
-        mock_agent_instance = MagicMock()
-        mock_agent_instance.run_stream = mock_run_stream
-
-        # Agent is imported locally inside task() as `from agentica.agent import Agent`
-        with patch("agentica.agent.Agent", return_value=mock_agent_instance):
+        with patch("agentica.subagent.SubagentRegistry.spawn", new=fake_spawn):
             result = asyncio.run(tool.task("compute 6 * 7", subagent_type="code"))
 
         parsed = json.loads(result)
         assert parsed["success"] is True
-        assert "42" in parsed["result"]
         assert parsed["subagent_type"] == "code"
+        assert parsed["subagent_name"] == "Code Agent"
+        assert parsed["result"] == "answer is 42"
+        assert parsed["tool_count"] == 1
+        assert parsed["execution_time"] == 0.123
 
-    def test_task_exception_handling(self):
-        """If the subagent raises an exception, task should return error JSON."""
-        mock_model = MagicMock()
-        tool = BuiltinTaskTool(model=mock_model)
+    def test_task_serializes_error_result(self):
+        """Adapter surfaces spawn errors through the LLM-facing JSON envelope."""
+        tool = BuiltinTaskTool()
+        tool.set_parent_agent(MagicMock())
 
-        async def mock_run_stream(*args, **kwargs):
-            raise RuntimeError("LLM crashed")
-            yield  # noqa: E501 -- unreachable, but makes this an async generator
+        async def fake_spawn(self, **kwargs):
+            return {
+                "status": "error",
+                "error": "Subagent timed out after 5 seconds",
+                "agent_type": "code",
+                "content": "",
+            }
 
-        mock_agent_instance = MagicMock()
-        mock_agent_instance.run_stream = mock_run_stream
-
-        # Agent is imported locally inside task() as `from agentica.agent import Agent`
-        with patch("agentica.agent.Agent", return_value=mock_agent_instance):
-            result = asyncio.run(tool.task("fail task"))
+        with patch("agentica.subagent.SubagentRegistry.spawn", new=fake_spawn):
+            result = asyncio.run(tool.task("slow"))
 
         parsed = json.loads(result)
         assert parsed["success"] is False
-        assert "error" in parsed
+        assert "timed out" in parsed["error"]
+        assert parsed["subagent_type"] == "code"
 
     def test_format_tool_brief_read_file(self):
         brief = BuiltinTaskTool._format_tool_brief("read_file", {"file_path": "/a/b/c.py"})
@@ -684,79 +676,31 @@ class TestBuiltinTaskTool:
     def test_set_parent_agent(self):
         tool = BuiltinTaskTool()
         mock_agent = MagicMock()
-        mock_agent.work_dir = "/some/path"
         tool.set_parent_agent(mock_agent)
         assert tool._parent_agent is mock_agent
-        assert tool._work_dir == "/some/path"
 
-    def test_task_model_copy_fallback_for_dataclass(self):
-        """When model is a @dataclass (no model_copy), task should fallback to copy.copy."""
-        from dataclasses import dataclass, field
+    def test_task_declares_own_timeout_management(self):
+        tool = BuiltinTaskTool()
+        assert tool.functions["task"].manages_own_timeout is True
+        assert tool.functions["task"].interrupt_behavior == "block"
 
-        @dataclass
-        class FakeDataclassModel:
-            """A minimal dataclass model that has no model_copy method."""
-            id: str = "fake-model"
-            tools: object = None
-            functions: object = None
-            function_call_stack: object = None
-            tool_choice: object = None
-            metrics: dict = field(default_factory=dict)
-            usage: object = None
+    def test_task_passes_model_override_to_spawn(self):
+        """When ``model_override`` is set, the adapter forwards it to spawn."""
+        custom_model = MagicMock()
+        tool = BuiltinTaskTool(model_override=custom_model)
+        tool.set_parent_agent(MagicMock())
 
-        fake_model = FakeDataclassModel()
-        # Ensure it does NOT have model_copy
-        assert not hasattr(fake_model, "model_copy")
+        captured: Dict[str, Any] = {}
 
-        tool = BuiltinTaskTool(model=fake_model)
+        async def fake_spawn(self, **kwargs):
+            captured.update(kwargs)
+            return {"status": "completed", "agent_type": "code", "content": "ok",
+                    "tool_calls_summary": [], "tool_count": 0, "execution_time": 0}
 
-        mock_chunk = MagicMock()
-        mock_chunk.event = "RunResponse"
-        mock_chunk.content = "result from dataclass model"
-        mock_chunk.tools = None
+        with patch("agentica.subagent.SubagentRegistry.spawn", new=fake_spawn):
+            asyncio.run(tool.task("test", subagent_type="code"))
 
-        async def mock_run_stream(*args, **kwargs):
-            yield mock_chunk
-
-        mock_agent_instance = MagicMock()
-        mock_agent_instance.run_stream = mock_run_stream
-
-        with patch("agentica.agent.Agent", return_value=mock_agent_instance):
-            result = asyncio.run(tool.task("test task", subagent_type="code"))
-
-        parsed = json.loads(result)
-        assert parsed["success"] is True
-        assert "result from dataclass model" in parsed["result"]
-
-    def test_task_model_copy_uses_model_copy_when_available(self):
-        """When model has model_copy (e.g. Pydantic), it should be used."""
-        mock_model = MagicMock()
-        mock_model.model_copy.return_value = MagicMock()
-        mock_model.model_copy.return_value.tools = None
-        mock_model.model_copy.return_value.functions = None
-        mock_model.model_copy.return_value.function_call_stack = None
-        mock_model.model_copy.return_value.tool_choice = None
-        mock_model.model_copy.return_value.metrics = {}
-
-        tool = BuiltinTaskTool(model=mock_model)
-
-        mock_chunk = MagicMock()
-        mock_chunk.event = "RunResponse"
-        mock_chunk.content = "done"
-        mock_chunk.tools = None
-
-        async def mock_run_stream(*args, **kwargs):
-            yield mock_chunk
-
-        mock_agent_instance = MagicMock()
-        mock_agent_instance.run_stream = mock_run_stream
-
-        with patch("agentica.agent.Agent", return_value=mock_agent_instance):
-            result = asyncio.run(tool.task("test", subagent_type="code"))
-
-        parsed = json.loads(result)
-        assert parsed["success"] is True
-        mock_model.model_copy.assert_called_once()
+        assert captured["model_override"] is custom_model
 
 
 # ===========================================================================
@@ -764,10 +708,12 @@ class TestBuiltinTaskTool:
 # ===========================================================================
 
 class TestAgentAutoWire:
-    """Agent.__init__ should automatically call set_agent/set_parent_agent on builtin tools."""
+    """Agent.__init__ clones stateful tools per-agent (so the user's original
+    instance is never overwritten when the same logical tool is reused across
+    multiple agents) and wires the per-agent clone to ``self``."""
 
     def test_agent_wires_todo_tool(self):
-        """Agent.__init__ calls BuiltinTodoTool.set_agent(self)."""
+        """Agent.__init__ stores a per-agent clone of BuiltinTodoTool wired to self."""
         from agentica.agent import Agent
         from agentica.model.openai import OpenAIChat
 
@@ -776,10 +722,15 @@ class TestAgentAutoWire:
             model=OpenAIChat(id="gpt-4o-mini", api_key="fake_openai_key"),
             tools=[todo_tool],
         )
-        assert todo_tool._agent is agent
+        # User's original tool is left untouched (isolation contract)
+        assert todo_tool._agent is None
+        # Agent owns its own clone, wired to itself
+        wired = next(t for t in agent.tools if isinstance(t, BuiltinTodoTool))
+        assert wired is not todo_tool
+        assert wired._agent is agent
 
     def test_agent_wires_task_tool(self):
-        """Agent.__init__ calls BuiltinTaskTool.set_parent_agent(self)."""
+        """Agent.__init__ stores a per-agent clone of BuiltinTaskTool wired to self."""
         from agentica.agent import Agent
         from agentica.model.openai import OpenAIChat
 
@@ -788,19 +739,22 @@ class TestAgentAutoWire:
             model=OpenAIChat(id="gpt-4o-mini", api_key="fake_openai_key"),
             tools=[task_tool],
         )
-        assert task_tool._parent_agent is agent
+        assert task_tool._parent_agent is None
+        wired = next(t for t in agent.tools if isinstance(t, BuiltinTaskTool))
+        assert wired is not task_tool
+        assert wired._parent_agent is agent
 
     def test_todo_tool_stores_on_agent(self):
-        """After wiring, write_todos stores todos on agent.todos."""
+        """After wiring, write_todos on the agent's clone stores todos on agent.todos."""
         from agentica.agent import Agent
         from agentica.model.openai import OpenAIChat
 
-        todo_tool = BuiltinTodoTool()
         agent = Agent(
             model=OpenAIChat(id="gpt-4o-mini", api_key="fake_openai_key"),
-            tools=[todo_tool],
+            tools=[BuiltinTodoTool()],
         )
-        todo_tool.write_todos([
+        wired = next(t for t in agent.tools if isinstance(t, BuiltinTodoTool))
+        wired.write_todos([
             {"content": "Test task", "status": "pending"},
         ])
         assert len(agent.todos) == 1

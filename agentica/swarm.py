@@ -3,8 +3,9 @@
 @author:XuMing(xuming624@qq.com)
 @description: Agent Swarm - Multi-agent parallel autonomous collaboration.
 
-Unlike Team (master-slave, serial transfer) and Workflow (deterministic pipeline),
-Swarm enables peer-to-peer autonomous collaboration where:
+Unlike Workflow (deterministic, hand-wired pipeline) and the lighter
+``Agent.as_tool()`` composition primitive, Swarm enables peer-to-peer
+autonomous collaboration where:
 - A coordinator analyzes tasks and assigns subtasks to workers
 - Workers execute in parallel with shared workspace
 - Coordinator synthesizes all worker results into final output
@@ -88,37 +89,25 @@ def _clone_agent_for_task(source: Any) -> Any:
     """
     from agentica.agent import Agent
     from agentica.memory import WorkingMemory
+    from agentica.subagent import SubagentRegistry
 
-    # Shallow-copy the model so each clone has its own tool registry,
-    # metrics dict, and can create its own HTTP client on demand.
-    # We reset runtime fields that must not be shared between concurrent runs.
+    # Reuse the canonical model-cloning logic from SubagentRegistry to keep a
+    # single source of truth: shallow-copy + reset tools/functions/tool_choice/
+    # metrics + fresh ``Usage`` (critical — concurrent swarm tasks would
+    # otherwise pollute each other's token counters via the shared Usage
+    # instance from ``copy.copy``) + force fresh HTTP client.
     src_model = source.model
-    if src_model is not None:
-        try:
-            cloned_model = src_model.model_copy()
-        except AttributeError:
-            import copy
-            cloned_model = copy.copy(src_model)
-        # Reset per-run state so add_tool() in update_model() starts clean
-        cloned_model.tools = None
-        cloned_model.functions = None
-        cloned_model.tool_choice = None
-        cloned_model.metrics = {}
-        # Force fresh HTTP client (the original belongs to the source agent)
-        for attr in ('client', 'http_client', 'async_client'):
-            if hasattr(cloned_model, attr):
-                setattr(cloned_model, attr, None)
-    else:
-        cloned_model = None
+    cloned_model = (
+        SubagentRegistry._clone_parent_model(src_model) if src_model is not None else None
+    )
 
     clone = Agent(
         model=cloned_model,
         name=source.name,                          # keep same name for logging
         description=source.description,
         instructions=source.instructions,
-        tools=source.tools,                        # shared Tool objects (stateless)
+        tools=source.tools,                        # cloned by Agent._post_init() (Tool.clone())
         knowledge=source.knowledge,
-        team=source.team,
         workspace=source.workspace,
         work_dir=source.work_dir,
         response_model=source.response_model,
@@ -131,7 +120,6 @@ def _clone_agent_for_task(source: Any) -> Any:
         prompt_config=source.prompt_config,
         tool_config=source.tool_config,
         long_term_memory_config=source.long_term_memory_config,
-        team_config=source.team_config,
         sandbox_config=source.sandbox_config,
         working_memory=WorkingMemory(),            # fresh, isolated
         context=dict(source.context) if source.context else None,

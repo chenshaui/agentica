@@ -44,7 +44,6 @@
 | [Memory & Workspace](concepts/memory.md) | 记忆系统与工作空间 |
 | [Knowledge (RAG)](concepts/rag.md) | 知识库、向量检索 |
 | **多智能体** | |
-| [Team](multi-agent/team.md) | 动态委派团队协作 |
 | [Workflow](multi-agent/workflow.md) | 确定性工作流编排 |
 | [Swarm](multi-agent/swarm.md) | 自主多智能体协作 |
 | [Subagent](multi-agent/subagent.md) | 子任务委派 |

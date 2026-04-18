@@ -3,10 +3,12 @@
 @author: XuMing(xuming624@qq.com)
 @description: Unit tests for CLI module.
 """
+import logging
+import os
 import sys
+import tempfile
 import unittest
 from unittest.mock import Mock, patch, MagicMock
-import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agentica.cost_tracker import CostTracker
@@ -228,6 +230,53 @@ class TestCLIHelpers(unittest.TestCase):
         box_close = any("╰" in c for c in calls)
         self.assertTrue(box_open, "Expected ╭ box opening")
         self.assertTrue(box_close, "Expected ╰ box closing")
+
+    def test_stream_display_manager_suppresses_micro_compact(self):
+        from agentica.cli.display import StreamDisplayManager
+        fake = MagicMock()
+        fake.width = 80
+        dm = StreamDisplayManager(fake)
+        dm.handle_event({"type": "compact.micro", "agent_name": "Agent", "cleared": 3})
+        fake.print.assert_not_called()
+
+    def test_stream_display_manager_keeps_rule_based_compact_visible(self):
+        from agentica.cli.display import StreamDisplayManager
+        fake = MagicMock()
+        fake.width = 80
+        dm = StreamDisplayManager(fake)
+        dm.handle_event({
+            "type": "compact.rule_based",
+            "agent_name": "Agent",
+            "before": 20,
+            "after": 8,
+            "elapsed": 0.25,
+        })
+        calls = [str(c) for c in fake.print.call_args_list]
+        self.assertTrue(any("compact" in c for c in calls))
+
+    def test_suppress_console_logging_removes_all_non_file_stream_handlers(self):
+        from agentica.utils.log import logger, suppress_console_logging
+
+        original_handlers = list(logger.handlers)
+        temp_file = tempfile.NamedTemporaryFile(delete=False)
+        temp_file.close()
+        stdout_handler = logging.StreamHandler(sys.stdout)
+        stderr_handler = logging.StreamHandler(sys.stderr)
+        file_handler = logging.FileHandler(temp_file.name)
+
+        try:
+            logger.handlers = [stdout_handler, stderr_handler, file_handler]
+            suppress_console_logging()
+            self.assertFalse(any(
+                isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler)
+                for handler in logger.handlers
+            ))
+            self.assertTrue(any(isinstance(handler, logging.FileHandler) for handler in logger.handlers))
+        finally:
+            for handler in [stdout_handler, stderr_handler, file_handler]:
+                handler.close()
+            logger.handlers = original_handlers
+            os.unlink(temp_file.name)
 
 
 class TestCLIImports(unittest.TestCase):

@@ -12,7 +12,7 @@ This example shows how to use the lifecycle hooks system:
 
 The demo creates:
 - A math helper agent with a simple calculator tool
-- A coordinator agent that delegates math tasks to the helper via team transfer
+- A coordinator agent that delegates math tasks to the helper via Agent.as_tool()
 - Custom hooks that log every lifecycle event for observability
 - A workspace agent with auto-archive enabled (via WorkspaceMemoryConfig)
 - A workspace agent with ConversationArchiveHooks passed via RunConfig
@@ -125,12 +125,12 @@ math_agent = Agent(
     hooks=MyAgentHooks(),
 )
 
-# Coordinator agent that delegates math tasks via team transfer
+# Coordinator agent that delegates math tasks via Agent.as_tool() composition
 coordinator = Agent(
     name="Coordinator",
     model=OpenAIChat(id="gpt-4o-mini"),
-    description="You coordinate tasks. For any math calculation, transfer the task to Math Helper.",
-    team=[math_agent],
+    description="You coordinate tasks. For any math calculation, call the math_helper tool.",
+    tools=[math_agent.as_tool(tool_name="math_helper", tool_description="Run the math helper agent.")],
     hooks=MyAgentHooks(),
 )
 
@@ -153,9 +153,9 @@ async def main():
     )
     print(f"\nFinal response: {response.content}\n")
 
-    # --- Demo 2: Team transfer (coordinator -> math agent) ---
+    # --- Demo 2: as_tool composition (coordinator -> math agent) ---
     print("=" * 60)
-    print("Demo 2: Team transfer (coordinator -> math helper)")
+    print("Demo 2: as_tool composition (coordinator -> math helper)")
     print("=" * 60)
     run_hooks_2 = MyRunHooks()
     response = await coordinator.run(

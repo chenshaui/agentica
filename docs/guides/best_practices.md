@@ -412,9 +412,9 @@ agent = Agent(
 
 ---
 
-## 团队协作
+## 多 Agent 协作
 
-### 1. Agent 团队
+### 1. Agent 作为工具（编排器模式）
 
 ```python
 researcher = Agent(
@@ -430,14 +430,17 @@ writer = Agent(
     instructions=["负责内容创作"],
 )
 
-# 主 Agent 协调团队
+# 主 Agent 把同伴 Agent 当工具调用
 leader = Agent(
     name="Leader",
-    team=[researcher, writer],
     instructions=[
-        "协调团队完成任务",
-        "研究任务交给 Researcher",
-        "写作任务交给 Writer",
+        "协调任务完成",
+        "需要研究时调用 research 工具",
+        "需要写作时调用 write 工具",
+    ],
+    tools=[
+        researcher.as_tool(tool_name="research", tool_description="进行深度研究"),
+        writer.as_tool(tool_name="write", tool_description="撰写文章"),
     ],
 )
 

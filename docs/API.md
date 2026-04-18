@@ -190,7 +190,6 @@ from agentica.subagent import SubAgent
 
 # 多 Agent 并行 / 自治（建议新代码用 asyncio.gather）
 from agentica.swarm import Swarm
-from agentica.agent.team import TeamMixin
 
 # 工作流编排（建议新代码用顺序 Python）
 from agentica.workflow import Workflow

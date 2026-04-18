@@ -6,14 +6,14 @@
 Architecture:
 - Agent defines identity and capabilities ("who I am, what I can do")
 - Runner handles execution (LLM calls, tool calls, streaming, memory updates)
-- Mixins: PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin
+- Mixins: PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin
 - Session state: in-memory WorkingMemory (serializable via to_dict/from_dict)
 - Multi-modal: images/videos/audio passed as run() parameters, not stored on Agent
 
 Parameters organized in three layers:
 1. Core definition (~10): model, name, instructions, tools, knowledge, etc.
 2. Common config (~5): add_history_to_messages, debug, tracing, etc.
-3. Packed config (4): PromptConfig, ToolConfig, WorkspaceMemoryConfig, TeamConfig
+3. Packed config (3): PromptConfig, ToolConfig, WorkspaceMemoryConfig
 """
 from typing import (
     Any,
@@ -24,6 +24,7 @@ from typing import (
     List,
     Optional,
     Sequence,
+    Tuple,
     Type,
     Union,
 )
@@ -47,7 +48,7 @@ from agentica.memory.session_log import SessionLog
 from agentica.compression import CompressionManager
 from agentica.config import LANGFUSE_SECRET_KEY, LANGFUSE_PUBLIC_KEY
 from agentica.agent.config import (
-    PromptConfig, ToolConfig, WorkspaceMemoryConfig, TeamConfig, SandboxConfig,
+    PromptConfig, ToolConfig, WorkspaceMemoryConfig, SandboxConfig,
     ToolRuntimeConfig, SkillRuntimeConfig, ExperienceConfig,
 )
 from agentica.hooks import (
@@ -58,13 +59,13 @@ from agentica.runner import Runner
 
 # Import mixin classes — pure method containers, no state, no __init__
 from agentica.agent.prompts import PromptsMixin
-from agentica.agent.team import TeamMixin
+from agentica.agent.as_tool import AsToolMixin
 from agentica.agent.tools import ToolsMixin
 from agentica.agent.printer import PrinterMixin
 
 
 @dataclass(init=False)
-class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
+class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
     """AI Agent — defines identity and capabilities.
 
     Agent only describes "who I am, what I can do".
@@ -73,7 +74,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
     Parameters are organized in three layers:
     1. Core definition (~10): model, name, instructions, tools, etc.
     2. Common config (~5): add_history_to_messages, debug, etc.
-    3. Packed config (4): prompt_config, tool_config, long_term_memory_config, team_config
+    3. Packed config (3): prompt_config, tool_config, long_term_memory_config
 
     For output_language, markdown, search_knowledge etc., set them via
     prompt_config=PromptConfig(...) or tool_config=ToolConfig(...).
@@ -108,7 +109,6 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
     instructions: Optional[Union[str, List[str], Callable]] = None
     tools: Optional[List[Union[ModelTool, Tool, Callable, Dict, Function]]] = None
     knowledge: Optional[Any] = None  # Knowledge type
-    team: Optional[List["Agent"]] = None
     workspace: Optional[Any] = None  # Workspace type
     work_dir: Optional[str] = None  # Working directory for file operations (used by builtin tools)
     memory: bool = False  # Whether to enable long-term memory tools and hooks
@@ -139,7 +139,6 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
     tool_config: ToolConfig = field(default_factory=ToolConfig)
     long_term_memory_config: WorkspaceMemoryConfig = field(default_factory=WorkspaceMemoryConfig)
     experience_config: ExperienceConfig = field(default_factory=ExperienceConfig)
-    team_config: TeamConfig = field(default_factory=TeamConfig)
     sandbox_config: Optional[SandboxConfig] = None
 
     # Tool-level guardrails (run before/after each tool call)
@@ -157,6 +156,17 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
     stream_intermediate_steps: bool = field(default=False, init=False, repr=False)
     _cancelled: bool = field(default=False, init=False, repr=False)
     _running: bool = field(default=False, init=False, repr=False)
+    _interrupt_message: Optional[str] = field(default=None, init=False, repr=False)
+    # Asyncio handles for hard cancellation (set by Runner._run_impl).
+    # Allows cancel() to inject CancelledError into blocking awaits
+    # (LLM API call, tool execution, subagent run) from another thread.
+    _run_loop: Optional[Any] = field(default=None, init=False, repr=False)
+    _run_task: Optional[Any] = field(default=None, init=False, repr=False)
+    # Live event callback. Fired synchronously from the asyncio thread by
+    # the Runner (compression progress) and BuiltinTaskTool (subagent
+    # progress). The CLI registers this to render real-time sub-process
+    # visibility. Signature: callback(event: dict) -> None.
+    _event_callback: Optional[Any] = field(default=None, init=False, repr=False)
 
     # Run-level hooks (set per-run via run(hooks=...))
     _run_hooks: Optional[RunHooks] = field(default=None, init=False, repr=False)
@@ -178,8 +188,6 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
 
     # Context for tools and prompt functions (runtime input)
     context: Optional[Dict[str, Any]] = None
-    # Reference to parent agent (set by team.get_tools for transfer hooks)
-    _transfer_caller: Optional["Agent"] = field(default=None, init=False, repr=False)
 
     def __init__(
             self,
@@ -194,7 +202,6 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
             instructions: Optional[Union[str, List[str], Callable]] = None,
             tools: Optional[List[Union[ModelTool, Tool, Callable, Dict, Function]]] = None,
             knowledge: Optional[Any] = None,
-            team: Optional[List["Agent"]] = None,
             workspace: Optional[Union[Any, str]] = None,  # Workspace or str path
             work_dir: Optional[str] = None,  # Working directory for file operations
             memory: bool = False,  # Enable long-term memory tools and hooks
@@ -214,7 +221,6 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
             tool_config: Optional[ToolConfig] = None,
             long_term_memory_config: Optional[WorkspaceMemoryConfig] = None,
             experience_config: Optional[ExperienceConfig] = None,
-            team_config: Optional[TeamConfig] = None,
             sandbox_config: Optional[SandboxConfig] = None,
             tool_input_guardrails: Optional[List[Any]] = None,
             tool_output_guardrails: Optional[List[Any]] = None,
@@ -232,7 +238,6 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         self.instructions = instructions
         self.tools = tools
         self.knowledge = knowledge
-        self.team = team
         self.response_model = response_model
         self.work_dir = work_dir
         self.memory = memory
@@ -265,7 +270,6 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         self.tool_config = tool_config or ToolConfig()
         self.long_term_memory_config = long_term_memory_config or WorkspaceMemoryConfig()
         self.experience_config = experience_config or ExperienceConfig()
-        self.team_config = team_config or TeamConfig()
         self.sandbox_config = sandbox_config
         self.tool_input_guardrails = tool_input_guardrails or []
         self.tool_output_guardrails = tool_output_guardrails or []
@@ -280,13 +284,16 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         self.stream_intermediate_steps = False
         self._cancelled = False
         self._running = False
+        self._interrupt_message = None
+        self._run_loop = None
+        self._run_task = None
+        self._event_callback = None
         self._run_hooks = None
         self._default_run_hooks = None
         self._tool_runtime_configs: Dict[str, ToolRuntimeConfig] = {}
         self._skill_runtime_configs: Dict[str, SkillRuntimeConfig] = {}
         self._enabled_tools = None
         self._enabled_skills = None
-        self._transfer_caller = None
         self.todos = []
         self._tool_policy_prompts: List[str] = []
         self._session_guidance_prompts: List[str] = []
@@ -294,6 +301,12 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         # Session-level set of memory filenames already surfaced (dedup across turns).
         # Prevents the same memory entry from occupying system prompt slots every turn.
         self._surfaced_memories: set = set()
+
+        # Per-run model-hook state. These guards prevent the same protection
+        # warning / injected strategy notice from being emitted on every loop
+        # iteration when the model gets stuck.
+        self._overflow_warning_emitted: bool = False
+        self._repetition_notice_keys: set[Tuple[str, str]] = set()
 
         # Create Runner instance
         self._runner = Runner(self)
@@ -313,25 +326,17 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         if self.tool_config.auto_load_mcp:
             self._load_mcp_tools()
 
-        self._inject_generated_skill_dirs()
-
-        # Merge tool system prompts into instructions
-        self._merge_tool_system_prompts()
-
-        # Wire builtin tools that need agent reference
+        # Isolate stateful tools per-agent. Tools that bind agent/workspace
+        # references (BuiltinTodoTool, BuiltinTaskTool, BuiltinMemoryTool,
+        # SkillTool) override Tool.clone() to return a fresh instance, so the
+        # caller's original tool object is never overwritten when the same
+        # logical tool config is shared across multiple agents (Swarm clones,
+        # subagents, manual reuse). Stateless tools clone to ``self`` (no-op).
+        # Tool list may also contain raw callables / ModelTool / Function — left
+        # as-is since they hold no agent state. Must happen BEFORE any mutation
+        # on the tool list (skill dir injection, agent wiring, prompt merge).
         if self.tools:
-            from agentica.tools.buildin_tools import BuiltinTodoTool, BuiltinMemoryTool
-            from agentica.tools.builtin_task_tool import BuiltinTaskTool
-            for tool in self.tools:
-                if isinstance(tool, BuiltinTodoTool):
-                    tool.set_agent(self)
-                elif isinstance(tool, BuiltinTaskTool):
-                    tool.set_parent_agent(self)
-                elif isinstance(tool, BuiltinMemoryTool):
-                    tool.set_workspace(self.workspace)
-                    tool.set_sync_global_agent_md(
-                        self.long_term_memory_config.sync_memories_to_global_agent_md
-                    )
+            self.tools = [t.clone() if isinstance(t, Tool) else t for t in self.tools]
 
         # Register BuiltinMemoryTool when memory=True and workspace exists
         if self.memory and self.workspace is not None:
@@ -339,14 +344,21 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
             has_memory_tool = any(isinstance(t, BuiltinMemoryTool) for t in (self.tools or []))
             if not has_memory_tool:
                 memory_tool = BuiltinMemoryTool()
-                memory_tool.set_workspace(self.workspace)
-                memory_tool.set_sync_global_agent_md(
-                    self.long_term_memory_config.sync_memories_to_global_agent_md
-                )
                 if self.tools is None:
                     self.tools = [memory_tool]
                 else:
                     self.tools = list(self.tools) + [memory_tool]
+
+        # Inject generated-skill dirs into any SkillTool BEFORE first use.
+        self._inject_generated_skill_dirs()
+
+        # Bind agent-aware tools to this agent (todos, parent_agent, workspace,
+        # skill registry filtering). Centralized here so Agent.clone() can call
+        # the same helper without duplicating the wiring logic.
+        self._wire_tools_to_self()
+
+        # Merge tool system prompts into instructions (read-only over tools).
+        self._merge_tool_system_prompts()
 
         # Load runtime config from workspace YAML
         self._load_runtime_config()
@@ -397,6 +409,33 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
             auto_hooks.append(ExperienceCaptureHooks(self.experience_config))
         if auto_hooks:
             self._default_run_hooks = _CompositeRunHooks(auto_hooks)
+
+    def _wire_tools_to_self(self) -> None:
+        """Bind agent-aware tools to this agent.
+
+        Tools are expected to have already been cloned (see ``_post_init`` /
+        ``clone``) so that mutations here only affect this agent's private
+        instances and never bleed into other agents that share the same
+        logical tool config.
+        """
+        if not self.tools:
+            return
+        from agentica.tools.buildin_tools import BuiltinTodoTool, BuiltinMemoryTool
+        from agentica.tools.builtin_task_tool import BuiltinTaskTool
+        from agentica.tools.skill_tool import SkillTool
+
+        for tool in self.tools:
+            if isinstance(tool, BuiltinTodoTool):
+                tool.set_agent(self)
+            elif isinstance(tool, BuiltinTaskTool):
+                tool.set_parent_agent(self)
+            elif isinstance(tool, BuiltinMemoryTool):
+                tool.set_workspace(self.workspace)
+                tool.set_sync_global_agent_md(
+                    self.long_term_memory_config.sync_memories_to_global_agent_md
+                )
+            elif isinstance(tool, SkillTool):
+                tool._agent = self
 
     def _inject_generated_skill_dirs(self) -> None:
         """Attach workspace generated skill dirs to any SkillTool before prompt merge."""
@@ -477,6 +516,16 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         )
         return experiences if experiences else None
 
+    def _reset_model_hook_state(self) -> None:
+        """Reset per-run protection dedup state.
+
+        Context-overflow and repetition hooks may trigger multiple times during
+        a run, but they should not spam the CLI or keep injecting the same
+        strategy-change notice into the prompt over and over.
+        """
+        self._overflow_warning_emitted = False
+        self._repetition_notice_keys = set()
+
     def _load_mcp_tools(self):
         """Auto-load MCP tools from mcp_config.json/yaml if available."""
         try:
@@ -544,7 +593,6 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
                 if not prompt:
                     continue
                 if isinstance(tool, SkillTool):
-                    tool._agent = self
                     self.add_session_guidance(prompt)
                 else:
                     self.add_tool_policy_prompt(prompt)
@@ -556,8 +604,34 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         )
 
     def cancel(self):
-        """Cancel the current run. Can be called from another thread/task."""
+        """Cancel the current run.
+
+        Hard-cancellation: sets the soft flag AND injects ``CancelledError``
+        into the running asyncio task via ``loop.call_soon_threadsafe``.
+        This unblocks any pending ``await`` (LLM API call, tool execution,
+        subagent run) immediately, instead of waiting for the next safe
+        boundary check.
+
+        Safe to call from another thread.
+        """
         self._cancelled = True
+        loop = self._run_loop
+        task = self._run_task
+        if loop is not None and task is not None and not task.done():
+            try:
+                loop.call_soon_threadsafe(task.cancel)
+            except RuntimeError:
+                pass
+
+    def interrupt(self, message: Optional[str] = None):
+        """Interrupt the current run with an optional follow-up message.
+
+        If *message* is provided it is stored in ``_interrupt_message`` so
+        the CLI can pick it up after cancellation and feed it as the next
+        user turn. Uses the same hard-cancel mechanism as ``cancel()``.
+        """
+        self._interrupt_message = message
+        self.cancel()
 
     def _check_cancelled(self):
         """Check if cancelled and raise AgentCancelledError if so."""
@@ -726,10 +800,17 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         Safe for parallel asyncio.gather() calls.
         """
         clone = copy.copy(self)
-        # Deep-copy model so each clone has independent state
-        # (metrics, _agent_ref, function_call_stack, tool_choice)
+        # Model isolation: route through SubagentRegistry._clone_parent_model so
+        # Agent.clone() / SubagentRegistry.spawn() / Swarm._clone_agent_for_task
+        # share ONE concurrency-safe handoff strategy: shallow copy + reset
+        # tools/functions/tool_choice/metrics + fresh ``Usage`` + drop HTTP
+        # client (the original belongs to the source agent's loop).
+        # Previously this used ``copy.deepcopy`` which (a) attempts to deepcopy
+        # the bound HTTP client / sessions and (b) silently diverged from the
+        # subagent path's reset semantics.
         if self.model is not None:
-            clone.model = copy.deepcopy(self.model)
+            from agentica.subagent import SubagentRegistry
+            clone.model = SubagentRegistry._clone_parent_model(self.model)
         # Reset mutable runtime state
         clone.agent_id = str(uuid4())
         clone.run_id = None
@@ -739,22 +820,40 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         clone.stream_intermediate_steps = False
         clone._cancelled = False
         clone._running = False
+        clone._interrupt_message = None
+        clone._run_loop = None
+        clone._run_task = None
+        clone._event_callback = None
         clone._run_hooks = None
         clone._default_run_hooks = None
         clone._enabled_tools = None
         clone._enabled_skills = None
         clone._session_log = None
-        clone._transfer_caller = None
+        clone._overflow_warning_emitted = False
+        clone._repetition_notice_keys = set()
         # Fresh working memory (don't share session state)
         clone.working_memory = WorkingMemory()
         # Fresh session-level memory dedup set
         clone._surfaced_memories = set()
+        # Reset per-agent runtime containers. ``copy.copy`` is shallow, so
+        # without explicit reassignment these would alias the source's lists
+        # and leak state through ``BuiltinTodoTool.set_agent`` (which writes
+        # through to ``self._agent.todos``) and through composition primitives
+        # like ``Agent.as_tool()``.
+        clone.todos = []
+        # Fresh ``context`` dict so per-run mutations (e.g. ``_subagent_depth``
+        # in ``SubagentRegistry.spawn``) do not propagate back to the source.
+        if isinstance(self.context, dict):
+            clone.context = dict(self.context)
         # Fresh Runner bound to the clone
         clone._runner = Runner(clone)
+        # Tool isolation: stateful tools (todos, parent_agent, workspace, skill
+        # filtering) are cloned per-agent and rewired so the clone does not
+        # share or overwrite the source agent's tool state slots.
+        if self.tools:
+            clone.tools = [t.clone() if isinstance(t, Tool) else t for t in self.tools]
+            clone._wire_tools_to_self()
         return clone
-
-    def has_team(self) -> bool:
-        return self.team is not None and len(self.team) > 0
 
     def add_introduction(self, introduction: str) -> None:
         """Add an introduction message to memory."""
@@ -941,23 +1040,23 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
                         for fc in last_n
                     )
                     if all_same:
-                        tool_name = first.function.name
-                        logger.warning(
-                            f"Agent '{agent_ref.identifier}': repetition detected — "
-                            f"tool '{tool_name}' called with identical args {max_repeat}x in a row. "
-                            "Injecting strategy-change message."
+                        tool_name, args_key = first_key
+                        repetition_key: Tuple[str, str] = (tool_name, args_key)
+                        notice = (
+                            f"[System notice] You have called '{tool_name}' {max_repeat} times "
+                            f"in a row with identical arguments and it has not resolved the problem. "
+                            "Stop repeating this call. Try a fundamentally different approach: "
+                            "use a different tool, decompose the problem differently, or "
+                            "report what you know so far and ask for clarification."
                         )
-                        # Inject a user message to break the loop
-                        messages.append(Message(
-                            role="user",
-                            content=(
-                                f"[System notice] You have called '{tool_name}' {max_repeat} times "
-                                f"in a row with identical arguments and it has not resolved the problem. "
-                                "Stop repeating this call. Try a fundamentally different approach: "
-                                "use a different tool, decompose the problem differently, or "
-                                "report what you know so far and ask for clarification."
-                            ),
-                        ))
+                        if repetition_key not in agent_ref._repetition_notice_keys:
+                            logger.warning(
+                                f"Agent '{agent_ref.identifier}': repetition detected — "
+                                f"tool '{tool_name}' called with identical args {max_repeat}x in a row. "
+                                "Injecting strategy-change message."
+                            )
+                            messages.append(Message(role="user", content=notice))
+                            agent_ref._repetition_notice_keys.add(repetition_key)
                         # Skip the current tool batch — let the model reconsider
                         return True
 

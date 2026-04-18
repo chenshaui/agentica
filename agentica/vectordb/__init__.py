@@ -11,4 +11,4 @@ Specific backends require their own extras:
     pip install agentica[lancedb]       # + LanceDB
     pip install agentica[pgvector]      # + pgvector
 """
-from .base import VectorDb, Distance
+from .base import VectorDb, Distance, SearchType

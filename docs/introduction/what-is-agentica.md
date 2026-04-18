@@ -14,14 +14,14 @@
 | **架构** | Async-first, 同步适配器无缝兼容 |
 | **设计哲学** | 开发者友好，面向对象 API，极低学习曲线 |
 | **模型支持** | 20+ LLM 提供商，本地/云端模型 |
-| **核心能力** | Agent, Tools, RAG, Team, Workflow, Swarm, MCP/ACP |
+| **核心能力** | Agent, Tools, RAG, Workflow, Swarm, Subagent, MCP/ACP |
 
 ## 核心特性
 
 - **Async-First 架构** -- 所有核心方法原生 async，同步适配器无缝兼容
 - **开发者友好** -- 简洁直观的面向对象 API，5 行代码创建一个 Agent
 - **模块化可扩展** -- 模型、记忆后端、向量存储均可自由替换
-- **功能完备** -- 内置 40+ 工具、RAG、多智能体团队、工作流编排、安全守卫
+- **功能完备** -- 内置 40+ 工具、RAG、多智能体协作（Swarm/Subagent）、工作流编排、安全守卫
 - **生产就绪** -- CLI / Web UI / API 服务多种部署方式
 - **协议支持** -- MCP (Model Context Protocol) + ACP (Agent Client Protocol)
 - **安全机制** -- Death Spiral 检测、Cost Budget、Guardrails 三层守卫
@@ -48,7 +48,7 @@ asyncio.run(main())
 | **学习曲线** | 低 | 高 | 中 | 低 |
 | **模型支持** | 20+ 提供商 | 多 | 少 | 仅 OpenAI |
 | **Tool 系统** | 函数/类/MCP | Chain/Tool | Tool | Function |
-| **多智能体** | Team/Workflow/Swarm | Agent Executor | Crew | Handoff |
+| **多智能体** | as_tool/Swarm/Subagent/Workflow | Agent Executor | Crew | Handoff |
 | **RAG** | 内置完整 | 需组合 | 无 | 无 |
 | **安全守卫** | 4 层 Guardrails | 无 | 无 | 无 |
 | **IDE 集成** | ACP 协议 | 无 | 无 | 无 |

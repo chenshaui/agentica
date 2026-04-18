@@ -7,7 +7,6 @@ Provides layered configuration:
 - PromptConfig: Prompt engineering details
 - ToolConfig: Tool calling behavior
 - WorkspaceMemoryConfig: Workspace memory settings
-- TeamConfig: Team collaboration settings
 """
 
 from dataclasses import dataclass, field
@@ -114,14 +113,6 @@ class WorkspaceMemoryConfig:
     # Recompile confirmed user/feedback memories into ~/.agentica/AGENTS.md so
     # future sessions automatically inherit long-lived preferences.
     sync_memories_to_global_agent_md: bool = False
-
-
-@dataclass
-class TeamConfig:
-    """Team collaboration configuration."""
-    respond_directly: bool = False
-    add_transfer_instructions: bool = True
-    team_response_separator: str = "\n"
 
 
 @dataclass

@@ -1,6 +1,6 @@
 # Swarm
 
-Swarm 模式实现对等自主多智能体协作，与 Team（主从委派）和 Workflow（确定性管道）不同。
+Swarm 模式实现对等自主多智能体协作，与 `Agent.as_tool()`（轻量黑盒组合）和 Workflow（确定性管道）相比，更适合需要多 worker 并行/自治分工的场景。
 
 ## 核心概念
 
@@ -112,6 +112,5 @@ Swarm 为每个子任务创建 Agent 的隔离克隆：
 
 ## 下一步
 
-- [Team](team.md) -- 主从委派模式
 - [Workflow](workflow.md) -- 确定性流水线
 - [Subagent](subagent.md) -- 子任务委派

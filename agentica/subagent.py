@@ -12,10 +12,14 @@ This module implements a subagent system that allows main agents to:
 Based on the subagent design pattern from modern AI coding assistants.
 """
 import asyncio
+import copy
 import json
+import time
+import uuid
 
 from dataclasses import dataclass
 from enum import Enum
+from collections import OrderedDict
 from typing import (
     Any,
     Callable,
@@ -28,11 +32,13 @@ from typing import (
 )
 from datetime import datetime
 
+from agentica.run_response import AgentCancelledError
 from agentica.tools.base import Function, ModelTool, Tool
 from agentica.utils.log import logger
 
 if TYPE_CHECKING:
     from agentica.agent import Agent
+    from agentica.model.base import Model
 
 
 class SubagentType(str, Enum):
@@ -175,18 +181,6 @@ class SubagentRegistry:
             if run.parent_agent_id == parent_agent_id
         ]
 
-    def is_subagent(self, agent_id: str) -> bool:
-        """Check if an agent_id is currently running as a subagent.
-
-        This is used for nesting prevention — if the current agent is already
-        running as a subagent, it should not spawn further subagents.
-        """
-        return any(
-            run.run_id == agent_id
-            for run in self._runs.values()
-            if run.status in ("pending", "running")
-        )
-    
     def get_active(self) -> List[SubagentRun]:
         """Get all currently running subagents."""
         return [
@@ -273,7 +267,20 @@ class SubagentRegistry:
             if isinstance(parent_context, str) and parent_context.strip():
                 parts.append(parent_context.strip())
             elif isinstance(parent_context, dict) and parent_context:
-                parts.append(json.dumps(parent_context, ensure_ascii=False, sort_keys=True))
+                # ``Agent._resolve_context`` allows context values to be
+                # callables or arbitrary resolved objects (datetime, etc.),
+                # so naive ``json.dumps`` would crash on the inheritance
+                # path. ``default=str`` keeps a best-effort string snapshot.
+                try:
+                    serialized = json.dumps(
+                        parent_context,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        default=str,
+                    )
+                except TypeError:
+                    serialized = repr(parent_context)
+                parts.append(serialized)
 
         return "\n\n".join(parts)
 
@@ -318,15 +325,163 @@ class SubagentRegistry:
                 continue
 
             if isinstance(tool, Tool):
-                filtered_tool = Tool(name=tool.name, description=tool.description)
-                for name in allowed_names:
-                    filtered_tool.functions[name] = tool.functions[name]
-                child_tools.append(filtered_tool)
+                # Critical isolation step:
+                # ``tool.functions[name].entrypoint`` may be a bound method on
+                # the parent's tool instance (e.g. ``parent_todo_tool.write_todos``).
+                # Reusing those Function objects on a freshly-constructed Tool
+                # would still mutate the parent agent's state.
+                #
+                # ``tool.clone()`` is the canonical way to obtain an instance
+                # whose ``Function.entrypoint`` callables are rebound to the
+                # cloned tool. For stateless tools that return ``self``, we
+                # copy the Tool wrapper so filtering does not alter the
+                # parent's ``functions`` dict.
+                cloned = tool.clone()
+                if cloned is tool:
+                    cloned = Tool(name=tool.name, description=tool.description)
+                    cloned.functions = OrderedDict(tool.functions)
+                cloned.functions = OrderedDict(
+                    (name, cloned.functions[name])
+                    for name in allowed_names
+                    if name in cloned.functions
+                )
+                child_tools.append(cloned)
                 continue
 
             child_tools.append(tool)
 
         return child_tools
+
+    @staticmethod
+    def _clone_parent_model(source_model: "Model") -> "Model":
+        """Shallow-clone a parent Model so the subagent owns isolated runtime state.
+
+        Resets runtime fields (tools/functions/tool_choice/metrics/usage) and
+        clears any HTTP client references — the parent's client belongs to the
+        parent's event loop and would race with concurrent subagents.
+
+        ``Model`` is a ``@dataclass`` (not Pydantic) so ``copy.copy`` is the
+        canonical clone. ``model_copy`` exists only on Pydantic ``BaseModel``
+        subclasses; we still try it first because some user-supplied model
+        wrappers may be Pydantic-based.
+        """
+        from agentica.model.usage import Usage
+
+        if hasattr(source_model, "model_copy"):
+            cloned = source_model.model_copy()
+        else:
+            cloned = copy.copy(source_model)
+        cloned.tools = None
+        cloned.functions = None
+        cloned.function_call_stack = None
+        cloned.tool_choice = None
+        cloned.metrics = {}
+        cloned.usage = Usage()
+        for attr in ("client", "http_client", "async_client"):
+            if hasattr(cloned, attr):
+                setattr(cloned, attr, None)
+        return cloned
+
+    async def _run_child_streaming(
+        self,
+        parent_agent: "Agent",
+        child: "Agent",
+        task: str,
+    ) -> Dict[str, Any]:
+        """Drive the subagent through ``run_stream`` and bubble events to parent CLI.
+
+        Always streams (zero-cost when no ``_event_callback`` is wired) so
+        ``BuiltinTaskTool`` and any external caller share the same execution
+        loop. Returns ``{content, tool_calls_summary}``.
+        """
+        from agentica.run_config import RunConfig
+        from agentica.tools.builtin_task_tool import BuiltinTaskTool
+
+        cb: Optional[Callable[[Dict[str, Any]], None]] = parent_agent._event_callback
+        if cb is not None:
+            child._event_callback = cb
+            cb({
+                "type": "subagent.start",
+                "agent_name": child.name,
+                "task": task,
+            })
+
+        # ``chunk.tools`` mirrors ``agent.run_response.tools`` — the cumulative
+        # list of every tool call in the run so far. Iterating it on each chunk
+        # without dedupe re-emits events for every previously-seen tool, which
+        # both spams the parent CLI and inflates ``tool_count``. Track which
+        # tool_call_ids we have already announced to keep events one-per-call.
+        seen_started: set = set()
+        seen_completed: set = set()
+        tool_calls_log: List[Dict[str, Any]] = []
+        log_index_by_id: Dict[str, int] = {}
+        final_content = ""
+
+        async for chunk in child.run_stream(task, config=RunConfig(stream_intermediate_steps=True)):
+            if chunk is None:
+                continue
+            if chunk.event in ("ToolCallStarted", "ToolCallCompleted") and chunk.tools:
+                for tool_info in chunk.tools:
+                    tool_name = tool_info.get("tool_name") or tool_info.get("name", "")
+                    if not tool_name:
+                        continue
+                    call_id = tool_info.get("tool_call_id") or tool_info.get("id")
+                    tool_args = tool_info.get("tool_args") or tool_info.get("arguments", {})
+                    content = tool_info.get("content")
+                    brief = BuiltinTaskTool._format_tool_brief(tool_name, tool_args, content)
+                    if chunk.event == "ToolCallStarted":
+                        if call_id and call_id in seen_started:
+                            continue
+                        if call_id:
+                            seen_started.add(call_id)
+                            log_index_by_id[call_id] = len(tool_calls_log)
+                        tool_calls_log.append({"name": tool_name, "info": brief})
+                        if cb is not None:
+                            cb({
+                                "type": "subagent.tool_started",
+                                "tool_name": tool_name,
+                                "info": brief,
+                                "args": tool_args if isinstance(tool_args, dict) else {},
+                            })
+                    else:  # ToolCallCompleted
+                        # Ignore entries that have not actually completed in
+                        # this chunk (no content / metrics yet).
+                        if content is None and not (tool_info.get("metrics") or {}).get("time"):
+                            continue
+                        if call_id and call_id in seen_completed:
+                            continue
+                        if call_id:
+                            seen_completed.add(call_id)
+                            idx = log_index_by_id.get(call_id)
+                            if idx is not None:
+                                tool_calls_log[idx]["info"] = brief
+                        if cb is not None:
+                            elapsed_t = (tool_info.get("metrics") or {}).get("time")
+                            cb({
+                                "type": "subagent.tool_completed",
+                                "tool_name": tool_name,
+                                "info": brief,
+                                "elapsed": elapsed_t,
+                                "is_error": tool_info.get("tool_call_error", False),
+                            })
+            if chunk.event == "RunResponse" and chunk.content:
+                final_content += str(chunk.content)
+
+        if cb is not None:
+            cb({
+                "type": "subagent.end",
+                "agent_name": child.name,
+                "response": final_content,
+                "tool_count": len(tool_calls_log),
+            })
+
+        return {
+            "content": final_content,
+            "tool_calls_summary": [
+                {"name": tc["name"], "info": tc.get("info", "")}
+                for tc in tool_calls_log
+            ],
+        }
 
     async def spawn(
         self,
@@ -335,11 +490,20 @@ class SubagentRegistry:
         agent_type: Union[str, SubagentType] = SubagentType.CODE,
         context: str = "",
         depth: int = 1,
+        model_override: Optional["Model"] = None,
     ) -> Dict[str, Any]:
-        """Spawn an isolated subagent and run to completion.
+        """Spawn an isolated subagent and run it to completion.
 
-        Creates a child agent with restricted tools and isolated state,
-        executes the task, and returns a summary (not full trajectory).
+        Single source of truth for subagent execution. Handles:
+          - depth check (``MAX_DEPTH=2``) and nested-spawn permission
+          - registry registration / status updates
+          - parent model cloning (isolated tools/functions/usage/HTTP client)
+          - tool inheritance (parent's tools, filtered by ``BLOCKED_TOOLS`` +
+            config ``allowed_tools`` / ``denied_tools``; ``Agent._post_init``
+            clones each ``Tool`` again to keep agent-bound state isolated)
+          - streamed event bubbling to parent's ``_event_callback``
+          - usage merge back into parent model
+          - timeout enforcement and graceful error reporting
 
         Args:
             parent_agent: The parent Agent instance.
@@ -347,11 +511,25 @@ class SubagentRegistry:
             agent_type: Type of subagent (determines tool permissions).
             context: Optional context to inject into the subagent prompt.
             depth: Current nesting depth (1 = direct child of user agent).
+            model_override: Optional model to use for the subagent. When ``None``
+                the parent's model is cloned. Useful when the caller wants the
+                subagent to use a cheaper/faster model than the parent.
 
         Returns:
-            Dict with keys: status, content, agent_type, error (if failed).
+            Dict with keys ``status``, ``content``, ``agent_type``, ``run_id``,
+            and on completion ``tool_calls_summary``, ``execution_time``,
+            ``tool_count``. On error ``error`` is populated and ``content`` is
+            empty.
         """
-        parent_context = parent_agent.context or {}
+        # ``Agent.context`` is typed as ``Optional[Dict[str, Any]]`` but other
+        # parts of the runtime accept loose shapes (string summaries are even
+        # rendered by ``_build_inherited_context`` below). Coerce to a dict so
+        # ``.get`` is always safe — non-dict context simply contributes no
+        # depth/permission hints.
+        raw_parent_context = parent_agent.context
+        parent_context: Dict[str, Any] = (
+            raw_parent_context if isinstance(raw_parent_context, dict) else {}
+        )
         inherited_depth = int(parent_context.get("_subagent_depth", 0)) + 1
         depth = max(depth, inherited_depth)
 
@@ -380,75 +558,113 @@ class SubagentRegistry:
                 "content": "",
             }
 
+        source_model = model_override or parent_agent.model
+        if source_model is None:
+            return {
+                "status": "error",
+                "error": "No model available for subagent. Configure a model on the parent agent.",
+                "agent_type": config.type.value,
+                "content": "",
+            }
+
+        run_id = str(uuid.uuid4())
+        run = SubagentRun(
+            run_id=run_id,
+            subagent_type=config.type,
+            parent_agent_id=parent_agent.agent_id,
+            task_label=task[:50] + "..." if len(task) > 50 else task,
+            task_description=task,
+            started_at=datetime.now(),
+            status="running",
+        )
+        self.register(run)
+
         parent_tools = parent_agent.tools or []
         child_tools = self._select_child_tools(parent_tools, config)
 
-        # Build focused prompt for child
-        prompt_parts = [config.system_prompt]
-        prompt_context_parts: List[str] = []
+        instructions_parts: List[str] = [config.system_prompt]
+        context_parts: List[str] = []
         if config.inherit_context:
             inherited_context = self._build_inherited_context(parent_agent)
             if inherited_context:
-                prompt_context_parts.append(inherited_context)
+                context_parts.append(inherited_context)
         if context:
-            prompt_context_parts.append(context)
-        if prompt_context_parts:
-            prompt_context_text = "\n\n".join(prompt_context_parts)
-            prompt_parts.append(f"\n## Context\n{prompt_context_text}")
-        prompt_parts.append(f"\n## Task\n{task}")
-        prompt_parts.append("\nBe direct and efficient. Complete the task and stop.")
+            context_parts.append(context)
+        if context_parts:
+            instructions_parts.append(f"\n## Context\n{chr(10).join(context_parts)}")
+        instructions_parts.append("\nBe direct and efficient. Complete the task and stop.")
 
+        from agentica.agent import Agent
+        from agentica.agent.config import PromptConfig, ToolConfig
+
+        child_kwargs: Dict[str, Any] = dict(
+            name=f"{parent_agent.name or 'agent'}_sub_{config.name}",
+            model=self._clone_parent_model(source_model),
+            instructions="\n".join(instructions_parts),
+            tools=child_tools,
+            prompt_config=PromptConfig(markdown=True),
+            tool_config=ToolConfig(tool_call_limit=config.tool_call_limit),
+            context={
+                "_subagent_depth": depth,
+                "_can_spawn_subagents": config.can_spawn_subagents,
+            },
+        )
+        if config.inherit_workspace and parent_agent.workspace is not None:
+            child_kwargs["workspace"] = parent_agent.workspace
+        if config.inherit_knowledge and parent_agent.knowledge is not None:
+            child_kwargs["knowledge"] = parent_agent.knowledge
+
+        child = Agent(**child_kwargs)
+
+        start_time = time.time()
         try:
-            # Lazy import to avoid circular dependency
-            from agentica.agent import Agent
-            from agentica.agent.config import ToolConfig
-
-            child = Agent(
-                name=f"{parent_agent.name or 'agent'}_sub_{config.name}",
-                model=parent_agent.model,
-                instructions="\n".join(prompt_parts),
-                tools=child_tools,
-                tool_config=ToolConfig(tool_call_limit=config.tool_call_limit),
-                context={
-                    "_subagent_depth": depth,
-                    "_can_spawn_subagents": config.can_spawn_subagents,
-                },
-                # Controlled inheritance
-                workspace=(
-                    parent_agent.workspace
-                    if config.inherit_workspace else None
-                ),
-                knowledge=(
-                    parent_agent.knowledge
-                    if config.inherit_knowledge else None
-                ),
-            )
-
+            run_coro = self._run_child_streaming(parent_agent, child, task)
             if config.timeout > 0:
-                result = await asyncio.wait_for(child.run(task), timeout=config.timeout)
+                stream_result = await asyncio.wait_for(run_coro, timeout=config.timeout)
             else:
-                result = await child.run(task)
-            return {
-                "status": "completed",
-                "content": result.content if result else "",
-                "agent_type": config.type.value,
-            }
+                stream_result = await run_coro
         except asyncio.TimeoutError:
             logger.warning("Subagent timed out after %ss", config.timeout)
+            self.update_status(run_id=run_id, status="error", error="timeout")
             return {
                 "status": "error",
                 "error": f"Subagent timed out after {config.timeout} seconds",
                 "agent_type": config.type.value,
+                "run_id": run_id,
                 "content": "",
             }
+        except (asyncio.CancelledError, AgentCancelledError):
+            self.update_status(run_id=run_id, status="cancelled", error="cancelled by user")
+            raise
         except Exception as e:
             logger.error(f"Subagent execution failed: {e}")
+            self.update_status(run_id=run_id, status="error", error=str(e))
             return {
                 "status": "error",
                 "error": str(e),
                 "agent_type": config.type.value,
+                "run_id": run_id,
                 "content": "",
             }
+
+        elapsed = round(time.time() - start_time, 3)
+        final_content = stream_result["content"] or "Subagent completed but returned no content."
+
+        if parent_agent.model is not None and child.model is not None:
+            parent_agent.model.usage.merge(child.model.usage)
+
+        self.update_status(run_id=run_id, status="completed", result=final_content)
+
+        return {
+            "status": "completed",
+            "content": final_content,
+            "agent_type": config.type.value,
+            "subagent_name": config.name,
+            "run_id": run_id,
+            "tool_calls_summary": stream_result["tool_calls_summary"],
+            "tool_count": len(stream_result["tool_calls_summary"]),
+            "execution_time": elapsed,
+        }
 
     async def spawn_batch(
         self,
@@ -488,11 +704,19 @@ class SubagentRegistry:
                         agent_type=spec.get("type", SubagentType.CODE),
                         context=spec.get("context", ""),
                     )
+                except (asyncio.TimeoutError, AgentCancelledError):
+                    # asyncio.CancelledError inherits BaseException since 3.8
+                    # so it bypasses ``Exception`` and properly cancels gather.
+                    raise
                 except Exception as e:
-                    logger.error("Subagent batch execution failed: %s", e)
+                    # Narrow surface: only operational errors land here.
+                    # Programmer mistakes (TypeError on spec keys, etc.) are
+                    # surfaced with a full traceback so they don't disappear
+                    # into a status="error" dict.
+                    logger.exception("Subagent batch execution failed for task '%s'", task[:80])
                     return {
                         "status": "error",
-                        "error": str(e),
+                        "error": f"{type(e).__name__}: {e}",
                         "agent_type": str(spec.get("type", SubagentType.CODE)),
                         "content": "",
                     }

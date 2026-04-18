@@ -1,12 +1,16 @@
 # -*- coding: utf-8 -*-
 """
 @author:XuMing(xuming624@qq.com)
-@description: Team collaboration demo - Demonstrates multi-agent collaboration
+@description: Multi-agent collaboration demo via Agent.as_tool().
 
-This example shows how to create a team of agents that work together:
+Composes specialised worker agents as tools on a single orchestrator agent.
+``Agent.as_tool()`` is the lightweight composition primitive at the Agent
+level — for parallel autonomous execution use ``Swarm``, for ad-hoc isolated
+sub-tasks use the ``BuiltinTaskTool`` / ``SubagentRegistry`` runtime.
+
 1. Researcher agent - Searches and analyzes articles
 2. Writer agent - Writes articles based on research
-3. Team coordinator - Orchestrates the collaboration
+3. Coordinator agent - Calls them as tools in the right order
 """
 import sys
 import os
@@ -81,20 +85,35 @@ writer = Agent(
     ),
 )
 
-# Create team coordinator
-team = Agent(
-    name="News Article Team",
-    team=[researcher, writer],
+# Create coordinator that calls researcher/writer as tools
+coordinator = Agent(
+    name="News Article Coordinator",
+    model=OpenAIChat(id="gpt-4o"),
+    instructions=[
+        "First call the article_researcher tool with the user's topic.",
+        "Then call the article_writer tool with the researcher output to produce the final article.",
+        "Return the writer's output to the user.",
+    ],
+    tools=[
+        researcher.as_tool(
+            tool_name="article_researcher",
+            tool_description="Search the web and return the 5 most relevant articles on a topic.",
+        ),
+        writer.as_tool(
+            tool_name="article_writer",
+            tool_description="Write a NYT-worthy article from the provided research notes.",
+        ),
+    ],
     debug=True,
 )
 
 
 async def main():
     print("=" * 60)
-    print("Team Collaboration Demo: News Article Writing")
+    print("Multi-agent collaboration demo (as_tool composition)")
     print("=" * 60)
-    
-    await team.print_response_stream(
+
+    await coordinator.print_response_stream(
         """
         Find the 5 most relevant articles on a topic: 人工智能最新发展,
         Read each article and write a NYT worthy news article. 用中文写。

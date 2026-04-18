@@ -343,21 +343,19 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             return command[:297] + "..."
         return command
     
-    # Todo tools - list the todo items
+    # Todo tools - list the todo items (show ALL todos, no truncation)
     if tool_name == "write_todos":
         todos = tool_args.get("todos", [])
         if isinstance(todos, list) and todos:
             todo_lines = []
-            for todo in todos[:5]:
+            for todo in todos:
                 if isinstance(todo, dict):
-                    content = todo.get("content", "")[:50]
+                    content = todo.get("content", "")
                     status = todo.get("status", "pending")
                     status_icon = "✓" if status == "completed" else "○" if status == "pending" else "◐"
                     todo_lines.append(f"{status_icon} {content}")
                 else:
-                    todo_lines.append(f"○ {str(todo)[:50]}")
-            if len(todos) > 5:
-                todo_lines.append(f"  ... and {len(todos) - 5} more")
+                    todo_lines.append(f"○ {str(todo)}")
             return "\n    ".join(todo_lines)
         return f"{len(todos)} items"
     
@@ -432,9 +430,11 @@ def _display_tool_impl(console_instance, tool_name: str, tool_args: dict,
     if tool_count > 1:
         console_instance.print()
 
-    # Special handling for write_todos - multi-line display
+    # Special handling for write_todos - multi-line display.
+    # Note: in this repo "task" is the dedicated subagent-spawn tool, so we
+    # avoid using "tasks" as the label here to prevent confusion.
     if tool_name == "write_todos" and "\n" in display_str:
-        console_instance.print(f"  {icon} [bold magenta]{tool_name}[/bold magenta] tasks:")
+        console_instance.print(f"  {icon} [bold magenta]{tool_name}[/bold magenta]:")
         console_instance.print(f"    {display_str}", style="dim")
     elif display_str:
         console_instance.print(f"  {icon} [bold magenta]{tool_name}[/bold magenta] [dim]{display_str}[/dim]")
@@ -469,6 +469,10 @@ class StreamDisplayManager:
         self._box_opened = False
         self._thinking_box_opened = False
         self._line_buffer = ""  # accumulates tokens until newline for line-buffered output
+        # Set of "task" tool_call_ids (or just a counter) for which we have
+        # already streamed live subagent steps; the after-completion summary
+        # in display_tool_result() should be suppressed in that case.
+        self._subagent_live_shown = 0
 
     def _open_box(self, label: str = "Response"):
         w = self._term_width
@@ -535,76 +539,113 @@ class StreamDisplayManager:
         self.tool_count += 1
         _display_tool_impl(self.console, tool_name, tool_args, self.tool_count)
     
+    @staticmethod
+    def _fmt_elapsed(elapsed: Optional[float]) -> str:
+        """Format elapsed seconds. Returns '' when None or < 0.1s (avoids
+        meaningless '0.0s' noise for fast in-process operations)."""
+        if elapsed is None or elapsed < 0.1:
+            return ""
+        return f" ({elapsed:.1f}s)"
+
     def display_tool_result(self, tool_name: str, result_content: str,
                             is_error: bool = False, elapsed: float = None):
         """Display tool execution result as a compact preview."""
+        elapsed_str = self._fmt_elapsed(elapsed)
         if not result_content:
-            if elapsed is not None:
-                self.console.print(f"    [dim]completed in {elapsed:.1f}s[/dim]")
+            self.console.print(f"    [dim]⎿ done{elapsed_str}[/dim]")
             return
 
-        # Tools whose results are noisy / low-value — only show on error
-        _QUIET_TOOLS = {"read_file", "ls", "glob", "write_file", "fetch_url", "web_search"}
-        if tool_name in _QUIET_TOOLS and not is_error:
-            return
-
-        # Special handling for task (subagent) - show inner tool calls
         if tool_name == "task":
             self._display_task_result(result_content, is_error)
             return
 
+        # write_todos result is a verbose acknowledgment JSON ({"message": ...,
+        # "todos": [...]}). The new todo list is already rendered inline with
+        # the tool args, so dumping the result adds noise without information.
+        if tool_name == "write_todos" and not is_error:
+            self.console.print(f"    [dim]⎿ updated{elapsed_str}[/dim]")
+            return
+
         result_str = str(result_content)
 
-        # Shorten absolute paths in results for grep/glob/execute
-        if tool_name in ("grep", "glob", "execute", "ls"):
+        if tool_name in ("grep", "glob", "execute", "ls", "read_file"):
             cwd = str(Path.cwd())
             if cwd in result_str:
                 result_str = result_str.replace(cwd + "/", "").replace(cwd, ".")
 
         lines = result_str.splitlines()
 
-        # grep results: fewer preview lines, they can be very long
+        _COMPACT_TOOLS = {"read_file", "ls", "glob", "write_file", "fetch_url", "web_search"}
+        if tool_name in _COMPACT_TOOLS and not is_error:
+            summary = f"{len(lines)} lines" if len(lines) > 1 else lines[0][:80] if lines else "ok"
+            self.console.print(f"    [dim]⎿ {summary}{elapsed_str}[/dim]")
+            return
+
         if tool_name == "grep":
             max_lines = 3
             max_line_width = 100
         else:
             max_lines = 4
             max_line_width = 120
-        
+
         style = "dim red" if is_error else "dim"
         prefix = "    ⎿ " if not is_error else "    ⎿ ⚠ "
         cont_prefix = "      "
-        
+
         display_lines = lines[:max_lines]
         for i, line in enumerate(display_lines):
             if len(line) > max_line_width:
                 line = line[:max_line_width - 3] + "..."
             p = prefix if i == 0 else cont_prefix
             self.console.print(f"{p}{line}", style=style)
-        
+
         remaining = len(lines) - max_lines
         if remaining > 0:
             self.console.print(f"{cont_prefix}... ({remaining} more lines)", style="dim italic")
+        if elapsed_str:
+            self.console.print(f"{cont_prefix}{elapsed_str.lstrip()}", style="dim")
     
     def _display_task_result(self, result_content: str, is_error: bool = False):
-        """Display subagent task result with inner tool calls and execution summary."""
+        """Display subagent task result.
+
+        When live subagent events were already streamed via ``handle_event``,
+        skip the per-tool summary (avoid duplication) and just print a brief
+        execution-summary footer.
+        """
         try:
             data = json.loads(result_content)
         except (ValueError, TypeError):
             self.console.print(f"    ⎿ {str(result_content)[:120]}", style="dim")
             return
-        
+
         success = data.get("success", False)
         tool_summary = data.get("tool_calls_summary", [])
         exec_time = data.get("execution_time")
         tool_count = data.get("tool_count", len(tool_summary))
-        subagent_name = data.get("subagent_name", "Subagent")
-        
+
         if not success:
             error_msg = data.get("error", "Unknown error")
             self.console.print(f"    ⎿ ⚠ {error_msg[:120]}", style="dim red")
+            if self._subagent_live_shown > 0:
+                self._subagent_live_shown -= 1
             return
-        
+
+        # Live events already rendered the tool calls + final response — only
+        # print a one-line summary footer to avoid duplicating output.
+        if self._subagent_live_shown > 0:
+            self._subagent_live_shown -= 1
+            summary_parts = []
+            if tool_count > 0:
+                summary_parts.append(f"{tool_count} tool uses")
+            if exec_time is not None:
+                summary_parts.append(f"{exec_time:.1f}s")
+            if summary_parts:
+                self.console.print(
+                    f"    [dim italic]⎿ task done ({', '.join(summary_parts)})[/dim italic]"
+                )
+            return
+
+        # Fallback (no live callback registered): render the recap.
         max_shown = 8
         for i, tc in enumerate(tool_summary[:max_shown]):
             name = tc.get("name", "")
@@ -620,11 +661,11 @@ class StreamDisplayManager:
                 self.console.print(f" {info}", style="dim")
             else:
                 self.console.print(style="dim")
-        
+
         if len(tool_summary) > max_shown:
             remaining = len(tool_summary) - max_shown
             self.console.print(f"      ... and {remaining} more tool calls", style="dim italic")
-        
+
         summary_parts = []
         if tool_count > 0:
             summary_parts.append(f"{tool_count} tool uses")
@@ -633,6 +674,111 @@ class StreamDisplayManager:
         if summary_parts:
             summary_str = ", ".join(summary_parts)
             self.console.print(f"    [dim italic]Execution Summary: {summary_str}[/dim italic]")
+
+    # ------------------------------------------------------------------
+    # Live event rendering (subagent progress + compaction)
+    # ------------------------------------------------------------------
+
+    # Indent prefix for subagent inner steps; visually nests them under the
+    # parent ``task`` tool call line.
+    _SUB_INDENT = "    └─ "
+    _SUB_CONT_INDENT = "       "
+
+    def handle_event(self, event: dict) -> None:
+        """Dispatch a runtime event from the agent (subagent / compression).
+
+        Called synchronously by Runner / BuiltinTaskTool from the asyncio
+        thread. While these events fire, the parent run is awaiting tool
+        execution or starting a new turn, so the main thread is not mutating
+        display state — direct console output is safe.
+        """
+        et = event.get("type", "")
+        if et.startswith("subagent."):
+            self._handle_subagent_event(et, event)
+        elif et.startswith("compact."):
+            self._handle_compact_event(et, event)
+
+    def _handle_subagent_event(self, et: str, event: dict) -> None:
+        if et == "subagent.start":
+            self._subagent_live_shown += 1
+            agent_name = event.get("agent_name", "Subagent")
+            task = event.get("task", "")
+            preview = task.replace("\n", " ").strip()
+            if len(preview) > 100:
+                preview = preview[:97] + "..."
+            self.console.print(
+                f"{self._SUB_INDENT}[dim cyan]⮕ {agent_name}[/dim cyan] "
+                f"[dim italic]{preview}[/dim italic]"
+            )
+        elif et == "subagent.tool_started":
+            # Intentionally not rendered: render on completion to keep one
+            # line per tool (tool name + args + elapsed), and to handle
+            # parallel tool execution correctly (completions arrive out of
+            # start order in that case).
+            return
+        elif et == "subagent.tool_completed":
+            tool_name = event.get("tool_name", "")
+            info = event.get("info", "") or ""
+            if len(info) > 100:
+                info = info[:97] + "..."
+            is_error = event.get("is_error", False)
+            elapsed_str = self._fmt_elapsed(event.get("elapsed"))
+            if is_error:
+                self.console.print(
+                    f"{self._SUB_INDENT}[dim red]⚠ {tool_name}[/dim red] [dim]{info}[/dim]"
+                )
+                return
+            line = f"{self._SUB_INDENT}[dim magenta]{tool_name}[/dim magenta]"
+            if info:
+                line += f" [dim]{info}[/dim]"
+            if elapsed_str:
+                line += f"[dim]{elapsed_str}[/dim]"
+            self.console.print(line)
+        elif et == "subagent.end":
+            response = event.get("response", "") or ""
+            if response:
+                preview = response.replace("\n", " ").strip()
+                if len(preview) > 200:
+                    preview = preview[:197] + "..."
+                self.console.print(
+                    f"{self._SUB_INDENT}[dim cyan]⤷[/dim cyan] [dim italic]{preview}[/dim italic]"
+                )
+
+    def _handle_compact_event(self, et: str, event: dict) -> None:
+        # Micro-compact is an expected per-turn maintenance pass and fires too
+        # frequently to be useful in the CLI. Keep it silent; surface only the
+        # heavier compaction stages that change conversation structure.
+        if et == "compact.micro":
+            return
+
+        agent_name = event.get("agent_name", "Agent")
+        # Subagent compactions get extra indent so they visually nest under
+        # the parent task tool line.
+        prefix = "    " if self._subagent_live_shown > 0 else "  "
+        if et == "compact.rule_based":
+            before = event.get("before", 0)
+            after = event.get("after", 0)
+            elapsed = event.get("elapsed", 0.0)
+            self.console.print(
+                f"{prefix}[dim yellow]🗜 compact [/dim yellow] "
+                f"[dim]{before} → {after} msgs ({elapsed:.2f}s)[/dim]"
+            )
+        elif et == "compact.auto":
+            before = event.get("before", 0)
+            after = event.get("after", 0)
+            elapsed = event.get("elapsed", 0.0)
+            self.console.print(
+                f"{prefix}[dim yellow]🗜 compact (auto / LLM-summarised)[/dim yellow] "
+                f"[dim]{before} → {after} msgs ({elapsed:.1f}s)[/dim]"
+            )
+        elif et == "compact.reactive":
+            before = event.get("before", 0)
+            after = event.get("after", 0)
+            elapsed = event.get("elapsed", 0.0)
+            self.console.print(
+                f"{prefix}[dim yellow]🗜 compact (reactive · prompt_too_long)[/dim yellow] "
+                f"[dim]{before} → {after} msgs ({elapsed:.1f}s)[/dim]"
+            )
     
     def end_tool_section(self):
         """End tool section."""

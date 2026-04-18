@@ -4,7 +4,7 @@
 @description: Prompt building methods for Agent
 
 V2: Reads prompt settings from self.prompt_config (PromptConfig dataclass)
-and self.tool_config / self.team_config instead of flat self.xxx attributes.
+and self.tool_config instead of flat self.xxx attributes.
 """
 
 import json
@@ -205,12 +205,11 @@ class PromptsMixin:
         # Structure optimised for prefix cache (OpenAI / Anthropic / vLLM):
         #
         #   ┌─ STATIC ZONE ──────────────────────────────────┐
-        #   │ description, task, role, team, instructions,    │  ← never changes
+        #   │ description, task, role, instructions,          │  ← never changes
         #   │ guidelines, expected_output, additional_context │     between runs
         #   ├─ SEMI-STATIC ZONE ─────────────────────────────┤
         #   │ workspace context (AGENTS.md etc.)               │  ← rarely changes
         #   │ model system message                            │
-        #   │ team transfer prompt                            │
         #   ├─ DYNAMIC ZONE ─────────────────────────────────┤
         #   │ workspace memory, session summary, datetime     │  ← may change every
         #   │ json output prompt                              │     turn / run
@@ -234,17 +233,6 @@ class PromptsMixin:
             system_message_lines.append(f"Your task is: {pc.task}\n")
         if pc.role is not None:
             system_message_lines.append(f"Your role is: {pc.role}\n")
-        if self.has_team() and self.team_config.add_transfer_instructions:
-            system_message_lines.extend(
-                [
-                    "## You are the leader of a team of AI Agents.",
-                    "  - You can either respond directly or transfer tasks to other Agents in your team depending on the tools available to them.",
-                    "  - If you transfer a task to another Agent, make sure to include a clear description of the task and the expected output.",
-                    "  - You must always validate the output of the other Agents before responding to the user, "
-                    "you can re-assign the task if you are not satisfied with the result.",
-                    "",
-                ]
-            )
         if len(instructions) > 0:
             system_message_lines.append("## Instructions")
             if len(instructions) > 1:
@@ -299,9 +287,6 @@ class PromptsMixin:
         system_message_from_model = self.model.get_system_message_for_model()
         if system_message_from_model is not None:
             system_message_lines.append(system_message_from_model)
-
-        if self.has_team() and self.team_config.add_transfer_instructions:
-            system_message_lines.append(f"{self.get_transfer_prompt()}\n")
 
         # ── DYNAMIC ZONE (at the very end for prefix-cache friendliness) ──
         session_guidance_prompts = self._get_session_guidance_prompts()
@@ -425,15 +410,6 @@ class PromptsMixin:
             system_message_lines.append(f"\n## Current Task\n{pc.task}")
         if pc.role is not None:
             system_message_lines.append(f"\n## Your Role\n{pc.role}")
-
-        if self.has_team() and self.team_config.add_transfer_instructions:
-            system_message_lines.append("\n## Team Leadership")
-            system_message_lines.append(
-                "You are the leader of a team of AI Agents. "
-                "You can either respond directly or transfer tasks to other Agents in your team. "
-                "Always validate the output of team members before responding to the user."
-            )
-            system_message_lines.append(f"\n{self.get_transfer_prompt()}")
 
         if pc.guidelines and len(pc.guidelines) > 0:
             system_message_lines.append("\n## Guidelines")

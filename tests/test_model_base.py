@@ -297,6 +297,27 @@ class TestRunFunctionCalls:
         assert len(model.function_call_stack) <= 6
 
     @pytest.mark.asyncio
+    async def test_manages_own_timeout_skips_outer_timeout_wrapper(self):
+        model = self._make_model_instance()
+
+        async def slow_tool() -> str:
+            """Slow tool."""
+            await asyncio.sleep(0.05)
+            return "ok"
+
+        fc = self._make_fc(slow_tool, {}, "c_timeout")
+        fc.function.timeout = 0
+        fc.function.manages_own_timeout = True
+
+        results = []
+        async for _ in model.run_function_calls([fc], results):
+            pass
+
+        assert fc.result == "ok"
+        assert fc.error is None
+        assert len(results) == 1
+
+    @pytest.mark.asyncio
     async def test_metrics_recorded(self):
         model = self._make_model_instance()
 

@@ -215,14 +215,16 @@ class TestGetSystemMessage:
             def get_system_prompt(self):
                 return "STATIC TOOL POLICY"
 
-        skill_tool = SkillTool(auto_load=False)
-        skill_tool.get_system_prompt = lambda: "# Skills\n\nDYNAMIC SKILL GUIDANCE"
-
         agent = Agent(
             name="A",
             model=OpenAIChat(id="gpt-4o-mini", api_key="fake_openai_key"),
-            tools=[FakeTool(name="fake"), skill_tool],
+            tools=[FakeTool(name="fake"), SkillTool(auto_load=False)],
         )
+        # Agent clones stateful tools per-instance — patch the agent's clone,
+        # not the original, so the prompt-merge step sees the dynamic guidance.
+        agent_skill_tool = next(t for t in agent.tools if isinstance(t, SkillTool))
+        agent_skill_tool.get_system_prompt = lambda: "# Skills\n\nDYNAMIC SKILL GUIDANCE"
+        agent.refresh_tool_system_prompts()
         msg = await agent.get_system_message()
 
         assert msg is not None
@@ -238,15 +240,16 @@ class TestGetSystemMessage:
             def get_system_prompt(self):
                 return "STATIC TOOL POLICY"
 
-        skill_tool = SkillTool(auto_load=False)
-        skill_tool.get_system_prompt = lambda: "# Skills\n\nDYNAMIC SKILL GUIDANCE"
-
         agent = Agent(
             name="A",
             model=OpenAIChat(id="gpt-4o-mini", api_key="fake_openai_key"),
-            tools=[FakeTool(name="fake"), skill_tool],
+            tools=[FakeTool(name="fake"), SkillTool(auto_load=False)],
             prompt_config=PromptConfig(enable_agentic_prompt=True),
         )
+        # Patch the agent's per-instance SkillTool clone (see isolation contract).
+        agent_skill_tool = next(t for t in agent.tools if isinstance(t, SkillTool))
+        agent_skill_tool.get_system_prompt = lambda: "# Skills\n\nDYNAMIC SKILL GUIDANCE"
+        agent.refresh_tool_system_prompts()
         msg = await agent.get_system_message()
 
         assert msg is not None

@@ -91,7 +91,6 @@ asyncio.run(main())
 | `instructions` | `str \| List[str] \| Callable` | 行为指令，支持动态计算 |
 | `tools` | `List[Tool \| Callable]` | 工具列表 |
 | `knowledge` | `Knowledge` | RAG 知识库 |
-| `team` | `List[Agent]` | 团队成员（委派任务给其他 Agent） |
 | `workspace` | `Workspace` | 持久化工作空间 |
 | `session_id` | `str` | 会话 ID（用于会话持久化和恢复） |
 | `response_model` | `Type[BaseModel]` | 结构化输出（Pydantic 模型） |
@@ -112,7 +111,6 @@ asyncio.run(main())
 | `prompt_config` | `PromptConfig` | 提示词工程配置 |
 | `tool_config` | `ToolConfig` | 工具调用行为配置 |
 | `long_term_memory_config` | `WorkspaceMemoryConfig` | 工作空间记忆配置 |
-| `team_config` | `TeamConfig` | 多 Agent 团队协作配置 |
 
 ## 运行方式
 
@@ -551,8 +549,8 @@ agent = DeepAgent(
 
 ## 下一步
 
-- [Team](../multi-agent/team.md) -- 多 Agent 委派与协作
 - [Workflow](../multi-agent/workflow.md) -- 确定性工作流编排
+- [Subagent](../multi-agent/subagent.md) -- 受治理的子 Agent（spawn / task）
 - [工具系统](tools.md) -- 工具开发和配置
 - [Memory & Workspace](memory.md) -- 长期记忆机制
 - [Hooks](../advanced/hooks.md) -- 生命周期钩子

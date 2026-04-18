@@ -51,7 +51,7 @@ from agentica.model.base import Model
 from agentica.model.loop_state import LoopState
 from agentica.model.message import Message
 from agentica.model.response import ModelResponse, ModelResponseEvent
-from agentica.run_response import RunEvent, RunResponse
+from agentica.run_response import AgentCancelledError, RunEvent, RunResponse
 from agentica.run_config import RunConfig
 from agentica.memory import AgentRun
 from agentica.utils.string import parse_structured_output
@@ -327,6 +327,9 @@ class Runner:
           Stage 4 - Auto-compact (costly, LLM summarisation)
           Stage 5 (reactive compact) is handled in _call_with_retry on API error.
         """
+        cb = agent._event_callback
+        agent_name = getattr(agent, "name", None) or "Agent"
+
         # Stage 1: tool result budget (persist oversized results to disk)
         _sid = agent.run_id or 'default'
         _recent_tools = [m for m in messages if m.role == "tool" and not m.compressed_content]
@@ -337,6 +340,12 @@ class Runner:
         n = micro_compact(messages)
         if n:
             logger.debug(f"Stage 2 (micro-compact): cleared {n} old tool result(s)")
+            if cb is not None:
+                cb({
+                    "type": "compact.micro",
+                    "agent_name": agent_name,
+                    "cleared": n,
+                })
 
         # Stage 3 & 4 require CompressionManager
         if not agent.tool_config.compress_tool_results:
@@ -345,7 +354,6 @@ class Runner:
         if cm is None:
             return
 
-        # Helper: fire compact hooks on the agent
         async def _fire_compact_hooks(event: str) -> None:
             if agent._run_hooks is not None:
                 fn = getattr(agent._run_hooks, event, None)
@@ -356,14 +364,36 @@ class Runner:
         if cm.should_compress(messages, tools=model.tools, model=model):
             await _fire_compact_hooks('on_pre_compact')
             logger.debug("Stage 3 (rule-based compress): truncating + dropping old messages")
+            before = len(messages)
+            t0 = time.monotonic()
             await cm.compress(messages, tools=model.tools, model=model)
             await _fire_compact_hooks('on_post_compact')
+            if cb is not None:
+                cb({
+                    "type": "compact.rule_based",
+                    "agent_name": agent_name,
+                    "before": before,
+                    "after": len(messages),
+                    "elapsed": time.monotonic() - t0,
+                })
 
-        # Stage 4: auto-compact via LLM summarisation
+        # Stage 4: auto-compact via LLM summarisation.
+        # auto_compact() returns False fast when threshold not met; only fire
+        # events when it actually compresses (avoids per-turn spam).
+        before = len(messages)
+        t0 = time.monotonic()
         compacted = await cm.auto_compact(messages, model=model)
         if compacted:
             logger.debug("Stage 4 (auto-compact): conversation summarised by LLM")
             await _fire_compact_hooks('on_post_compact')
+            if cb is not None:
+                cb({
+                    "type": "compact.auto",
+                    "agent_name": agent_name,
+                    "before": before,
+                    "after": len(messages),
+                    "elapsed": time.monotonic() - t0,
+                })
 
     @staticmethod
     async def _try_reactive_compact(
@@ -372,15 +402,26 @@ class Runner:
         model: "Model",
     ) -> bool:
         """Attempt emergency compression on prompt_too_long. Returns True if compacted.
-        
+
         Stage 5 (reactive compact) is handled in _call_with_retry on API error.
         """
         cm = agent.tool_config.compression_manager if agent is not None else None
         if cm is None:
             return False
+        before = len(messages)
+        t0 = time.monotonic()
         compacted = await cm.auto_compact(messages, model=model, force=True)
         if compacted:
             logger.info("Reactive compact triggered (prompt_too_long) -- retrying")
+            cb = agent._event_callback
+            if cb is not None:
+                cb({
+                    "type": "compact.reactive",
+                    "agent_name": getattr(agent, "name", None) or "Agent",
+                    "before": before,
+                    "after": len(messages),
+                    "elapsed": time.monotonic() - t0,
+                })
             return True
         return False
 
@@ -549,6 +590,12 @@ class Runner:
                 return
 
             agent._running = True
+            # Capture asyncio handles so cancel() can hard-cancel from another thread
+            try:
+                agent._run_loop = asyncio.get_running_loop()
+                agent._run_task = asyncio.current_task()
+            except RuntimeError:
+                pass
             try:  # R-01 fix: ensure _running is reset on any exception
                 agent.stream = stream and agent.is_streamable
                 agent.stream_intermediate_steps = stream_intermediate_steps and agent.stream
@@ -668,6 +715,7 @@ class Runner:
                 agent.model.run_tools = False
 
                 # Build hooks from Agent (they live on Agent, not Model)
+                agent._reset_model_hook_state()
                 _pre_tool_hook = agent._build_pre_tool_hook()
                 _post_tool_hook = agent._build_post_tool_hook()
 
@@ -1025,6 +1073,8 @@ class Runner:
 
             finally:
                 agent._running = False
+                agent._run_loop = None
+                agent._run_task = None
 
         trace_input = message if isinstance(message, str) else str(message) if message else None
         trace_name = agent.name or "agent-run"
@@ -1263,21 +1313,25 @@ class Runner:
             )
 
         final_response = None
-        async for response in self._run_impl(
-            message=message,
-            stream=False,
-            audio=audio,
-            images=images,
-            videos=videos,
-            messages=messages,
-            add_messages=add_messages,
-            save_response_to_file=save_response_to_file,
-            hooks=hooks,
-            enabled_tools=enabled_tools,
-            enabled_skills=enabled_skills,
-            **kwargs,
-        ):
-            final_response = response
+        try:
+            async for response in self._run_impl(
+                message=message,
+                stream=False,
+                audio=audio,
+                images=images,
+                videos=videos,
+                messages=messages,
+                add_messages=add_messages,
+                save_response_to_file=save_response_to_file,
+                hooks=hooks,
+                enabled_tools=enabled_tools,
+                enabled_skills=enabled_skills,
+                **kwargs,
+            ):
+                final_response = response
+        except asyncio.CancelledError:
+            self.agent._cancelled = False
+            raise AgentCancelledError("Agent run cancelled by user") from None
         return final_response
 
     async def run_stream(
@@ -1335,8 +1389,12 @@ class Runner:
                 idle_timeout=idle_timeout,
             )
 
-        async for item in resp:
-            yield item
+        try:
+            async for item in resp:
+                yield item
+        except asyncio.CancelledError:
+            self.agent._cancelled = False
+            raise AgentCancelledError("Agent run cancelled by user") from None
 
     def run_sync(
         self,

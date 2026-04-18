@@ -73,7 +73,7 @@ export DEEPSEEK_API_KEY="your-api-key"      # DeepSeek
 - **20以上のモデル** — OpenAI / DeepSeek / Claude / ZhipuAI / Qwen / Moonshot / Ollama / LiteLLM など
 - **40以上の組み込みツール** — 検索、コード実行、ファイル操作、ブラウザ、OCR、画像生成
 - **RAG** — ナレッジベース管理、ハイブリッド検索、Rerank、LangChain / LlamaIndex 統合
-- **マルチエージェント** — Team（動的委任）、Swarm（並列 / 自律）、Workflow（確定的オーケストレーション）
+- **マルチエージェント** — `Agent.as_tool()`（軽量合成）、Swarm（並列 / 自律）、Workflow（確定的オーケストレーション）
 - **ガードレール** — 入力 / 出力 / ツールレベルのガードレール、ストリーミングリアルタイム検出
 - **MCP / ACP** — Model Context Protocol と Agent Communication Protocol のサポート
 - **スキルシステム** — Markdown ベースのスキル注入、モデル非依存

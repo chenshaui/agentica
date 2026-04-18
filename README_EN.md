@@ -82,7 +82,7 @@ export DEEPSEEK_API_KEY="your-api-key"      # DeepSeek
 - **20+ Models** — OpenAI / DeepSeek / Claude / ZhipuAI / Qwen / Moonshot / Ollama / LiteLLM and more
 - **40+ Built-in Tools** — Search, code execution, file operations, browser, OCR, image generation
 - **RAG** — Knowledge base management, hybrid retrieval, Rerank, LangChain / LlamaIndex integration
-- **Multi-Agent** — Team (dynamic delegation), Swarm (parallel / autonomous), and Workflow (deterministic orchestration)
+- **Multi-Agent** — `Agent.as_tool()` (lightweight composition), Swarm (parallel / autonomous), and Workflow (deterministic orchestration)
 - **Guardrails** — Input / output / tool-level guardrails, streaming real-time detection
 - **MCP / ACP** — Model Context Protocol and Agent Communication Protocol support
 - **Skill System** — Markdown-based skill injection with project, user, and managed external skill directories
@@ -172,7 +172,7 @@ See [examples/](https://github.com/shibing624/agentica/tree/main/examples) for f
 |----------|---------|
 | **Basics** | Hello World, streaming, structured output, multi-turn, multi-modal, **Agentic Loop comparison** |
 | **Tools** | Custom tools, async tools, search, code execution, parallel tools, concurrency safety, cost tracking, sandbox isolation, compression |
-| **Agent Patterns** | Agent-as-tool, parallel execution, team collaboration, debate, routing, Swarm, sub-agent, model-layer hooks, session resume |
+| **Agent Patterns** | Agent-as-tool, parallel execution, multi-agent collaboration, debate, routing, Swarm, sub-agent, model-layer hooks, session resume |
 | **Guardrails** | Input / output / tool-level guardrails, streaming guardrails |
 | **Memory** | Session history, WorkingMemory, context compression, Workspace memory, LLM auto-memory |
 | **RAG** | PDF Q&A, advanced RAG, LangChain / LlamaIndex integration |

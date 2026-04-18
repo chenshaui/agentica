@@ -23,6 +23,7 @@ import os
 import re
 import shutil
 import tempfile
+from collections import OrderedDict
 from datetime import datetime
 import time
 import uuid
@@ -1000,7 +1001,7 @@ class BuiltinFileTool(Tool):
             context_lines: int = 0,
             before_context: int = 0,
             after_context: int = 0,
-            max_results: int = 100,
+            limit: int = 100,
             fixed_strings: bool = False,
     ) -> str:
         """Search for a pattern in files using ripgrep (rg).
@@ -1029,7 +1030,7 @@ class BuiltinFileTool(Tool):
             context_lines: Show N lines before and after each match (default: 0, content mode only)
             before_context: Show N lines before each match (default: 0, content mode only)
             after_context: Show N lines after each match (default: 0, content mode only)
-            max_results: Maximum results to return (default: 100)
+            limit: Maximum results to return (default: 100)
             fixed_strings: Treat pattern as literal text, not regex (default: False)
 
         Returns:
@@ -1053,7 +1054,7 @@ class BuiltinFileTool(Tool):
         if rg_path is None:
             return await asyncio.get_event_loop().run_in_executor(
                 None, self._grep_fallback, pattern, path, include, output_mode,
-                max_results, fixed_strings, case_insensitive,
+                limit, fixed_strings, case_insensitive,
             )
 
         # Build rg command arguments
@@ -1091,7 +1092,7 @@ class BuiltinFileTool(Tool):
 
         # Result limit: for content mode, limit matches per file
         if output_mode == "content":
-            cmd.extend(["--max-count", str(max_results)])
+            cmd.extend(["--max-count", str(limit)])
 
         # Exclude common irrelevant directories (rg already ignores .git via .gitignore)
         for d in ["__pycache__", "node_modules", ".venv", "venv", ".idea", ".pytest_cache"]:
@@ -1121,7 +1122,7 @@ class BuiltinFileTool(Tool):
         except FileNotFoundError:
             return await asyncio.get_event_loop().run_in_executor(
                 None, self._grep_fallback, pattern, path, include, output_mode,
-                max_results, fixed_strings, case_insensitive,
+                limit, fixed_strings, case_insensitive,
             )
 
         # rg exit codes: 0=matches found, 1=no matches, 2=error
@@ -1136,9 +1137,9 @@ class BuiltinFileTool(Tool):
         # Truncate result lines for files_with_matches / count
         if output_mode in ("files_with_matches", "count"):
             lines = output.split("\n")
-            if len(lines) > max_results:
-                output = "\n".join(lines[:max_results])
-                output += f"\n... ({len(lines) - max_results} more results truncated)"
+            if len(lines) > limit:
+                output = "\n".join(lines[:limit])
+                output += f"\n... ({len(lines) - limit} more results truncated)"
 
         result = truncate_if_too_long(output)
         logger.debug(f"Grep(rg) for '{pattern}': result length {len(result)} chars")
@@ -1150,7 +1151,7 @@ class BuiltinFileTool(Tool):
             path: str,
             include: Optional[str],
             output_mode: str,
-            max_results: int,
+            limit: int,
             fixed_strings: bool,
             case_insensitive: bool = False,
     ) -> str:
@@ -1183,7 +1184,7 @@ class BuiltinFileTool(Tool):
             match_pattern = pattern.lower() if (case_insensitive and fixed_strings) else pattern
 
             for fp in files:
-                if len(results) >= max_results:
+                if len(results) >= limit:
                     break
 
                 try:
@@ -1206,7 +1207,7 @@ class BuiltinFileTool(Tool):
                     if file_matches:
                         file_counts[str(fp)] = len(file_matches)
                         if output_mode == "content":
-                            for match in file_matches[:max_results - len(results)]:
+                            for match in file_matches[:limit - len(results)]:
                                 results.append(f"{fp}:{match['line_num']}: {match['content']}")
                         elif output_mode == "files_with_matches":
                             results.append(str(fp))
@@ -1633,6 +1634,22 @@ class BuiltinTodoTool(Tool):
         """Receive agent reference so todos are stored on the agent."""
         self._agent = agent
 
+    def clone(self) -> "BuiltinTodoTool":
+        """Fresh instance so each agent owns its ``_agent`` slot and todos.
+
+        Preserves the source's exposed ``functions`` keys so an upstream
+        registry filter (e.g. ``SubagentRegistry._select_child_tools``) is not
+        silently undone when the agent re-clones during ``_post_init``.
+        """
+        new = BuiltinTodoTool()
+        if set(new.functions) != set(self.functions):
+            new.functions = OrderedDict(
+                (name, new.functions[name])
+                for name in self.functions
+                if name in new.functions
+            )
+        return new
+
     @property
     def todos(self) -> List[Dict[str, Any]]:
         if self._agent is not None:
@@ -1869,6 +1886,21 @@ class BuiltinMemoryTool(Tool):
         """Enable syncing user/feedback memories into ~/.agentica/AGENTS.md."""
         self._sync_memories_to_global_agent_md = enabled
 
+    def clone(self) -> "BuiltinMemoryTool":
+        """Fresh instance so each agent owns its ``_workspace`` slot.
+
+        Preserves the source's exposed ``functions`` keys so registry-side
+        function filtering survives Agent re-cloning.
+        """
+        new = BuiltinMemoryTool()
+        if set(new.functions) != set(self.functions):
+            new.functions = OrderedDict(
+                (name, new.functions[name])
+                for name in self.functions
+                if name in new.functions
+            )
+        return new
+
     def get_system_prompt(self) -> Optional[str]:
         return self.MEMORY_SYSTEM_PROMPT
 
@@ -1954,7 +1986,6 @@ def get_builtin_tools(
         include_skills: bool = False,
         include_user_input: bool = False,
         task_model: Optional["Model"] = None,
-        task_tools: Optional[List[Any]] = None,
         custom_skill_dirs: Optional[List[str]] = None,
         user_input_callback=None,
         sandbox_config=None,
@@ -1972,8 +2003,8 @@ def get_builtin_tools(
         include_task: Whether to include subagent task tool
         include_skills: Whether to include skill tool for executing skills (default: False)
         include_user_input: Whether to include user input tool for human-in-the-loop (default: False)
-        task_model: Model for subagent tasks (optional, will use parent agent's model if not set)
-        task_tools: Tools for subagent tasks (optional)
+        task_model: Optional model override for subagents spawned by the
+            ``task`` tool. When ``None`` the parent agent's model is cloned.
         custom_skill_dirs: Custom skill directories to load (optional)
         user_input_callback: Custom callback for user input tool (optional)
         sandbox_config: SandboxConfig instance for security isolation (optional)
@@ -1999,7 +2030,7 @@ def get_builtin_tools(
         tools.append(BuiltinTodoTool())
 
     if include_task:
-        tools.append(BuiltinTaskTool(model=task_model, tools=task_tools))
+        tools.append(BuiltinTaskTool(model_override=task_model))
 
     if include_skills:
         from agentica.tools.skill_tool import SkillTool

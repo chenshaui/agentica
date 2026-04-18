@@ -92,10 +92,33 @@ class SkillTool(Tool):
         self._auto_load = auto_load
         self._initialized = False
         self._agent = None  # Set by Agent for runtime skill filtering
+        self._init_name = name
 
         # Register tool functions
         self.register(self.list_skills)
         self.register(self.get_skill_info)
+
+    def clone(self) -> "SkillTool":
+        """Fresh instance so each agent owns its ``_agent`` slot.
+
+        Reuses immutable config (custom_skill_dirs, auto_load, name). The
+        cloned tool starts un-initialized and rebuilds its registry on demand.
+        Preserves the source's exposed ``functions`` keys so a registry-side
+        function filter survives Agent re-cloning.
+        """
+        from collections import OrderedDict
+        new = SkillTool(
+            custom_skill_dirs=list(self._custom_skill_dirs),
+            auto_load=self._auto_load,
+            name=self._init_name,
+        )
+        if set(new.functions) != set(self.functions):
+            new.functions = OrderedDict(
+                (name, new.functions[name])
+                for name in self.functions
+                if name in new.functions
+            )
+        return new
 
     def _ensure_initialized(self):
         """Ensure skills are loaded before use."""

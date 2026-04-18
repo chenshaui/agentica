@@ -213,7 +213,7 @@ def parse_args():
                         help='LLM model provider', default='zhipuai')
     parser.add_argument('--model_name', type=str,
                         help='LLM model name to use, can be gpt-5/glm-4.7-flash/deepseek-chat/yi-lightning/...',
-                        default='glm-4.7-flash')
+                        default='glm-4.5-air')
     parser.add_argument('--base_url', type=str, help='API base URL for the LLM')
     parser.add_argument('--api_key', type=str, help='API key for the LLM')
     parser.add_argument('--max_tokens', type=int, help='Maximum number of tokens for the LLM')
