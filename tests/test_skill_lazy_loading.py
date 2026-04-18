@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import agentica.config as agentica_config
-import agentica.workspace as workspace_module
+import agentica.workspace.base as workspace_module
 from agentica.skills.skill import Skill
 from agentica.skills.skill_loader import SkillLoader
 from agentica.skills.skill_registry import SkillRegistry

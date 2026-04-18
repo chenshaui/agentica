@@ -1,20 +1,42 @@
 # -*- coding: utf-8 -*-
 """
-@author:XuMing(xuming624@qq.com)
-@description: Agentica - Build AI Agents with ease.
+Agentica - Build AI Agents with ease.
 
-Core API (eager imports):
-    from agentica import Agent, OpenAIChat, RunResponse
+═══════════════════════════════════════════════════════════════
+v1.3.6+ Recommended Import Style (clearer; aligns with v2.0 plan)
+═══════════════════════════════════════════════════════════════
 
-Sub-module imports:
-    from agentica.model import Claude, Ollama
-    from agentica.model.providers import create_provider
-    from agentica.tools import ShellTool, CodeTool
-    from agentica.db import SqliteDb
+Core (always default-installed)::
+
+    from agentica import Agent, tool                          # core SDK
+    from agentica.model.openai import OpenAIChat              # OpenAI / DeepSeek / Moonshot etc
+    from agentica.model.anthropic.claude import Claude        # Claude (default)
+    from agentica.workspace import Workspace                  # persistent workspace
+    from agentica.tools.shell_tool import ShellTool           # specific tools
+
+Optional extras (need ``pip install agentica[xxx]``)::
+
+    from agentica.knowledge import Knowledge       # pip install agentica[rag]
+    from agentica.vectordb import InMemoryVectorDb # pip install agentica[rag]
+    from agentica.mcp import MCPClient             # pip install agentica[mcp]
+    from agentica.acp import ACPServer             # pip install agentica[acp]
+    from agentica.gateway.main import app          # pip install agentica[gateway]
+    from agentica.db import SqliteDb               # pip install agentica[sql]
+
+═══════════════════════════════════════════════════════════════
+Backward Compatibility
+═══════════════════════════════════════════════════════════════
+
+Old-style top-level imports (e.g. ``from agentica import Knowledge``) STILL
+work in v1.x but emit ``DeprecationWarning`` to encourage migration to
+explicit sub-module paths above. Will be removed in v2.0.
+
+See ``docs/API.md`` for the Tier 1/2/3 stability contract.
 """
 
 import importlib
 import threading
+import warnings
 from typing import TYPE_CHECKING
 
 # ── Version ──
@@ -308,10 +330,81 @@ _LAZY_ATTR_OVERRIDES = {
     "Mistral": "MistralChat",
 }
 
+# Symbols that emit DeprecationWarning when accessed via top-level `from agentica import X`.
+# These are valid in v1.x for backward compat, but in v2.0 users should import from sub-modules.
+# Format: {top_level_name: recommended_full_path}
+_DEPRECATED_TOP_LEVEL = {
+    # Knowledge / RAG
+    "Knowledge": "agentica.knowledge.Knowledge",
+    "LangChainKnowledge": "agentica.knowledge.LangChainKnowledge",
+    "LlamaIndexKnowledge": "agentica.knowledge.LlamaIndexKnowledge",
+    # Vector DB
+    "VectorDb": "agentica.vectordb.VectorDb",
+    "Distance": "agentica.vectordb.Distance",
+    "SearchType": "agentica.vectordb.SearchType",
+    "InMemoryVectorDb": "agentica.vectordb.InMemoryVectorDb",
+    # Embedding
+    "Embedding": "agentica.embedding.Embedding",
+    "OpenAIEmbedding": "agentica.embedding.openai.OpenAIEmbedding",
+    "AzureOpenAIEmbedding": "agentica.embedding.azure_openai.AzureOpenAIEmbedding",
+    "OllamaEmbedding": "agentica.embedding.ollama.OllamaEmbedding",
+    "TogetherEmbedding": "agentica.embedding.together.TogetherEmbedding",
+    "FireworksEmbedding": "agentica.embedding.fireworks.FireworksEmbedding",
+    "ZhipuAIEmbedding": "agentica.embedding.zhipuai.ZhipuAIEmbedding",
+    "JinaEmbedding": "agentica.embedding.jina.JinaEmbedding",
+    "GeminiEmbedding": "agentica.embedding.gemini.GeminiEmbedding",
+    "HuggingfaceEmbedding": "agentica.embedding.huggingface.HuggingfaceEmbedding",
+    "MulanAIEmbedding": "agentica.embedding.mulanai.MulanAIEmbedding",
+    "HashEmbedding": "agentica.embedding.hash.HashEmbedding",
+    "HttpEmbedding": "agentica.embedding.http.HttpEmbedding",
+    # Rerank
+    "Rerank": "agentica.rerank.Rerank",
+    "JinaRerank": "agentica.rerank.jina.JinaRerank",
+    "ZhipuAIRerank": "agentica.rerank.zhipuai.ZhipuAIRerank",
+    # Database
+    "SqliteDb": "agentica.db.SqliteDb",
+    "PostgresDb": "agentica.db.PostgresDb",
+    "MysqlDb": "agentica.db.MysqlDb",
+    "RedisDb": "agentica.db.RedisDb",
+    "InMemoryDb": "agentica.db.InMemoryDb",
+    "JsonDb": "agentica.db.JsonDb",
+    # Non-OpenAI/Anthropic providers
+    "Claude": "agentica.model.anthropic.claude.Claude",
+    "Ollama": "agentica.model.ollama.chat.Ollama",
+    "LiteLLM": "agentica.model.litellm.chat.LiteLLMChat",
+    "LiteLLMChat": "agentica.model.litellm.chat.LiteLLMChat",
+    "KimiChat": "agentica.model.kimi.chat.KimiChat",
+    # MCP
+    "MCPConfig": "agentica.mcp.MCPConfig",
+    # Subagent / Swarm / Workflow (Tier 3 experimental)
+    "Swarm": "agentica.swarm.Swarm",
+    "SwarmResult": "agentica.swarm.SwarmResult",
+    "SubagentType": "agentica.subagent.SubagentType",
+    "SubagentConfig": "agentica.subagent.SubagentConfig",
+    "SubagentRun": "agentica.subagent.SubagentRun",
+    "SubagentRegistry": "agentica.subagent.SubagentRegistry",
+}
+
+
+def _emit_deprecation_warning(name: str, new_path: str) -> None:
+    """Emit a DeprecationWarning for top-level access of a symbol."""
+    warnings.warn(
+        f"`from agentica import {name}` is deprecated and will be removed in v2.0. "
+        f"Use `from {new_path.rsplit('.', 1)[0]} import {new_path.rsplit('.', 1)[1]}` instead.",
+        DeprecationWarning,
+        stacklevel=3,  # skip __getattr__ + caller's import frame
+    )
+
 
 def __getattr__(name: str):
-    """Lazy import handler for optional modules."""
+    """Lazy import handler for optional modules.
+
+    Emits DeprecationWarning when top-level import path is deprecated (see
+    `_DEPRECATED_TOP_LEVEL`). Always still returns the symbol (backward compat).
+    """
     if name in _LAZY_IMPORTS:
+        if name in _DEPRECATED_TOP_LEVEL:
+            _emit_deprecation_warning(name, _DEPRECATED_TOP_LEVEL[name])
         if name not in _LAZY_CACHE:
             with _LAZY_LOCK:
                 if name not in _LAZY_CACHE:

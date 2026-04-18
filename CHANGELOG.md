@@ -21,6 +21,22 @@ A "public API" is anything importable from `agentica` top-level `__init__.py`.
 
 <!-- Pending v1.3.6 items below will be released when sdk-dev merges to main -->
 
+### Added (Stage 2 + Stage 3)
+- **`_DEPRECATED_TOP_LEVEL` mapping** in `agentica/__init__.py`: 35+ symbols flagged for v2.0 migration
+- **DeprecationWarning** emitted when accessing top-level deprecated paths like `from agentica import Knowledge` / `Claude` / `VectorDb` / `SqliteDb` / `Swarm` etc., guiding users to explicit sub-module imports
+- **`agentica.workspace` package**: Split monolithic `workspace.py` (1402 lines) into a package structure for incremental modularization
+
+### Changed (Stage 2 + Stage 3)
+- `agentica/__init__.py` docstring: rewritten with v1.3.6+ recommended import style guide + backward-compat note
+- `agentica/workspace.py` → `agentica/workspace/base.py` (file move, zero business code change)
+- `agentica/workspace/__init__.py` re-exports `Workspace`, `WorkspaceConfig`, plus module-level constants for test mocking
+- `tests/test_workspace.py`: updated 3 patch paths from `agentica.workspace.AGENTICA_HOME` → `agentica.workspace.base.AGENTICA_HOME` (reflects new package structure)
+- `tests/test_skill_lazy_loading.py`: updated `importlib.reload` target from `agentica.workspace` → `agentica.workspace.base`
+
+### Compatibility
+- **100% backward compatible**: all top-level imports still work; only emit DeprecationWarning
+- `from agentica.workspace import Workspace` path is unchanged for all 11 internal usages and external users
+
 ## [1.3.6] - 2026-04-18 (sdk-dev branch)
 
 ### Added

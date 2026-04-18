@@ -220,7 +220,7 @@ class TestWorkspace:
         global_home = temp_workspace_path / "global-home"
         global_home.mkdir()
 
-        with patch("agentica.workspace.AGENTICA_HOME", str(global_home)):
+        with patch("agentica.workspace.base.AGENTICA_HOME", str(global_home)):
             asyncio.run(
                 workspace.write_memory_entry(
                     title="Python Style",
@@ -246,7 +246,7 @@ class TestWorkspace:
         global_home = temp_workspace_path / "global-home"
         global_home.mkdir()
 
-        with patch("agentica.workspace.AGENTICA_HOME", str(global_home)):
+        with patch("agentica.workspace.base.AGENTICA_HOME", str(global_home)):
             asyncio.run(
                 workspace.write_memory_entry(
                     title="Python Style",
@@ -290,7 +290,7 @@ class TestWorkspace:
         previous_cwd = os.getcwd()
         try:
             os.chdir(cwd)
-            with patch("agentica.workspace.AGENTICA_HOME", str(global_home)):
+            with patch("agentica.workspace.base.AGENTICA_HOME", str(global_home)):
                 context = asyncio.run(workspace.get_context_prompt())
         finally:
             os.chdir(previous_cwd)
