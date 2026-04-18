@@ -127,6 +127,7 @@ from agentica.document import Document
 
 # ── Tool base ──
 from agentica.tools.base import Tool, ModelTool, Function, FunctionCall
+from agentica.tools.decorators import tool  # @tool decorator for defining tool functions
 
 # ── Compression ──
 from agentica.compression import CompressionManager
@@ -511,7 +512,7 @@ __all__ = [
     # document
     "Document",
     # tools
-    "Tool", "ModelTool", "Function", "FunctionCall",
+    "Tool", "ModelTool", "Function", "FunctionCall", "tool",
     # compression
     "CompressionManager",
     # token counting
