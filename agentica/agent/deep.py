@@ -81,9 +81,12 @@ class DeepAgent(Agent):
     - Memory auto-extract after each run (auto_extract_memory=True) —
       falls back to auxiliary_model to extract memories when the LLM did
       not call save_memory during the run.
-    - auxiliary_model (gpt-4o-mini by default): a cheaper sibling used for
-      side tasks — compression, memory extraction, correction
-      classification, experience lifecycle.
+    - auxiliary_model: defaults to the main model (same instance), so the
+      whole stack runs on one API key without DeepAgent picking a hardcoded
+      OpenAI sibling. Pass an explicit auxiliary_model (any provider, any
+      size) to override — e.g. a cheaper same-provider variant for side
+      tasks like compression / memory extraction / correction classification
+      / experience lifecycle.
     - Agentic prompt with datetime and agent name
     - Self-evolution: experience=True + ExperienceConfig with all capture_*
       switches on (tool errors, user corrections, success patterns)
@@ -128,11 +131,12 @@ class DeepAgent(Agent):
         if model is None:
             model = OpenAIChat(id="gpt-4o")
 
-        # Default auxiliary_model — a cheaper sibling used for side tasks:
-        # compression, memory extraction, correction classification, experience
-        # lifecycle. Falls back to the main model if nothing is passed.
+        # Default auxiliary_model — reuse the main model so the whole stack
+        # runs on a single API key. Pass a different model explicitly to
+        # offload side tasks (compression, memory extraction, correction
+        # classification, experience lifecycle) onto a cheaper/faster sibling.
         if auxiliary_model is None:
-            auxiliary_model = OpenAIChat(id="gpt-4o-mini")
+            auxiliary_model = model
 
         # Default workspace
         if workspace is None:

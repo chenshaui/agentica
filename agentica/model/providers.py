@@ -56,31 +56,6 @@ def list_providers() -> list:
     return sorted(PROVIDER_REGISTRY.keys())
 
 
-def get_supported_models() -> Dict[str, List[str]]:
-    """Return a dict of provider -> model list for all known providers.
-
-    Combines the OpenAI-compatible registry with core providers (openai, anthropic, azure).
-    """
-    result: Dict[str, List[str]] = {}
-    # Core providers (not in the OpenAI-compatible registry)
-    result["openai"] = [
-        "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo",
-        "o1", "o1-mini", "o3-mini",
-    ]
-    result["anthropic"] = [
-        "claude-sonnet-4-20250514", "claude-3-7-sonnet-20250219",
-        "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022",
-    ]
-    result["azure"] = ["gpt-4o", "gpt-4-turbo", "gpt-35-turbo"]
-    # Registry providers
-    for key, cfg in sorted(PROVIDER_REGISTRY.items()):
-        if cfg.models:
-            result[key] = list(cfg.models)
-        else:
-            result[key] = [cfg.default_model]
-    return result
-
-
 def create_provider(key: str, **overrides):
     """Factory: create an OpenAILike instance from the registry.
 

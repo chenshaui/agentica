@@ -7,14 +7,20 @@ Model factory: instantiates configured LLM models and loads cron tools.
 Extracted from AgentService to keep model creation logic independently testable
 and to reduce AgentService's responsibility count.
 """
-from typing import Any, List
+from typing import Any, List, Optional
 
-from loguru import logger
+from agentica.utils.log import logger
 
 from ..config import settings
 
 
-def create_model(model_provider: str, model_name: str) -> Any:
+def create_model(
+    model_provider: str,
+    model_name: str,
+    *,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Any:
     """Instantiate the configured LLM model.
 
     Core providers (openai, claude, kimi, azure) use dedicated classes.
@@ -23,6 +29,10 @@ def create_model(model_provider: str, model_name: str) -> Any:
     Args:
         model_provider: Provider identifier (e.g. "openai", "zhipuai").
         model_name: Model identifier (e.g. "gpt-4o", "glm-4.7-flash").
+        base_url: Optional override for the provider's base URL. Empty string
+            is treated as "no override".
+        api_key: Optional override for the provider's API key. Empty string
+            is treated as "no override".
 
     Returns:
         A Model instance ready for use by an Agent.
@@ -33,6 +43,10 @@ def create_model(model_provider: str, model_name: str) -> Any:
     _ANTHROPIC_PROVIDERS = {"kimi", "anthropic", "claude"}
 
     params: dict[str, Any] = {"id": model_name, "timeout": 300}
+    if base_url:
+        params["base_url"] = base_url
+    if api_key:
+        params["api_key"] = api_key
 
     if settings.model_thinking and settings.model_thinking in ("enabled", "disabled", "auto"):
         if model_provider in _ANTHROPIC_PROVIDERS:

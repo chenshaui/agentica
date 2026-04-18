@@ -218,6 +218,27 @@ def parse_args():
     parser.add_argument('--api_key', type=str, help='API key for the LLM')
     parser.add_argument('--max_tokens', type=int, help='Maximum number of tokens for the LLM')
     parser.add_argument('--temperature', type=float, help='Temperature for the LLM')
+
+    # Auxiliary model (compression / memory extraction / experience lifecycle).
+    # Omit to reuse the main model (single API key). Any field can differ — a
+    # different provider, a different API key, a different base_url, etc.
+    parser.add_argument('--aux_model_provider', type=str,
+                        choices=list(MODEL_REGISTRY.keys()),
+                        help='Provider for DeepAgent auxiliary_model (defaults to --model_provider)')
+    parser.add_argument('--aux_model_name', type=str,
+                        help='Model id for auxiliary_model (required to enable a different aux)')
+    parser.add_argument('--aux_base_url', type=str, help='Base URL for auxiliary_model')
+    parser.add_argument('--aux_api_key', type=str, help='API key for auxiliary_model')
+
+    # Task model (used by the `task` subagent tool). Same rules as aux.
+    parser.add_argument('--task_model_provider', type=str,
+                        choices=list(MODEL_REGISTRY.keys()),
+                        help='Provider for the task-subagent model (defaults to --model_provider)')
+    parser.add_argument('--task_model_name', type=str,
+                        help='Model id for the task-subagent model')
+    parser.add_argument('--task_base_url', type=str, help='Base URL for the task-subagent model')
+    parser.add_argument('--task_api_key', type=str, help='API key for the task-subagent model')
+
     parser.add_argument('--debug', type=int, help='enable verbose mode', default=0)
     parser.add_argument('--work_dir', type=str, help='Working directory for file operations', default=None)
     parser.add_argument('--tools', nargs='*',
@@ -288,6 +309,33 @@ def get_model(model_provider, model_name, base_url=None, api_key=None, max_token
     return model_class(**params)
 
 
+def _build_sibling_model(agent_config: dict, prefix: str):
+    """Build an auxiliary/task sibling model from CLI args.
+
+    Returns None when no `{prefix}_model_name` was provided — in that case
+    the caller should either not pass the arg to DeepAgent (so it reuses
+    the main model) or pass the main model explicitly.
+
+    Fields fall through to main-model values when a sibling field is None,
+    so the user can override just the pieces that differ (e.g. only the
+    model name, or only the base_url+api_key).
+    """
+    sibling_name = agent_config.get(f"{prefix}_model_name")
+    if not sibling_name:
+        return None
+    return get_model(
+        model_provider=agent_config.get(f"{prefix}_model_provider")
+            or agent_config["model_provider"],
+        model_name=sibling_name,
+        base_url=agent_config.get(f"{prefix}_base_url")
+            or agent_config.get("base_url"),
+        api_key=agent_config.get(f"{prefix}_api_key")
+            or agent_config.get("api_key"),
+        max_tokens=agent_config.get("max_tokens"),
+        temperature=agent_config.get("temperature"),
+    )
+
+
 def create_agent(agent_config: dict, extra_tools: Optional[List] = None,
                  workspace: Optional[Workspace] = None, skills_registry=None):
     """Helper to create or recreate an Agent with built-in tools and current config."""
@@ -300,14 +348,22 @@ def create_agent(agent_config: dict, extra_tools: Optional[List] = None,
         temperature=agent_config.get("temperature"),
     )
 
+    # Optional sibling models. When the user doesn't pass --aux_model_name /
+    # --task_model_name, these stay None and DeepAgent falls back to the
+    # main model — same API key drives the whole stack.
+    auxiliary_model = _build_sibling_model(agent_config, "aux")
+    task_model = _build_sibling_model(agent_config, "task")
+
     # Build extra tools list
     work_dir = agent_config.get("work_dir")
 
-    # Use DeepAgent for full-featured CLI experience
+    # Use DeepAgent for full-featured CLI experience.
     from agentica.agent.deep import DeepAgent
     from agentica.tools.skill_tool import SkillTool
     new_agent = DeepAgent(
         model=model,
+        auxiliary_model=auxiliary_model,
+        task_model=task_model,
         tools=extra_tools or [],      # user-specified extra tools
         work_dir=work_dir,
         workspace=workspace,

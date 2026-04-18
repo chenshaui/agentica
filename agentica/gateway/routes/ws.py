@@ -7,14 +7,12 @@ WebSocket gateway: /ws endpoint + ConnectionManager.
 from typing import Dict, Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from loguru import logger
 
+from agentica.utils.log import logger
 from .. import deps
 from ..config import settings
 
 router = APIRouter()
-
-logger = logger.bind(module="ws")
 
 
 class ConnectionManager:

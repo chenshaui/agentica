@@ -14,7 +14,7 @@ import threading
 from typing import Optional, List
 from concurrent.futures import ThreadPoolExecutor
 
-from loguru import logger
+from agentica.utils.log import logger
 
 from .base import Channel, ChannelType, Message
 from ..config import settings

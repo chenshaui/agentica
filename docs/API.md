@@ -211,7 +211,6 @@ from agentica.compression import CompressionManager
 - `agentica._internal.*`（如果未来新增）
 - `agentica.model.providers.create_provider`（工厂函数，v2.x 会废弃）
 - `agentica.model.providers.list_providers`
-- `agentica.model.providers.get_supported_models`
 - `agentica.utils.markdown_converter.MarkdownConverter`（被 knowledge 内部使用）
 - `agentica.runner.Runner`（Agent 的执行引擎，通过 Agent.run() 访问）
 - `agentica.compression.*`（内部压缩管道）

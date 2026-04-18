@@ -21,8 +21,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from loguru import logger
-
+from agentica.utils.log import logger
 from . import deps
 from agentica.version import __version__
 from .config import settings
@@ -135,18 +134,16 @@ app.add_middleware(
 async def request_id_middleware(request: Request, call_next) -> Response:
     """Assign a unique request ID to every request.
 
-    - Sets the ID in the async ContextVar so all log lines in this request
-      automatically carry `request_id=<id>` via loguru's bind.
+    - Stores the ID in the async ContextVar so handlers can read it via
+      ``get_request_id()`` and include it in log messages when relevant.
     - Echoes the ID back in the X-Request-ID response header for client tracing.
     """
     req_id = request.headers.get("X-Request-ID") or uuid4().hex[:12]
     token = _request_id_var.set(req_id)
-
-    # Bind request_id into loguru for this async context
-    with logger.contextualize(request_id=req_id):
+    try:
         response = await call_next(request)
-
-    _request_id_var.reset(token)
+    finally:
+        _request_id_var.reset(token)
     response.headers["X-Request-ID"] = req_id
     return response
 

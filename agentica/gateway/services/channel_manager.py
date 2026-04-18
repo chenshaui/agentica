@@ -5,7 +5,7 @@
 """
 from typing import Dict, Optional, Callable, Any, Union
 
-from loguru import logger
+from agentica.utils.log import logger
 
 from ..channels.base import Channel, ChannelType, Message
 

@@ -122,7 +122,10 @@ def _clone_agent_for_task(source: Any) -> Any:
         long_term_memory_config=source.long_term_memory_config,
         sandbox_config=source.sandbox_config,
         working_memory=WorkingMemory(),            # fresh, isolated
-        context=dict(source.context) if source.context else None,
+        # Context can be a dict, a string, a callable, or any resolved object
+        # (see Agent._resolve_context). Only deep-copy dicts so per-task
+        # mutations don't leak back; pass anything else through by reference.
+        context=dict(source.context) if isinstance(source.context, dict) else source.context,
     )
     return clone
 

@@ -155,7 +155,6 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
     stream_intermediate_steps: bool = field(default=False, init=False, repr=False)
     _cancelled: bool = field(default=False, init=False, repr=False)
     _running: bool = field(default=False, init=False, repr=False)
-    _interrupt_message: Optional[str] = field(default=None, init=False, repr=False)
     # Asyncio handles for hard cancellation (set by Runner._run_impl).
     # Allows cancel() to inject CancelledError into blocking awaits
     # (LLM API call, tool execution, subagent run) from another thread.
@@ -283,7 +282,6 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
         self.stream_intermediate_steps = False
         self._cancelled = False
         self._running = False
-        self._interrupt_message = None
         self._run_loop = None
         self._run_task = None
         self._event_callback = None
@@ -610,16 +608,6 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
             except RuntimeError:
                 pass
 
-    def interrupt(self, message: Optional[str] = None):
-        """Interrupt the current run with an optional follow-up message.
-
-        If *message* is provided it is stored in ``_interrupt_message`` so
-        the CLI can pick it up after cancellation and feed it as the next
-        user turn. Uses the same hard-cancel mechanism as ``cancel()``.
-        """
-        self._interrupt_message = message
-        self.cancel()
-
     def _check_cancelled(self):
         """Check if cancelled and raise AgentCancelledError if so."""
         if self._cancelled:
@@ -807,7 +795,6 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
         clone.stream_intermediate_steps = False
         clone._cancelled = False
         clone._running = False
-        clone._interrupt_message = None
         clone._run_loop = None
         clone._run_task = None
         clone._event_callback = None
@@ -816,6 +803,12 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
         clone._enabled_tools = None
         clone._enabled_skills = None
         clone._session_log = None
+        # Per-agent enable/disable runtime configs are mutable dicts. Without
+        # explicit re-init, ``copy.copy`` aliases them, so ``clone.enable_tool``
+        # / ``clone.disable_tool`` would silently mutate the source agent's
+        # tool gating. Same for skill runtime configs.
+        clone._tool_runtime_configs = dict(self._tool_runtime_configs)
+        clone._skill_runtime_configs = dict(self._skill_runtime_configs)
         # Inherit hook dedup state from source so cloned sub-agents do not
         # re-emit the same overflow warning that the parent already handled.
         clone._overflow_warning_emitted = self._overflow_warning_emitted

@@ -70,6 +70,19 @@ class Settings:
     model_provider: str = ""
     model_name: str = ""
     model_thinking: str = ""
+
+    # Optional sibling models for DeepAgent. None / empty means reuse the
+    # main model (same provider, base_url, api_key).
+    aux_model_provider: str = ""
+    aux_model_name: str = ""
+    aux_base_url: str = ""
+    aux_api_key: str = ""
+
+    task_model_provider: str = ""
+    task_model_name: str = ""
+    task_base_url: str = ""
+    task_api_key: str = ""
+
     _base_dir: str = ""
 
     @property
@@ -157,6 +170,18 @@ class Settings:
             model_provider=os.getenv("AGENTICA_MODEL_PROVIDER", "zhipuai"),
             model_name=os.getenv("AGENTICA_MODEL_NAME", "glm-4.7-flash"),
             model_thinking=os.getenv("AGENTICA_MODEL_THINKING", ""),
+
+            # Auxiliary model (leave empty to reuse main model)
+            aux_model_provider=os.getenv("AGENTICA_AUX_MODEL_PROVIDER", ""),
+            aux_model_name=os.getenv("AGENTICA_AUX_MODEL_NAME", ""),
+            aux_base_url=os.getenv("AGENTICA_AUX_BASE_URL", ""),
+            aux_api_key=os.getenv("AGENTICA_AUX_API_KEY", ""),
+
+            # Task-subagent model (leave empty to reuse main model)
+            task_model_provider=os.getenv("AGENTICA_TASK_MODEL_PROVIDER", ""),
+            task_model_name=os.getenv("AGENTICA_TASK_MODEL_NAME", ""),
+            task_base_url=os.getenv("AGENTICA_TASK_BASE_URL", ""),
+            task_api_key=os.getenv("AGENTICA_TASK_API_KEY", ""),
         )
 
 

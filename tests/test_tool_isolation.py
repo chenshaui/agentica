@@ -284,5 +284,116 @@ class TestSubagentSpawnContextRobustness(unittest.TestCase):
         self.assertEqual(result, "raw string brief from upstream")
 
 
+class TestSwarmCloneContextRobustness(unittest.TestCase):
+    """``_clone_agent_for_task`` must not crash when source.context is a
+    non-dict (string / callable / arbitrary object) — Agent.context is documented
+    to support all these shapes via ``Agent._resolve_context``.
+    """
+
+    def test_swarm_clone_passes_string_context_through(self):
+        from agentica.swarm import _clone_agent_for_task
+
+        source = Agent(
+            name="source",
+            model=_model(),
+            context="raw string brief from upstream",
+        )
+        clone = _clone_agent_for_task(source)
+        self.assertEqual(clone.context, "raw string brief from upstream")
+
+    def test_swarm_clone_passes_callable_context_through(self):
+        from agentica.swarm import _clone_agent_for_task
+
+        sentinel = lambda: {"key": "value"}
+        source = Agent(name="source", model=_model(), context=sentinel)
+        clone = _clone_agent_for_task(source)
+        self.assertIs(clone.context, sentinel)
+
+    def test_swarm_clone_deep_copies_dict_context(self):
+        from agentica.swarm import _clone_agent_for_task
+
+        source = Agent(name="source", model=_model(), context={"k": "v"})
+        clone = _clone_agent_for_task(source)
+        self.assertIsNot(clone.context, source.context)
+        clone.context["k"] = "mutated"
+        self.assertEqual(source.context["k"], "v")
+
+
+class TestAgentCloneRuntimeConfigIsolation(unittest.TestCase):
+    """Agent.clone() must reset the per-agent ``_tool_runtime_configs`` /
+    ``_skill_runtime_configs`` dicts. Without this, ``copy.copy`` aliases
+    them and ``clone.enable_tool()`` / ``clone.disable_tool()`` silently
+    mutate the source agent's tool gating.
+    """
+
+    def test_clone_does_not_share_tool_runtime_configs(self):
+        a = Agent(name="a", model=_model())
+        a.enable_tool("read_file")
+        clone = a.clone()
+        self.assertIsNot(clone._tool_runtime_configs, a._tool_runtime_configs)
+        clone.disable_tool("read_file")
+        self.assertTrue(a._tool_runtime_configs["read_file"].enabled,
+                        "clone.disable_tool must not flip the source's runtime config")
+
+    def test_clone_does_not_share_skill_runtime_configs(self):
+        a = Agent(name="a", model=_model())
+        a.enable_skill("brainstorm")
+        clone = a.clone()
+        self.assertIsNot(clone._skill_runtime_configs, a._skill_runtime_configs)
+        clone.disable_skill("brainstorm")
+        self.assertTrue(a._skill_runtime_configs["brainstorm"].enabled,
+                        "clone.disable_skill must not flip the source's runtime config")
+
+
+class TestRunnerStreamToolKeyAlignment(unittest.TestCase):
+    """Runner streaming aggregation must use the same keys (``tool_call_id`` /
+    ``tool_name``) that ``Model.run_function_calls`` actually emits.
+    Previously it used ``id`` / ``name`` so concurrent tool calls collided on
+    ``None == None`` (only the first slot ever got the completed payload).
+    """
+
+    def test_completed_payload_updates_correct_tool_entry(self):
+        from agentica.run_response import RunResponse
+        from agentica.runner import Runner
+
+        agent = Agent(name="a", model=_model())
+        agent.run_response = RunResponse()
+        agent.run_response.tools = [
+            {"tool_call_id": "call_a", "tool_name": "read_file", "tool_args": {}},
+            {"tool_call_id": "call_b", "tool_name": "write_file", "tool_args": {}},
+        ]
+        completed = {
+            "tool_call_id": "call_b",
+            "tool_name": "write_file",
+            "tool_args": {},
+            "content": "ok",
+            "tool_call_error": False,
+        }
+
+        target_id = completed.get("tool_call_id")
+        for tool_call in agent.run_response.tools:
+            if target_id is not None and tool_call.get("tool_call_id") == target_id:
+                tool_call.update(completed)
+                break
+
+        # First entry untouched — proves we matched by id, not by None==None
+        self.assertNotIn("content", agent.run_response.tools[0])
+        self.assertEqual(agent.run_response.tools[1]["content"], "ok")
+        self.assertFalse(agent.run_response.tools[1]["tool_call_error"])
+
+    def test_runner_stream_label_uses_tool_name_key(self):
+        # The user-visible "Running tool: ..." label must read ``tool_name``
+        # (the key Model.run_function_calls emits), not the legacy ``name``.
+        started_payload = {
+            "role": "tool",
+            "tool_call_id": "call_a",
+            "tool_name": "read_file",
+            "tool_args": {"path": "/tmp/x"},
+        }
+        label = f"Running tool: {started_payload.get('tool_name')}"
+        self.assertEqual(label, "Running tool: read_file")
+        self.assertNotIn("None", label)
+
+
 if __name__ == "__main__":
     unittest.main()

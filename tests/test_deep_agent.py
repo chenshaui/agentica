@@ -74,19 +74,23 @@ class TestDeepAgentDefaults(unittest.TestCase):
         self.assertFalse(agent.experience)
 
     def test_deep_agent_wires_default_auxiliary_model(self):
-        """DeepAgent must auto-wire a cheaper auxiliary_model for side tasks."""
-        from agentica.agent.deep import DeepAgent
-        from agentica.model.openai import OpenAIChat
+        """DeepAgent must default auxiliary_model to the main model instance.
 
+        No hardcoded provider/model: reusing the main model lets the whole
+        stack run on a single API key. Users pass an explicit auxiliary_model
+        to offload side tasks onto a cheaper sibling.
+        """
+        from agentica.agent.deep import DeepAgent
+
+        main_model = MagicMock()
         with tempfile.TemporaryDirectory() as tmpdir, patch(
             "agentica.agent.base.Agent._load_mcp_tools"
         ), patch(
             "agentica.agent.base.Agent._merge_tool_system_prompts"
         ):
-            agent = DeepAgent(model=MagicMock(), workspace=tmpdir)
+            agent = DeepAgent(model=main_model, workspace=tmpdir)
 
-        self.assertIsInstance(agent.auxiliary_model, OpenAIChat)
-        self.assertEqual(agent.auxiliary_model.id, "gpt-4o-mini")
+        self.assertIs(agent.auxiliary_model, main_model)
         # CompressionManager must have been wired with the auxiliary model.
         cm = agent.tool_config.compression_manager
         self.assertIsNotNone(cm)

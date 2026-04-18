@@ -813,19 +813,23 @@ class Runner:
                                         agent.run_response.tools.append(tool_call_dict)
                                     if agent.stream_intermediate_steps:
                                         yield self.generic_run_response(
-                                            f"Running tool: {tool_call_dict.get('name') if tool_call_dict else 'Unknown'}",
+                                            f"Running tool: {tool_call_dict.get('tool_name') if tool_call_dict else 'Unknown'}",
                                             RunEvent.tool_call_started,
                                         )
                                 elif tool_resp.event == ModelResponseEvent.tool_call_completed.value:
                                     tool_call_dict = tool_resp.tool_call
                                     if tool_call_dict is not None and agent.run_response.tools:
+                                        target_id = tool_call_dict.get("tool_call_id")
                                         for tool_call in agent.run_response.tools:
-                                            if tool_call.get("id") == tool_call_dict.get("id"):
+                                            if (
+                                                target_id is not None
+                                                and tool_call.get("tool_call_id") == target_id
+                                            ):
                                                 tool_call.update(tool_call_dict)
                                                 break
                                     if agent.stream_intermediate_steps:
                                         yield self.generic_run_response(
-                                            f"Tool completed: {tool_call_dict.get('name') if tool_call_dict else 'Unknown'}",
+                                            f"Tool completed: {tool_call_dict.get('tool_name') if tool_call_dict else 'Unknown'}",
                                             RunEvent.tool_call_completed,
                                         )
 

@@ -33,6 +33,16 @@ def main():
         "api_key": args.api_key,
         "max_tokens": args.max_tokens,
         "temperature": args.temperature,
+        # Auxiliary model (None means reuse main model).
+        "aux_model_provider": args.aux_model_provider,
+        "aux_model_name": args.aux_model_name,
+        "aux_base_url": args.aux_base_url,
+        "aux_api_key": args.aux_api_key,
+        # Task-subagent model (None means reuse main model).
+        "task_model_provider": args.task_model_provider,
+        "task_model_name": args.task_model_name,
+        "task_base_url": args.task_base_url,
+        "task_api_key": args.task_api_key,
         "debug": args.debug > 0,
         "work_dir": args.work_dir,
         "permissions": "allow-all" if args.allow_all else args.permissions,

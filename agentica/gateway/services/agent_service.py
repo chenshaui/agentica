@@ -19,19 +19,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Callable, List, Any, Dict
 
-from loguru import logger
-
+from agentica.utils.log import logger
 from agentica import DeepAgent
 from agentica.run_response import AgentCancelledError
 from agentica.run_config import RunConfig
 from agentica.workspace import Workspace
-from agentica.agent.config import WorkspaceMemoryConfig
 
 from ..config import settings
 from .model_factory import create_model, get_cron_tools, get_cron_instructions
 from .response_formatter import extract_metrics, format_tool_call_args, format_tool_result
-
-logger = logger.bind(module="agent_service")
 
 # Timeout in seconds for building a new Agent instance (guards against SDK hangs)
 _AGENT_BUILD_TIMEOUT_S = 30
@@ -107,12 +103,35 @@ class AgentService:
         model_provider: Optional[str] = None,
         extra_tools: Optional[List[Any]] = None,
         extra_instructions: Optional[List[str]] = None,
+        # Optional sibling overrides. Each can differ in any of
+        # provider/model/base_url/api_key; unspecified fields fall back to the
+        # main-model values so users can override just what differs. When
+        # `{prefix}_model_name` is empty, the sibling is not built and DeepAgent
+        # reuses the main model.
+        aux_model_provider: Optional[str] = None,
+        aux_model_name: Optional[str] = None,
+        aux_base_url: Optional[str] = None,
+        aux_api_key: Optional[str] = None,
+        task_model_provider: Optional[str] = None,
+        task_model_name: Optional[str] = None,
+        task_base_url: Optional[str] = None,
+        task_api_key: Optional[str] = None,
     ):
         self.workspace_path = Path(workspace_path or settings.workspace_path).expanduser()
         self.model_name = model_name or settings.model_name
         self.model_provider = model_provider or settings.model_provider
         self.extra_tools = extra_tools or []
         self.extra_instructions = extra_instructions or []
+
+        # Sibling model configs — empty string treated as "not set".
+        self.aux_model_provider = aux_model_provider or settings.aux_model_provider
+        self.aux_model_name = aux_model_name or settings.aux_model_name
+        self.aux_base_url = aux_base_url or settings.aux_base_url
+        self.aux_api_key = aux_api_key or settings.aux_api_key
+        self.task_model_provider = task_model_provider or settings.task_model_provider
+        self.task_model_name = task_model_name or settings.task_model_name
+        self.task_base_url = task_base_url or settings.task_base_url
+        self.task_api_key = task_api_key or settings.task_api_key
 
         self._cache = LRUAgentCache(max_size=settings.agent_max_sessions)
         # Per-session work_dir overrides; falls back to settings.base_dir
@@ -123,6 +142,23 @@ class AgentService:
         self._workspace: Optional[Workspace] = None
         self._initialized = False
         self._init_lock = asyncio.Lock()
+
+    def _build_sibling_model(self, prefix: str) -> Optional[Any]:
+        """Build a sibling (aux/task) model if a model name is configured.
+
+        Fields fall through to main-model values so callers can override
+        only what differs (e.g. a different model_name on the same provider,
+        or a different base_url+api_key on the same provider/model).
+        Returns None when no sibling name is set — DeepAgent will reuse
+        the main model.
+        """
+        sibling_name = getattr(self, f"{prefix}_model_name")
+        if not sibling_name:
+            return None
+        provider = getattr(self, f"{prefix}_model_provider") or self.model_provider
+        base_url = getattr(self, f"{prefix}_base_url") or None
+        api_key = getattr(self, f"{prefix}_api_key") or None
+        return create_model(provider, sibling_name, base_url=base_url, api_key=api_key)
 
     # ============== Initialization ==============
 
@@ -163,10 +199,19 @@ class AgentService:
         """Build a new DeepAgent instance (sync, runs in thread).
 
         DeepAgent auto-includes: builtin tools, skills, agentic prompt,
-        compression, workspace memory, conversation archive, memory tools.
-        Only extra tools and scheduler need manual addition.
+        compression (compress_tool_results + context_overflow_threshold=0.8
+        with compress-before-evict), workspace memory (auto_archive +
+        auto_extract_memory + relevance recall), experience capture (tool
+        errors / user corrections / success patterns), memory tools.
+
+        auxiliary_model / task_model default to the main model (DeepAgent
+        default). Pass AGENTICA_AUX_* / AGENTICA_TASK_* env vars (or build
+        AgentService with the matching kwargs) to route them to a
+        different provider / model / base_url / api_key.
         """
         model = create_model(self.model_provider, self.model_name)
+        auxiliary_model = self._build_sibling_model("aux")
+        task_model = self._build_sibling_model("task")
         work_dir = str(settings.base_dir)
 
         # Extra tools: user-provided + cron
@@ -182,23 +227,17 @@ class AgentService:
 
         agent = DeepAgent(
             model=model,
+            auxiliary_model=auxiliary_model,
+            task_model=task_model,
             tools=extra if extra else None,
             workspace=self._workspace,
             work_dir=work_dir,
             history_window=6,
             instructions=instructions,
             debug=settings.debug,
-            # Full-featured: memory, skills, user input all enabled
-            memory=True,
-            include_skills=True,
+            # memory, skills, user input, experience capture, workspace memory
+            # all on by DeepAgent default — no explicit overrides needed.
             include_user_input=True,
-            long_term_memory_config=WorkspaceMemoryConfig(
-                auto_archive=True,
-                auto_extract_memory=True,
-                load_workspace_context=True,
-                load_workspace_memory=True,
-                max_memory_entries=10,
-            ),
         )
 
         tool_count = len(agent.tools) if agent.tools else 0

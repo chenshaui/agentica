@@ -133,5 +133,7 @@ class TestConfigEndpoints:
         resp = client.get("/api/models")
         assert resp.status_code == 200
         data = resp.json()
-        assert "providers" in data
+        # No hardcoded provider/model catalog — only current binding is returned.
         assert "current_provider" in data
+        assert "current_name" in data
+        assert "current" in data

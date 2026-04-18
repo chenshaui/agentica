@@ -89,8 +89,6 @@ class SessionState:
     attached_images: List = field(default_factory=list)
     pasted_files: List = field(default_factory=list)
     last_ctrl_c: float = 0.0
-    # Interrupt queue: messages typed while agent is running
-    interrupt_queue: queue.Queue = field(default_factory=queue.Queue)
     # Background tasks — owned by session, not module-global
     bg_tasks: Dict[str, dict] = field(default_factory=dict)
     bg_task_counter: int = 0
@@ -420,13 +418,8 @@ def _process_stream_response(
     current_agent, final_input: str, session_tokens: list,
     tui_state: dict, *, images: Optional[list] = None,
     permission_manager: Optional[PermissionManager] = None,
-    interrupt_queue: Optional[queue.Queue] = None,
-) -> Optional[str]:
-    """Process the agent's streaming response and display it.
-
-    Returns the interrupt message if the run was interrupted by a new user
-    message, or ``None`` if the run completed normally / was cancelled.
-    """
+) -> None:
+    """Process the agent's streaming response and display it."""
     con = get_console()
 
     def _set_spinner(text: str = ""):
@@ -536,16 +529,6 @@ def _process_stream_response(
             if current_agent._cancelled:
                 raise AgentCancelledError("Agent run cancelled by user")
 
-            # Check for interrupt: user typed a new message while agent runs
-            if interrupt_queue is not None:
-                try:
-                    interrupt_msg = interrupt_queue.get_nowait()
-                    _cprint("\n⚡ Interrupting current run with new message...")
-                    current_agent.interrupt(interrupt_msg)
-                    raise AgentCancelledError("Agent run interrupted by new user message")
-                except queue.Empty:
-                    pass
-
             if chunk is None:
                 continue
 
@@ -645,13 +628,8 @@ def _process_stream_response(
         con.print("\n[yellow]⚡ Agent cancelled.[/yellow]")
     except AgentCancelledError:
         _set_spinner("")
-        interrupt_msg = current_agent._interrupt_message
         current_agent._running = False
         current_agent._cancelled = False
-        current_agent._interrupt_message = None
-        if interrupt_msg:
-            con.print("\n[yellow]⚡ Agent interrupted — processing new message...[/yellow]")
-            return interrupt_msg
         con.print("\n[yellow]⚡ Agent cancelled.[/yellow]")
     except Exception as e:
         _set_spinner("")
@@ -659,7 +637,6 @@ def _process_stream_response(
     finally:
         # Clear the live-event callback so it doesn't outlive this run.
         current_agent._event_callback = None
-    return None
 
 
 # ==================== TUI setup ====================
@@ -789,12 +766,11 @@ def _setup_tui(state: SessionState, skills_registry, tui_state: dict,
                 event.app.invalidate()
                 return
 
+        pending_queue.put(payload)
+
         if state.agent_running and text and not text.startswith("/"):
-            state.interrupt_queue.put(text)
             preview = text[:60] + ("..." if len(text) > 60 else "")
-            _cprint(f"\n⚡ New message, interrupting agent: {preview}")
-        else:
-            pending_queue.put(payload)
+            _cprint(f"  Queued: {preview}")
 
         event.app.current_buffer.reset(append_to_history=True)
         event.app.invalidate()
@@ -893,7 +869,7 @@ def _setup_tui(state: SessionState, skills_registry, tui_state: dict,
 
     def _get_placeholder():
         if state.agent_running:
-            return "type a message + Enter to interrupt, Ctrl+C to cancel"
+            return "type + Enter to queue, Ctrl+C to cancel"
         return ""
 
     def _get_prompt():
@@ -1179,7 +1155,10 @@ def run_interactive(agent_config: dict, extra_tool_names: Optional[List[str]] = 
             except queue.Empty:
                 continue
 
-            if payload in ("__CANCEL__", None):
+            if payload is None:
+                continue
+
+            if payload == "__CANCEL__":
                 continue
 
             if payload == "__TOGGLE_SHELL_MODE__":
@@ -1191,6 +1170,12 @@ def run_interactive(agent_config: dict, extra_tool_names: Optional[List[str]] = 
                 )
                 _cprint(f"\n{mode_str}")
                 app.invalidate()
+                continue
+
+            # If agent is currently running, re-queue
+            if state.agent_running:
+                pending_queue.put(payload)
+                time.sleep(0.1)
                 continue
 
             # Unpack payload
@@ -1311,36 +1296,17 @@ def run_interactive(agent_config: dict, extra_tool_names: Optional[List[str]] = 
                 _run_btw_concurrent(state.current_agent, final_input, tui_state)
                 continue
 
-            # Run agent — loop handles interrupt: if user sends a new
-            # message while the agent is running, the current run is
-            # cancelled and the new message is fed as the next turn.
-            next_input = final_input
-            next_images = turn_images
-            while next_input is not None:
-                state.agent_running = True
-                app.invalidate()
-                # Drain stale interrupt messages before starting
-                while not state.interrupt_queue.empty():
-                    try:
-                        state.interrupt_queue.get_nowait()
-                    except queue.Empty:
-                        break
-                interrupt_msg = _process_stream_response(
-                    state.current_agent, next_input, session_tokens, tui_state,
-                    images=next_images,
-                    permission_manager=permission_manager,
-                    interrupt_queue=state.interrupt_queue,
-                )
-                state.agent_running = False
-                tui_state["spinner_text"] = ""
-                app.invalidate()
-                if interrupt_msg:
-                    prompt_text, mentioned_files = parse_file_mentions(interrupt_msg)
-                    next_input = inject_file_contents(prompt_text, mentioned_files)
-                    next_images = None
-                    display_user_message(interrupt_msg)
-                else:
-                    next_input = None
+            # Run agent
+            state.agent_running = True
+            app.invalidate()
+            _process_stream_response(
+                state.current_agent, final_input, session_tokens, tui_state,
+                images=turn_images,
+                permission_manager=permission_manager,
+            )
+            state.agent_running = False
+            tui_state["spinner_text"] = ""
+            app.invalidate()
 
     process_thread = threading.Thread(target=process_loop, daemon=True)
     process_thread.start()

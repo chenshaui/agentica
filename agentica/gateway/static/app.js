@@ -404,23 +404,14 @@ function toggleModelDD(){
 function renderModelDD(){
   if(!modelsData)return;
   const dd=document.getElementById('modelDD');
-  let h='';
-  // Custom model input at top
-  h+=`<div class="dd-custom">
-    <input type="text" id="customModelInput" class="dd-custom-input" placeholder="provider/model_name" onkeydown="if(event.key==='Enter')applyCustomModel()">
+  // No hardcoded provider/model catalog — users type `provider/model_name`
+  // directly. The current binding is shown as a read-only hint.
+  const cur=modelsData.current||'';
+  dd.innerHTML=`<div class="dd-custom">
+    <input type="text" id="customModelInput" class="dd-custom-input" placeholder="provider/model_name" value="${esc(cur)}" onkeydown="if(event.key==='Enter')applyCustomModel()">
     <button class="dd-custom-btn" onclick="applyCustomModel()" title="Apply">&#x2713;</button>
-  </div>`;
-  for(const [prov, models] of Object.entries(modelsData.providers)){
-    h+=`<div class="dd-group"><div class="dd-group-title">${esc(prov)}</div>`;
-    for(const m of models){
-      const isCur=(prov===modelsData.current_provider && m===modelsData.current_name);
-      h+=`<div class="dd-item${isCur?' current':''}" onclick="switchModel('${esc(prov)}','${esc(m)}')">
-        <span>${esc(m)}</span>
-      </div>`;
-    }
-    h+='</div>';
-  }
-  dd.innerHTML=h;
+  </div>
+  <div class="dd-hint">Current: ${esc(cur||'-')}</div>`;
 }
 
 function applyCustomModel(){

@@ -16,7 +16,6 @@ from fastapi.responses import HTMLResponse
 from .. import deps
 from ..config import settings
 from agentica.version import __version__
-from agentica.model.providers import get_supported_models
 from ..models import ModelSwitchRequest, ThinkingToggleRequest, BaseDirRequest, OpenRequest
 from ..services.agent_service import AgentService
 
@@ -78,6 +77,8 @@ async def status():
 
 @router.get("/api/models")
 async def list_models():
+    """Return current model only. The model catalog is no longer hardcoded —
+    users type `provider/model_name` in the UI's custom input."""
     svc = deps.agent_service
     current_provider = svc.model_provider if svc else settings.model_provider
     current_name = svc.model_name if svc else settings.model_name
@@ -85,7 +86,6 @@ async def list_models():
         "current_provider": current_provider,
         "current_name": current_name,
         "current": f"{current_provider}/{current_name}",
-        "providers": get_supported_models(),
     }
 
 
