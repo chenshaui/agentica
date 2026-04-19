@@ -6,9 +6,49 @@
 import sys
 import os
 import logging
+from functools import lru_cache
 from typing import Optional
 
 from agentica.config import AGENTICA_LOG_FILE, AGENTICA_LOG_LEVEL
+
+
+@lru_cache(maxsize=4096)
+def _dotted_module_from_path(pathname: str) -> str:
+    """Convert a source file path to a loguru-style dotted module name.
+
+    Walks up from the file looking for the first directory without an
+    ``__init__.py`` — that's the import root. The path below it becomes the
+    dotted module (``agentica/runner.py`` → ``agentica.runner``,
+    ``tests/test_cli.py`` → ``tests.test_cli``).
+
+    Falls back to the bare filename stem when the file is not inside any
+    importable package (e.g. a one-off script). Cached because every log
+    record from the same source file resolves to the same string.
+    """
+    if not pathname:
+        return "?"
+    try:
+        abs_path = os.path.abspath(pathname)
+    except (OSError, ValueError):
+        return os.path.splitext(os.path.basename(pathname))[0] or "?"
+
+    directory, filename = os.path.split(abs_path)
+    stem = os.path.splitext(filename)[0]
+    if not directory:
+        return stem or "?"
+
+    parts = [stem]
+    current = directory
+    while True:
+        if not os.path.isfile(os.path.join(current, "__init__.py")):
+            break
+        parent, name = os.path.split(current)
+        if not name or parent == current:
+            break
+        parts.append(name)
+        current = parent
+
+    return ".".join(reversed(parts)) if parts else stem
 
 
 class LoguruStyleFormatter(logging.Formatter):
@@ -36,13 +76,39 @@ class LoguruStyleFormatter(logging.Formatter):
         # Format level with color and bold
         level = f"{level_color}{self.BOLD}{record.levelname:<8}{self.RESET}"
 
-        # Format module info with cyan
-        module_info = f"{self.CYAN}agentica{self.RESET}:{self.CYAN}{record.funcName}{self.RESET}:{self.CYAN}{record.lineno}{self.RESET}"
+        # Format module info with cyan — full dotted path so the line is
+        # actually clickable / greppable to the real file (loguru-style
+        # ``module.path:function:line`` rather than the literal "agentica").
+        module_path = _dotted_module_from_path(record.pathname)
+        module_info = (
+            f"{self.CYAN}{module_path}{self.RESET}:"
+            f"{self.CYAN}{record.funcName}{self.RESET}:"
+            f"{self.CYAN}{record.lineno}{self.RESET}"
+        )
 
         # Format message with level color
         message = f"{level_color}{record.getMessage()}{self.RESET}"
 
         return f"{timestamp} | {level} | {module_info} - {message}"
+
+
+class _PlainLoguruStyleFormatter(logging.Formatter):
+    """No-ANSI variant of :class:`LoguruStyleFormatter` for file handlers.
+
+    File logs need the same dotted module locator (so grep / IDE click-through
+    still works), but ANSI escape codes pollute the file.
+    """
+
+    def format(self, record):
+        timestamp = (
+            f"{self.formatTime(record, '%Y-%m-%d %H:%M:%S')}"
+            f".{record.msecs:03.0f}"
+        )
+        module_path = _dotted_module_from_path(record.pathname)
+        return (
+            f"{timestamp} | {record.levelname:<8} | "
+            f"{module_path}:{record.funcName}:{record.lineno} - {record.getMessage()}"
+        )
 
 
 def get_agentica_logger(log_level: str = "INFO", log_file: Optional[str] = None) -> logging.Logger:
@@ -74,12 +140,9 @@ def get_agentica_logger(log_level: str = "INFO", log_file: Optional[str] = None)
 
         file_handler = logging.FileHandler(log_file)
         file_handler.setLevel(getattr(logging, log_level.upper(), logging.INFO))
-        # Use plain formatter for file (no colors)
-        file_formatter = logging.Formatter(
-            '%(asctime)s.%(msecs)03d | %(levelname)-8s | agentica:%(funcName)s:%(lineno)d - %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        file_handler.setFormatter(file_formatter)
+        # Plain (no-ANSI) variant of LoguruStyleFormatter so the file copy
+        # carries the same module.path:function:line locator as the console.
+        file_handler.setFormatter(_PlainLoguruStyleFormatter())
         logger.addHandler(file_handler)
 
     # Prevent propagation to root logger to avoid interfering with user's logging

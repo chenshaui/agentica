@@ -239,6 +239,31 @@ class TestCLIHelpers(unittest.TestCase):
         dm.handle_event({"type": "compact.micro", "agent_name": "Agent", "cleared": 3})
         fake.print.assert_not_called()
 
+    def test_fmt_elapsed_uses_ms_under_one_second(self):
+        """Sub-second tools must surface ms-precision rather than being hidden.
+        Every tool call has a real cost — silent <0.1s suppression made fast
+        ops look like they didn't run."""
+        from agentica.cli.display import StreamDisplayManager
+        f = StreamDisplayManager._fmt_elapsed
+        # None / negative — no measurement, render nothing
+        self.assertEqual(f(None), "")
+        self.assertEqual(f(-0.1), "")
+        # Sub-millisecond — still surface a signal
+        self.assertEqual(f(0.0), " (<1ms)")
+        self.assertEqual(f(0.0005), " (<1ms)")
+        # Milliseconds — integer ms
+        self.assertEqual(f(0.001), " (1ms)")
+        self.assertEqual(f(0.005), " (5ms)")
+        self.assertEqual(f(0.123), " (123ms)")
+        self.assertEqual(f(0.999), " (999ms)")
+        # 1s..10s — 2 decimals
+        self.assertEqual(f(1.0), " (1.00s)")
+        self.assertEqual(f(1.234), " (1.23s)")
+        self.assertEqual(f(9.99), " (9.99s)")
+        # >= 10s — 1 decimal
+        self.assertEqual(f(10.0), " (10.0s)")
+        self.assertEqual(f(123.456), " (123.5s)")
+
     def test_stream_display_manager_keeps_rule_based_compact_visible(self):
         from agentica.cli.display import StreamDisplayManager
         fake = MagicMock()

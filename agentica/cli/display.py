@@ -579,10 +579,26 @@ class StreamDisplayManager:
     
     @staticmethod
     def _fmt_elapsed(elapsed: Optional[float]) -> str:
-        """Format elapsed seconds. Returns '' when None or < 0.1s (avoids
-        meaningless '0.0s' noise for fast in-process operations)."""
-        if elapsed is None or elapsed < 0.1:
+        """Format elapsed seconds with ms-precision under 1s.
+
+        Every tool call has a non-zero cost (subprocess spawn, file I/O,
+        even pure-python work), so we always surface a number when one is
+        provided — fast tools just report ``<1ms`` instead of being hidden.
+
+        - None or negative   → ''            (no measurement available)
+        - < 1ms              → ' (<1ms)'
+        - < 1s               → ' (Nms)'      e.g. ' (5ms)', ' (120ms)'
+        - < 10s              → ' (N.NNs)'    e.g. ' (1.23s)'
+        - >= 10s             → ' (N.Ns)'     e.g. ' (12.3s)'
+        """
+        if elapsed is None or elapsed < 0:
             return ""
+        if elapsed < 0.001:
+            return " (<1ms)"
+        if elapsed < 1.0:
+            return f" ({int(round(elapsed * 1000))}ms)"
+        if elapsed < 10.0:
+            return f" ({elapsed:.2f}s)"
         return f" ({elapsed:.1f}s)"
 
     def display_tool_result(self, tool_name: str, result_content: str,
