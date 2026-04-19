@@ -34,6 +34,7 @@ from typing import Optional, List, Dict, Any, Literal, TYPE_CHECKING, Union
 import aiofiles
 
 from agentica.tools.base import Tool
+from agentica.tools.safety import check_command_safety, redact_sensitive_text
 
 
 def _interpret_exit_code(command: str, exit_code: int) -> Optional[str]:
@@ -239,16 +240,17 @@ class BuiltinFileTool(Tool):
     def _preflight_edit_check(self, file_path: str) -> Optional[str]:
         """Run shared preflight checks for edit_file / multi_edit_file.
 
-        Checks sensitive-path guard and mtime staleness guard.
-        Returns an error/warning message string if the edit should be rejected,
-        or None if the edit is safe to proceed.
+        - Sensitive-path guard: raises PermissionError immediately.
+        - mtime staleness guard: returns a Warning string (not an error) —
+          the edit is still rejected but the model sees advice, not a crash.
+        Returns None if the edit is safe to proceed.
         """
         path = self._resolve_path(file_path)
 
         # Sensitive path guard (e.g. /etc/passwd, ~/.ssh)
         sensitive_err = _check_sensitive_write_path(str(path))
         if sensitive_err:
-            return f"Error: {sensitive_err}"
+            raise PermissionError(sensitive_err)
 
         # mtime guard: detect external modifications since last read.
         abs_path = str(path.resolve())
@@ -355,35 +357,31 @@ class BuiltinFileTool(Tool):
             JSON-formatted list, e.g. ``[{"name": "src", "path": "...", "type": "dir"},
             {"name": "main.py", "path": "...", "type": "file"}]``.
         """
-        try:
-            self._validate_path(directory)
-            dir_path = self._resolve_path(directory)
+        self._validate_path(directory)
+        dir_path = self._resolve_path(directory)
 
-            if not dir_path.exists():
-                return f"Error: Directory not found: {directory}"
-            if not dir_path.is_dir():
-                return f"Error: Not a directory: {directory}"
+        if not dir_path.exists():
+            raise FileNotFoundError(f"Directory not found: {directory}")
+        if not dir_path.is_dir():
+            raise NotADirectoryError(f"Not a directory: {directory}")
 
-            def _ls_sync():
-                items = []
-                for item in sorted(dir_path.iterdir()):
-                    item_type = "dir" if item.is_dir() else "file"
-                    items.append({
-                        "name": item.name,
-                        "path": str(item),
-                        "type": item_type,
-                    })
-                return items
+        def _ls_sync():
+            items = []
+            for item in sorted(dir_path.iterdir()):
+                item_type = "dir" if item.is_dir() else "file"
+                items.append({
+                    "name": item.name,
+                    "path": str(item),
+                    "type": item_type,
+                })
+            return items
 
-            items = await asyncio.get_event_loop().run_in_executor(None, _ls_sync)
+        items = await asyncio.get_event_loop().run_in_executor(None, _ls_sync)
 
-            logger.debug(f"Listed {len(items)} items in {dir_path}")
-            result = json.dumps(items, ensure_ascii=False, indent=2)
-            result = truncate_if_too_long(result)
-            return str(result)
-        except Exception as e:
-            logger.error(f"Error listing directory {directory}: {e}")
-            return f"Error listing directory: {e}"
+        logger.debug(f"Listed {len(items)} items in {dir_path}")
+        result = json.dumps(items, ensure_ascii=False, indent=2)
+        result = truncate_if_too_long(result)
+        return str(result)
 
     # Maximum file size (bytes) for read_file.  Larger files must use offset+limit.
     # Mirrors CC's FileReadTool maxSizeBytes (256KB).
@@ -430,97 +428,96 @@ class BuiltinFileTool(Tool):
         Returns:
             File content with line numbers
         """
+        self._validate_path(file_path)
+        path = self._resolve_path(file_path)
+
+        # ── Device path guard ─────────────────────────────────────
+        if _is_blocked_device(str(path)):
+            raise PermissionError(
+                f"Cannot read '{file_path}': this is a device file "
+                "that would block or produce infinite output."
+            )
+
+        if not path.exists():
+            # Reset consecutive tracker for this path
+            for k in [k for k in self._read_consecutive_counts if k[0] == file_path]:
+                del self._read_consecutive_counts[k]
+            self._read_last_key = None
+            raise FileNotFoundError(f"File not found: {file_path}")
+        if not path.is_file():
+            raise IsADirectoryError(f"Not a file: {file_path}")
+
+        abs_path = str(path.resolve())
+
+        # --- Large-file guard (mirrors CC's maxSizeBytes) ---
         try:
-            self._validate_path(file_path)
-            path = self._resolve_path(file_path)
+            file_size = path.stat().st_size
+        except OSError:
+            file_size = None
+        if file_size is not None and file_size > self.MAX_FILE_SIZE_BYTES:
+            loop = asyncio.get_running_loop()
+            total_lines = await loop.run_in_executor(
+                None, lambda: sum(1 for _ in open(path, errors='ignore'))
+            )
+            raise ValueError(
+                f"File too large ({file_size:,} bytes, {total_lines:,} lines). "
+                f"Use offset and limit to read specific sections. "
+                f"Example: read_file('{file_path}', offset=0, limit=100)"
+            )
 
-            # ── Device path guard ─────────────────────────────────────
-            if _is_blocked_device(str(path)):
-                return (
-                    f"Error: Cannot read '{file_path}': this is a device file "
-                    "that would block or produce infinite output."
-                )
+        limit = limit if limit is not None else self.max_read_lines
+        max_line_len = self.max_line_length
 
-            if not path.exists():
-                # Reset consecutive tracker for this path
-                for k in [k for k in self._read_consecutive_counts if k[0] == file_path]:
-                    del self._read_consecutive_counts[k]
-                self._read_last_key = None
-                return f"Error: File not found: {file_path}"
-            if not path.is_file():
-                return f"Error: Not a file: {file_path}"
+        # Async streaming read — only read the lines we need
+        output_lines = []
+        total_lines = 0
+        end_line = offset + limit
+        async with aiofiles.open(path, 'r', encoding='utf-8', errors='ignore') as f:
+            async for line in f:
+                total_lines += 1
+                if total_lines > offset and total_lines <= end_line:
+                    line = line.rstrip('\n\r')
+                    if len(line) > max_line_len:
+                        line = line[:max_line_len] + "..."
+                    output_lines.append(f"{total_lines:6d}\t{line}")
 
-            abs_path = str(path.resolve())
+        result = "\n".join(output_lines)
 
-            # --- Large-file guard (mirrors CC's maxSizeBytes) ---
-            try:
-                file_size = path.stat().st_size
-                if file_size > self.MAX_FILE_SIZE_BYTES:
-                    loop = asyncio.get_running_loop()
-                    total_lines = await loop.run_in_executor(
-                        None, lambda: sum(1 for _ in open(path, errors='ignore'))
-                    )
-                    return (
-                        f"Error: File too large ({file_size:,} bytes, {total_lines:,} lines). "
-                        f"Use offset and limit to read specific sections.\n"
-                        f"Example: read_file('{file_path}', offset=0, limit=100)"
-                    )
-            except OSError:
-                pass  # stat failed — proceed with read, let it fail naturally
+        # Add file info if truncated
+        actual_end = min(offset + len(output_lines), total_lines)
+        if actual_end < total_lines:
+            result += f"\n\n[Showing lines {offset + 1}-{actual_end} of {total_lines} total lines]"
 
-            limit = limit if limit is not None else self.max_read_lines
-            max_line_len = self.max_line_length
+        # Record mtime so edit_file can detect external modifications
+        try:
+            self._file_read_state[abs_path] = {"mtime": path.stat().st_mtime}
+        except OSError:
+            pass
 
-            # Async streaming read — only read the lines we need
-            output_lines = []
-            total_lines = 0
-            end_line = offset + limit
-            async with aiofiles.open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                async for line in f:
-                    total_lines += 1
-                    if total_lines > offset and total_lines <= end_line:
-                        line = line.rstrip('\n\r')
-                        if len(line) > max_line_len:
-                            line = line[:max_line_len] + "..."
-                        output_lines.append(f"{total_lines:6d}\t{line}")
+        # ── Consecutive-read loop detection ───────────────────────
+        read_key = (file_path, offset, limit)
+        self._read_consecutive_counts[read_key] = self._read_consecutive_counts.get(read_key, 0) + 1
+        count = self._read_consecutive_counts[read_key]
+        self._read_last_key = read_key
 
-            result = "\n".join(output_lines)
+        if count >= _MAX_CONSECUTIVE_READS:
+            # Soft signal (not an error): tell the agent to stop re-reading.
+            # Not a FileNotFoundError or the like -- the file exists and the
+            # read succeeded; we simply refuse to return the content again.
+            return (
+                f"BLOCKED: You have read this exact file region {count} times in a row. "
+                "The content has NOT changed. You already have this information. "
+                "STOP re-reading and proceed with your task."
+            )
+        if count >= 3:
+            result += (
+                f"\n\n[Warning: You have read this exact file region {count} times "
+                "consecutively. The content has not changed. Use the information "
+                "you already have.]"
+            )
 
-            # Add file info if truncated
-            actual_end = min(offset + len(output_lines), total_lines)
-            if actual_end < total_lines:
-                result += f"\n\n[Showing lines {offset + 1}-{actual_end} of {total_lines} total lines]"
-
-            # Record mtime so edit_file can detect external modifications
-            try:
-                self._file_read_state[abs_path] = {"mtime": path.stat().st_mtime}
-            except OSError:
-                pass
-
-            # ── Consecutive-read loop detection ───────────────────────
-            read_key = (file_path, offset, limit)
-            self._read_consecutive_counts[read_key] = self._read_consecutive_counts.get(read_key, 0) + 1
-            count = self._read_consecutive_counts[read_key]
-            self._read_last_key = read_key
-
-            if count >= _MAX_CONSECUTIVE_READS:
-                return (
-                    f"BLOCKED: You have read this exact file region {count} times in a row. "
-                    "The content has NOT changed. You already have this information. "
-                    "STOP re-reading and proceed with your task."
-                )
-            if count >= 3:
-                result += (
-                    f"\n\n[Warning: You have read this exact file region {count} times "
-                    "consecutively. The content has not changed. Use the information "
-                    "you already have.]"
-                )
-
-            logger.debug(f"Read file {file_path}: lines {offset + 1}-{actual_end}, total {total_lines} lines")
-            return result
-        except Exception as e:
-            logger.error(f"Error reading file {file_path}: {e}")
-            return f"Error reading file: {e}"
+        logger.debug(f"Read file {file_path}: lines {offset + 1}-{actual_end}, total {total_lines} lines")
+        return result
 
     async def write_file(self, file_path: str, content: str) -> str:
         """Writes content to a file in the filesystem.
@@ -543,75 +540,71 @@ class BuiltinFileTool(Tool):
         Returns:
             Operation result message containing the actual absolute path of the file
         """
-        try:
-            self._validate_write_path(file_path)
-            path = self._resolve_path(file_path)
+        self._validate_write_path(file_path)
+        path = self._resolve_path(file_path)
 
-            # ── Sensitive path guard ──────────────────────────────────
-            sensitive_err = _check_sensitive_write_path(str(path))
-            if sensitive_err:
-                return f"Error: {sensitive_err}"
+        # ── Sensitive path guard ──────────────────────────────────
+        sensitive_err = _check_sensitive_write_path(str(path))
+        if sensitive_err:
+            raise PermissionError(sensitive_err)
 
-            # ── File staleness check ──────────────────────────────────
-            stale_warning = ""
-            abs_path = str(path.resolve()) if path.exists() else None
-            if abs_path and abs_path in self._file_read_state:
-                read_mtime = self._file_read_state[abs_path].get("mtime")
-                if read_mtime is not None:
-                    try:
-                        current_mtime = path.stat().st_mtime
-                        if current_mtime != read_mtime:
-                            stale_warning = (
-                                f"\nWarning: {file_path} was modified since you last read it "
-                                "(external edit or concurrent agent). Consider re-reading."
-                            )
-                    except OSError:
-                        pass
-
-            # Reset consecutive-read tracker (write breaks the loop)
-            self._read_last_key = None
-            self._read_consecutive_counts.clear()
-
-            # Ensure directory exists
-            path.parent.mkdir(parents=True, exist_ok=True)
-            action = "Created" if not path.exists() else "Updated"
-
-            # ── Snapshot for rollback ─────────────────────────────────
-            if path.exists() and path.is_file():
+        # ── File staleness check ──────────────────────────────────
+        stale_warning = ""
+        abs_path = str(path.resolve()) if path.exists() else None
+        if abs_path and abs_path in self._file_read_state:
+            read_mtime = self._file_read_state[abs_path].get("mtime")
+            if read_mtime is not None:
                 try:
-                    old_content = path.read_text(encoding='utf-8', errors='ignore')
-                    abs_snap = str(path.resolve())
-                    self._file_snapshots.setdefault(abs_snap, []).append(old_content)
+                    current_mtime = path.stat().st_mtime
+                    if current_mtime != read_mtime:
+                        stale_warning = (
+                            f"\nWarning: {file_path} was modified since you last read it "
+                            "(external edit or concurrent agent). Consider re-reading."
+                        )
                 except OSError:
                     pass
 
-            # Atomic write: write to temp file then rename to avoid partial writes
-            tmp_fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-            try:
-                os.close(tmp_fd)
-                async with aiofiles.open(tmp_path, 'w', encoding='utf-8') as f:
-                    await f.write(content)
-                # Atomic rename
-                os.replace(tmp_path, str(path))
-            except Exception:
-                # Clean up temp file on error
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-                raise
+        # Reset consecutive-read tracker (write breaks the loop)
+        self._read_last_key = None
+        self._read_consecutive_counts.clear()
 
-            # Return absolute path to help LLM use correct path in subsequent operations
-            absolute_path = str(path.resolve())
+        # Ensure directory exists
+        path.parent.mkdir(parents=True, exist_ok=True)
+        action = "Created" if not path.exists() else "Updated"
+
+        # ── Snapshot for rollback ─────────────────────────────────
+        if path.exists() and path.is_file():
             try:
-                self._file_read_state[absolute_path] = {"mtime": path.stat().st_mtime}
+                old_content = path.read_text(encoding='utf-8', errors='ignore')
+                abs_snap = str(path.resolve())
+                self._file_snapshots.setdefault(abs_snap, []).append(old_content)
             except OSError:
-                self._file_read_state.pop(absolute_path, None)
-            logger.debug(f"{action} file: {absolute_path}, file content length: {len(content)} characters")
-            return f"{action} file, absolute path: {absolute_path}{stale_warning}"
-        except Exception as e:
-            logger.error(f"Error writing file {file_path}: {e}")
-            return f"Error writing file: {e}"
+                pass
+
+        # Atomic write: write to temp file then rename to avoid partial writes
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+        try:
+            os.close(tmp_fd)
+            async with aiofiles.open(tmp_path, 'w', encoding='utf-8') as f:
+                await f.write(content)
+            # Atomic rename
+            os.replace(tmp_path, str(path))
+        except Exception:
+            # Clean up temp file on error
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+        # Return absolute path to help LLM use correct path in subsequent operations
+        absolute_path = str(path.resolve())
+        try:
+            self._file_read_state[absolute_path] = {"mtime": path.stat().st_mtime}
+        except OSError:
+            self._file_read_state.pop(absolute_path, None)
+        logger.debug(f"{action} file: {absolute_path}, file content length: {len(content)} characters")
+        return f"{action} file, absolute path: {absolute_path}{stale_warning}"
 
     async def edit_file(
             self,
@@ -657,65 +650,62 @@ class BuiltinFileTool(Tool):
             edit_file("config.py", "DEBUG = True", "DEBUG = False")
             edit_file("test.py", "old_name", "new_name", replace_all=True)
         """
-        try:
-            self._validate_write_path(file_path)
-            path = self._resolve_path(file_path)
-            path_key = str(path)
+        self._validate_write_path(file_path)
+        path = self._resolve_path(file_path)
+        path_key = str(path)
 
-            # Shared preflight: sensitive path + mtime staleness guard
-            preflight_err = self._preflight_edit_check(file_path)
-            if preflight_err:
-                return preflight_err
+        # Shared preflight: sensitive path (raises) + mtime staleness (warning)
+        preflight_warning = self._preflight_edit_check(file_path)
+        if preflight_warning:
+            # mtime staleness is a soft-reject: return warning string so the
+            # model can re-read and retry rather than seeing a crash.
+            return preflight_warning
 
-            abs_path = str(path.resolve())
+        abs_path = str(path.resolve())
 
-            # Reset consecutive-read tracker (edit breaks the loop)
-            self._read_last_key = None
-            self._read_consecutive_counts.clear()
+        # Reset consecutive-read tracker (edit breaks the loop)
+        self._read_last_key = None
+        self._read_consecutive_counts.clear()
 
-            if not path.exists():
-                return f"Error: File not found: {file_path}"
-            if not path.is_file():
-                return f"Error: Not a file: {file_path}"
+        if not path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+        if not path.is_file():
+            raise IsADirectoryError(f"Not a file: {file_path}")
 
-            # Per-file lock to serialize concurrent edits on the same file
-            lock = self._get_file_lock(path_key)
-            async with lock:
-                async with aiofiles.open(path, 'r', encoding='utf-8') as f:
-                    content = await f.read()
+        # Per-file lock to serialize concurrent edits on the same file
+        lock = self._get_file_lock(path_key)
+        async with lock:
+            async with aiofiles.open(path, 'r', encoding='utf-8') as f:
+                content = await f.read()
 
-                # ── Snapshot for rollback before edit ─────────────────
-                self._file_snapshots.setdefault(abs_path, []).append(content)
+            # ── Snapshot for rollback before edit ─────────────────
+            self._file_snapshots.setdefault(abs_path, []).append(content)
 
-                result = self._str_replace(content, old_string, new_string, replace_all)
+            result = self._str_replace(content, old_string, new_string, replace_all)
 
-                if not result["success"]:
-                    return f"Error: {result['error']}"
+            if not result["success"]:
+                raise ValueError(result["error"])
 
-                # Atomic write back
-                tmp_fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-                try:
-                    os.close(tmp_fd)
-                    async with aiofiles.open(tmp_path, 'w', encoding='utf-8') as f:
-                        await f.write(result["new_content"])
-                    os.replace(tmp_path, str(path))
-                except Exception:
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
-                    raise
-
-            logger.debug(f"Replaced {result['count']} occurrence(s) in {file_path}")
+            # Atomic write back
+            tmp_fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
             try:
-                self._file_read_state[abs_path] = {"mtime": path.stat().st_mtime}
-            except OSError:
-                self._file_read_state.pop(abs_path, None)
-            return f"Successfully replaced {result['count']} occurrence(s) in '{file_path}'"
+                os.close(tmp_fd)
+                async with aiofiles.open(tmp_path, 'w', encoding='utf-8') as f:
+                    await f.write(result["new_content"])
+                os.replace(tmp_path, str(path))
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
 
-        except Exception as e:
-            logger.error(f"Error editing file {file_path}: {e}")
-            return f"Error editing file: {e}"
+        logger.debug(f"Replaced {result['count']} occurrence(s) in {file_path}")
+        try:
+            self._file_read_state[abs_path] = {"mtime": path.stat().st_mtime}
+        except OSError:
+            self._file_read_state.pop(abs_path, None)
+        return f"Successfully replaced {result['count']} occurrence(s) in '{file_path}'"
 
     async def multi_edit_file(
             self,
@@ -747,77 +737,74 @@ class BuiltinFileTool(Tool):
                 {"old_string": "DEBUG = True", "new_string": "DEBUG = False"},
             ])
         """
-        try:
-            self._validate_write_path(file_path)
-            path = self._resolve_path(file_path)
-            path_key = str(path)
+        self._validate_write_path(file_path)
+        path = self._resolve_path(file_path)
+        path_key = str(path)
 
-            # Shared preflight: sensitive path + mtime staleness guard
-            preflight_err = self._preflight_edit_check(file_path)
-            if preflight_err:
-                return preflight_err
+        # Shared preflight: sensitive path (raises) + mtime staleness (warning)
+        preflight_warning = self._preflight_edit_check(file_path)
+        if preflight_warning:
+            return preflight_warning
 
-            abs_path = str(path.resolve())
+        abs_path = str(path.resolve())
 
-            # Reset consecutive-read tracker (multi-edit breaks the loop)
-            self._read_last_key = None
-            self._read_consecutive_counts.clear()
+        # Reset consecutive-read tracker (multi-edit breaks the loop)
+        self._read_last_key = None
+        self._read_consecutive_counts.clear()
 
-            if not path.exists():
-                return f"Error: File not found: {file_path}"
-            if not path.is_file():
-                return f"Error: Not a file: {file_path}"
-            if not edits:
-                return "Error: 'edits' list cannot be empty."
+        if not path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+        if not path.is_file():
+            raise IsADirectoryError(f"Not a file: {file_path}")
+        if not edits:
+            raise ValueError("'edits' list cannot be empty.")
 
-            lock = self._get_file_lock(path_key)
-            async with lock:
-                async with aiofiles.open(path, 'r', encoding='utf-8') as f:
-                    content = await f.read()
+        lock = self._get_file_lock(path_key)
+        async with lock:
+            async with aiofiles.open(path, 'r', encoding='utf-8') as f:
+                content = await f.read()
 
-                # Apply edits sequentially on in-memory content
-                results = []
-                for i, edit in enumerate(edits):
-                    old_string = edit.get("old_string", "")
-                    new_string = edit.get("new_string", "")
-                    replace_all = edit.get("replace_all", False)
+            # Apply edits sequentially on in-memory content
+            results = []
+            for i, edit in enumerate(edits):
+                old_string = edit.get("old_string", "")
+                new_string = edit.get("new_string", "")
+                replace_all = edit.get("replace_all", False)
 
-                    if not old_string:
-                        return f"Error: Edit {i + 1} has empty old_string. No changes were made."
+                if not old_string:
+                    raise ValueError(f"Edit {i + 1} has empty old_string. No changes were made.")
 
-                    result = self._str_replace(content, old_string, new_string, replace_all)
-                    if not result["success"]:
-                        return f"Error in edit {i + 1}/{len(edits)}: {result['error']}. No changes were made."
+                result = self._str_replace(content, old_string, new_string, replace_all)
+                if not result["success"]:
+                    raise ValueError(
+                        f"Edit {i + 1}/{len(edits)}: {result['error']}. No changes were made."
+                    )
 
-                    content = result["new_content"]
-                    results.append(f"Edit {i + 1}: replaced {result['count']} occurrence(s)")
+                content = result["new_content"]
+                results.append(f"Edit {i + 1}: replaced {result['count']} occurrence(s)")
 
-                # Atomic write (once)
-                tmp_fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-                try:
-                    os.close(tmp_fd)
-                    async with aiofiles.open(tmp_path, 'w', encoding='utf-8') as f:
-                        await f.write(content)
-                    os.replace(tmp_path, str(path))
-                except Exception:
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
-                    raise
-
-            summary = f"Successfully applied {len(edits)} edits to '{file_path}':\n" + "\n".join(results)
-            logger.debug(summary)
-            # Update mtime state so subsequent edits don't trigger stale-read warning
+            # Atomic write (once)
+            tmp_fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
             try:
-                self._file_read_state[abs_path] = {"mtime": path.stat().st_mtime}
-            except OSError:
-                self._file_read_state.pop(abs_path, None)
-            return summary
+                os.close(tmp_fd)
+                async with aiofiles.open(tmp_path, 'w', encoding='utf-8') as f:
+                    await f.write(content)
+                os.replace(tmp_path, str(path))
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
 
-        except Exception as e:
-            logger.error(f"Error multi-editing file {file_path}: {e}")
-            return f"Error multi-editing file: {e}"
+        summary = f"Successfully applied {len(edits)} edits to '{file_path}':\n" + "\n".join(results)
+        logger.debug(summary)
+        # Update mtime state so subsequent edits don't trigger stale-read warning
+        try:
+            self._file_read_state[abs_path] = {"mtime": path.stat().st_mtime}
+        except OSError:
+            self._file_read_state.pop(abs_path, None)
+        return summary
 
     @staticmethod
     def _normalize_quotes(s: str) -> str:
@@ -964,35 +951,30 @@ class BuiltinFileTool(Tool):
 
         Returns:
             JSON formatted string of sorted absolute file paths (filtered to exclude ignored directories).
-            Error message string if directory not found or other exceptions occur.
         """
-        try:
-            self._validate_path(path)
-            base_path = self._resolve_path(path)
+        self._validate_path(path)
+        base_path = self._resolve_path(path)
 
-            if not base_path.exists():
-                return f"Error: Directory not found: {path}"
+        if not base_path.exists():
+            raise FileNotFoundError(f"Directory not found: {path}")
 
-            # Run glob in executor to avoid blocking on large directory trees
-            def _glob_sync():
-                matches = list(base_path.glob(pattern))
-                ignore_dirs = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.pytest_cache'}
-                return sorted(
-                    str(m) for m in matches
-                    if not set(m.parts).intersection(ignore_dirs)
-                )
+        # Run glob in executor to avoid blocking on large directory trees
+        def _glob_sync():
+            matches = list(base_path.glob(pattern))
+            ignore_dirs = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.pytest_cache'}
+            return sorted(
+                str(m) for m in matches
+                if not set(m.parts).intersection(ignore_dirs)
+            )
 
-            filtered = await asyncio.get_event_loop().run_in_executor(None, _glob_sync)
+        filtered = await asyncio.get_event_loop().run_in_executor(None, _glob_sync)
 
-            logger.debug(f"Glob found {len(filtered)} files matching pattern '{pattern}' in directory '{path}'")
-            # Convert to formatted JSON string
-            result = json.dumps(filtered, ensure_ascii=False, indent=2)
-            # Truncate if content exceeds the limit to avoid excessive output
-            result = truncate_if_too_long(result)
-            return str(result)
-        except Exception as e:
-            logger.error(f"Exception occurred during glob search (pattern: '{pattern}', path: '{path}'): {str(e)}")
-            return f"Error in glob search: {str(e)}"
+        logger.debug(f"Glob found {len(filtered)} files matching pattern '{pattern}' in directory '{path}'")
+        # Convert to formatted JSON string
+        result = json.dumps(filtered, ensure_ascii=False, indent=2)
+        # Truncate if content exceeds the limit to avoid excessive output
+        result = truncate_if_too_long(result)
+        return str(result)
 
     async def grep(
             self,
@@ -1057,7 +1039,7 @@ class BuiltinFileTool(Tool):
         self._validate_path(path)
         base_path = self._resolve_path(path)
         if not base_path.exists():
-            return f"Error: Directory not found: {path}"
+            raise FileNotFoundError(f"Directory not found: {path}")
 
         # Check if rg is available
         rg_path = shutil.which("rg")
@@ -1113,7 +1095,8 @@ class BuiltinFileTool(Tool):
         cmd.append(pattern)
         cmd.append(str(base_path))
 
-        # Execute asynchronously
+        # rg is normally millisecond-fast; 5s asyncio timeout catches hangs
+        # (pathological regex, huge binary files, or zombie processes).
         proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -1121,14 +1104,14 @@ class BuiltinFileTool(Tool):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
         except asyncio.TimeoutError:
             if proc is not None:
                 try:
                     proc.kill()
                 except ProcessLookupError:
                     pass
-            return "Error: grep timed out after 30 seconds"
+            raise TimeoutError("grep timed out after 5 seconds")
         except FileNotFoundError:
             return await asyncio.get_event_loop().run_in_executor(
                 None, self._grep_fallback, pattern, path, include, output_mode,
@@ -1138,7 +1121,7 @@ class BuiltinFileTool(Tool):
         # rg exit codes: 0=matches found, 1=no matches, 2=error
         if proc.returncode == 2:
             err = stderr.decode("utf-8", errors="replace").strip()
-            return f"Error: {err}"
+            raise RuntimeError(f"grep(rg) failed: {err}")
 
         output = stdout.decode("utf-8", errors="replace").strip()
         if not output:
@@ -1166,80 +1149,77 @@ class BuiltinFileTool(Tool):
             case_insensitive: bool = False,
     ) -> str:
         """Fallback grep using pure Python when ripgrep is not available."""
-        try:
-            base_path = self._resolve_path(path)
+        base_path = self._resolve_path(path)
 
-            # Compile regex
-            regex_pattern = None
-            if not fixed_strings:
-                try:
-                    flags = re.IGNORECASE if case_insensitive else 0
-                    regex_pattern = re.compile(pattern, flags)
-                except re.error as e:
-                    return f"Error: Invalid regex pattern '{pattern}': {e}"
+        # Compile regex
+        regex_pattern = None
+        if not fixed_strings:
+            try:
+                flags = re.IGNORECASE if case_insensitive else 0
+                regex_pattern = re.compile(pattern, flags)
+            except re.error as e:
+                raise ValueError(f"Invalid regex pattern '{pattern}': {e}") from e
 
-            # Determine files to search
-            if include:
-                files = list(base_path.glob(f"**/{include}"))
-            else:
-                files = list(base_path.glob("**/*"))
+        # Determine files to search
+        if include:
+            files = list(base_path.glob(f"**/{include}"))
+        else:
+            files = list(base_path.glob("**/*"))
 
-            # Exclude directories and ignored paths
-            ignore_dirs = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.pytest_cache'}
-            files = [f for f in files if f.is_file() and not set(f.parts).intersection(ignore_dirs)]
+        # Exclude directories and ignored paths
+        ignore_dirs = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.pytest_cache'}
+        files = [f for f in files if f.is_file() and not set(f.parts).intersection(ignore_dirs)]
 
-            results = []
-            file_counts = {}
+        results = []
+        file_counts = {}
 
-            match_pattern = pattern.lower() if (case_insensitive and fixed_strings) else pattern
+        match_pattern = pattern.lower() if (case_insensitive and fixed_strings) else pattern
 
-            for fp in files:
-                if len(results) >= limit:
-                    break
+        for fp in files:
+            if len(results) >= limit:
+                break
 
-                try:
-                    with open(fp, 'r', encoding='utf-8', errors='ignore') as f:
-                        lines = f.readlines()
+            try:
+                with open(fp, 'r', encoding='utf-8', errors='ignore') as f:
+                    lines = f.readlines()
+            except OSError:
+                # Per-file read failure shouldn't abort the whole grep —
+                # skip the unreadable file and continue.
+                continue
 
-                    file_matches = []
-                    for line_num, line in enumerate(lines, 1):
-                        if fixed_strings:
-                            check_line = line.lower() if case_insensitive else line
-                            matched = match_pattern in check_line
-                        else:
-                            matched = regex_pattern.search(line)
-                        if matched:
-                            file_matches.append({
-                                "line_num": line_num,
-                                "content": line.strip()[:200],
-                            })
+            file_matches = []
+            for line_num, line in enumerate(lines, 1):
+                if fixed_strings:
+                    check_line = line.lower() if case_insensitive else line
+                    matched = match_pattern in check_line
+                else:
+                    matched = regex_pattern.search(line)
+                if matched:
+                    file_matches.append({
+                        "line_num": line_num,
+                        "content": line.strip()[:200],
+                    })
 
-                    if file_matches:
-                        file_counts[str(fp)] = len(file_matches)
-                        if output_mode == "content":
-                            for match in file_matches[:limit - len(results)]:
-                                results.append(f"{fp}:{match['line_num']}: {match['content']}")
-                        elif output_mode == "files_with_matches":
-                            results.append(str(fp))
-                except Exception:
-                    continue
+            if file_matches:
+                file_counts[str(fp)] = len(file_matches)
+                if output_mode == "content":
+                    for match in file_matches[:limit - len(results)]:
+                        results.append(f"{fp}:{match['line_num']}: {match['content']}")
+                elif output_mode == "files_with_matches":
+                    results.append(str(fp))
 
-            # Format output
-            if output_mode == "count":
-                output_lines = [f"{p}:{c}" for p, c in file_counts.items()]
-                result = "\n".join(output_lines) if output_lines else f"No matches found for '{pattern}'"
-            elif output_mode == "files_with_matches":
-                result = "\n".join(sorted(set(results))) if results else f"No matches found for '{pattern}'"
-            else:  # content
-                result = "\n".join(results) if results else f"No matches found for '{pattern}'"
+        # Format output
+        if output_mode == "count":
+            output_lines = [f"{p}:{c}" for p, c in file_counts.items()]
+            result = "\n".join(output_lines) if output_lines else f"No matches found for '{pattern}'"
+        elif output_mode == "files_with_matches":
+            result = "\n".join(sorted(set(results))) if results else f"No matches found for '{pattern}'"
+        else:  # content
+            result = "\n".join(results) if results else f"No matches found for '{pattern}'"
 
-            result = truncate_if_too_long(result)
-            logger.debug(f"Grep(fallback) for '{pattern}': found {len(file_counts)} files, result length: {len(result)} chars")
-            return result
-
-        except Exception as e:
-            logger.error(f"Error in grep fallback: {e}")
-            return f"Error in grep: {e}"
+        result = truncate_if_too_long(result)
+        logger.debug(f"Grep(fallback) for '{pattern}': found {len(file_counts)} files, result length: {len(result)} chars")
+        return result
 
     async def undo_edit(self, file_path: str) -> str:
         """Undo the last edit or write to a file, restoring the previous version.
@@ -1255,53 +1235,50 @@ class BuiltinFileTool(Tool):
         Returns:
             Confirmation message or error if no previous version exists
         """
-        try:
-            self._validate_write_path(file_path)
-            path = self._resolve_path(file_path)
+        self._validate_write_path(file_path)
+        path = self._resolve_path(file_path)
 
-            # ── Reuse safety guards from write_file ───────────────────
-            sensitive_err = _check_sensitive_write_path(str(path))
-            if sensitive_err:
-                return f"Error: {sensitive_err}"
+        # ── Reuse safety guards from write_file ───────────────────
+        sensitive_err = _check_sensitive_write_path(str(path))
+        if sensitive_err:
+            raise PermissionError(sensitive_err)
 
-            abs_path = str(path.resolve())
-            snapshots = self._file_snapshots.get(abs_path)
-            if not snapshots:
-                return (
-                    f"Error: No previous version available for '{file_path}'. "
-                    "Only files modified in this session can be undone."
-                )
-            previous = snapshots.pop()
-
-            # ── Atomic restore with per-file lock ─────────────────────
-            path_key = str(path)
-            lock = self._get_file_lock(path_key)
-            async with lock:
-                tmp_fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-                try:
-                    os.close(tmp_fd)
-                    async with aiofiles.open(tmp_path, 'w', encoding='utf-8') as f:
-                        await f.write(previous)
-                    os.replace(tmp_path, str(path))
-                except Exception:
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
-                    raise
-
-            # Update mtime state
-            try:
-                self._file_read_state[abs_path] = {"mtime": path.stat().st_mtime}
-            except OSError:
-                pass
-            remaining = len(snapshots)
-            return (
-                f"Restored '{file_path}' to previous version ({len(previous)} chars). "
-                f"{remaining} more undo(s) available."
+        abs_path = str(path.resolve())
+        snapshots = self._file_snapshots.get(abs_path)
+        if not snapshots:
+            raise FileNotFoundError(
+                f"No previous version available for '{file_path}'. "
+                "Only files modified in this session can be undone."
             )
-        except Exception as e:
-            return f"Error undoing edit: {e}"
+        previous = snapshots.pop()
+
+        # ── Atomic restore with per-file lock ─────────────────────
+        path_key = str(path)
+        lock = self._get_file_lock(path_key)
+        async with lock:
+            tmp_fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+            try:
+                os.close(tmp_fd)
+                async with aiofiles.open(tmp_path, 'w', encoding='utf-8') as f:
+                    await f.write(previous)
+                os.replace(tmp_path, str(path))
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+
+        # Update mtime state
+        try:
+            self._file_read_state[abs_path] = {"mtime": path.stat().st_mtime}
+        except OSError:
+            pass
+        remaining = len(snapshots)
+        return (
+            f"Restored '{file_path}' to previous version ({len(previous)} chars). "
+            f"{remaining} more undo(s) available."
+        )
 
 
 class BuiltinExecuteTool(Tool):
@@ -1413,7 +1390,9 @@ class BuiltinExecuteTool(Tool):
                 pattern = re.escape(blocked.lower())
                 if re.search(r'(?:^|[\s;|&])' + pattern, cmd_lower):
                     logger.warning(f"Sandbox: blocked command: {command[:100]}")
-                    return "Error: Sandbox blocked this command for security reasons."
+                    raise PermissionError(
+                        "Sandbox blocked this command for security reasons."
+                    )
 
             # Sandbox: check allowed_commands whitelist (prefix match on first token)
             # Only enforced when allowed_commands is explicitly set (non-None).
@@ -1431,17 +1410,16 @@ class BuiltinExecuteTool(Tool):
                         f"Sandbox: command '{first_token_base}' not in allowed_commands "
                         f"{allowed}: {command[:100]}"
                     )
-                    return (
-                        f"Error: Sandbox blocked this command — '{first_token_base}' is not "
+                    raise PermissionError(
+                        f"Sandbox blocked this command — '{first_token_base}' is not "
                         f"in the allowed_commands list: {allowed}"
                     )
 
         # Safety: check dangerous command patterns (always active, independent of sandbox)
-        from agentica.tools.safety import check_command_safety, redact_sensitive_text
         safety = check_command_safety(command)
         if safety["action"] == "block":
             logger.warning(f"Safety blocked command: {safety['reason']} — {command[:100]}")
-            return f"Error: {safety['reason']}. Use a safer alternative."
+            raise PermissionError(f"{safety['reason']}. Use a safer alternative.")
         if safety["action"] == "warn":
             logger.info(f"Safety warning: {safety['reason']} — {command[:100]}")
 
@@ -1471,10 +1449,9 @@ class BuiltinExecuteTool(Tool):
                 except ProcessLookupError:
                     pass
             logger.warning(f"Command timed out after {effective_timeout}s: {command}")
-            return f"Error: Command timed out after {effective_timeout} seconds (timeout {effective_timeout}s)"
-        except Exception as e:
-            logger.warning(f"Failed to run shell command: {e}")
-            return f"Error: {e}"
+            raise TimeoutError(
+                f"Command timed out after {effective_timeout} seconds"
+            )
 
         # Combine stdout and stderr
         output_parts = []
@@ -1507,8 +1484,26 @@ class BuiltinExecuteTool(Tool):
             output = f"{output}{exit_line}"
 
         logger.debug(f"Command exit code: {proc.returncode}")
-        result = output if output else f"Command executed successfully (exit code: {proc.returncode})"
-        return redact_sensitive_text(result)
+        if not output:
+            output = f"Command executed successfully (exit code: {proc.returncode})"
+
+        # Redact sensitive text early so raised error messages are also safe.
+        output = redact_sensitive_text(output)
+
+        # A non-zero exit code that is NOT covered by _interpret_exit_code
+        # (i.e. no benign-hint returned) is a real failure — raise so the
+        # runtime records it via function_call.error, keeping a single source
+        # of truth for error state.
+        if (
+            proc.returncode
+            and proc.returncode != 0
+            and _interpret_exit_code(command, proc.returncode) is None
+        ):
+            raise RuntimeError(
+                f"Command exited with code {proc.returncode}.\n{output}"
+            )
+
+        return output
 
 
 class BuiltinWebSearchTool(Tool):
@@ -1547,13 +1542,9 @@ class BuiltinWebSearchTool(Tool):
         5. NEVER show the raw JSON to the user - always provide a formatted response
         """
 
-        try:
-            result = await self._search.baidu_search(queries, max_results=max_results)
-            logger.debug(f"Web search for '{queries}', result length: {len(result)} characters.")
-            return result
-        except Exception as e:
-            logger.error(f"Web search error: {e}")
-            return json.dumps({"error": f"Web search error: {e}", "queries": queries}, ensure_ascii=False)
+        result = await self._search.baidu_search(queries, max_results=max_results)
+        logger.debug(f"Web search for '{queries}', result length: {len(result)} characters.")
+        return result
 
 
 class BuiltinFetchUrlTool(Tool):
@@ -1774,63 +1765,65 @@ class BuiltinTodoTool(Tool):
         Returns:
             Updated task list with guidance message
         """
-        try:
-            # Validate todos parameter
-            if todos is None:
-                return "Error: 'todos' parameter is required. Please provide a list of tasks with 'content' and 'status' fields."
-            if len(todos) == 0:
-                return "Error: 'todos' list cannot be empty. Please provide at least one task."
-            valid_statuses = {"pending", "in_progress", "completed"}
-            validated_todos = []
-
-            for i, todo in enumerate(todos):
-                if not isinstance(todo, dict):
-                    return f"Error: Todo item {i} must be a dictionary"
-
-                content = todo.get("content", "")
-                status = todo.get("status", "pending")
-
-                if not content:
-                    return f"Error: Todo item {i} must have 'content' field"
-                if status not in valid_statuses:
-                    return f"Error: Invalid status '{status}' for todo item {i}. Must be one of: {valid_statuses}"
-
-                validated_todos.append({
-                    "id": str(i + 1),
-                    "content": content,
-                    "status": status,
-                })
-
-            # Check verification nudge BEFORE auto-clear (need original todos)
-            nudge_needed = self._needs_verification_nudge(validated_todos)
-
-            # Auto-clear: all completed -> clear list (mirrors CC's allDone logic)
-            all_done = all(t["status"] == "completed" for t in validated_todos)
-            if all_done:
-                self.todos = []
-            else:
-                self.todos = validated_todos
-
-            logger.debug(f"Updated todo list: {len(validated_todos)} items, all_done={all_done}")
-
-            # Build tool_result message (mirrors CC's mapToolResultToToolResultBlockParam)
-            result_message = (
-                f"Todos have been modified successfully ({len(validated_todos)} items). "
-                "Ensure that you continue to use the todo list to track your progress. "
-                "Please proceed with the current tasks if applicable."
+        # Validate todos parameter
+        if todos is None:
+            raise ValueError(
+                "'todos' parameter is required. Please provide a list of tasks "
+                "with 'content' and 'status' fields."
             )
-            if nudge_needed:
-                result_message += self._VERIFICATION_NUDGE
+        if len(todos) == 0:
+            raise ValueError("'todos' list cannot be empty. Please provide at least one task.")
+        valid_statuses = {"pending", "in_progress", "completed"}
+        validated_todos = []
 
-            return json.dumps({
-                "message": result_message,
-                "todos": validated_todos,
-                "all_completed": all_done,
-                "verification_nudge": nudge_needed,
-            }, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.error(f"Error updating todos: {e}")
-            return f"Error updating todos: {e}"
+        for i, todo in enumerate(todos):
+            if not isinstance(todo, dict):
+                raise ValueError(f"Todo item {i} must be a dictionary")
+
+            content = todo.get("content", "")
+            status = todo.get("status", "pending")
+
+            if not content:
+                raise ValueError(f"Todo item {i} must have 'content' field")
+            if status not in valid_statuses:
+                raise ValueError(
+                    f"Invalid status '{status}' for todo item {i}. "
+                    f"Must be one of: {valid_statuses}"
+                )
+
+            validated_todos.append({
+                "id": str(i + 1),
+                "content": content,
+                "status": status,
+            })
+
+        # Check verification nudge BEFORE auto-clear (need original todos)
+        nudge_needed = self._needs_verification_nudge(validated_todos)
+
+        # Auto-clear: all completed -> clear list (mirrors CC's allDone logic)
+        all_done = all(t["status"] == "completed" for t in validated_todos)
+        if all_done:
+            self.todos = []
+        else:
+            self.todos = validated_todos
+
+        logger.debug(f"Updated todo list: {len(validated_todos)} items, all_done={all_done}")
+
+        # Build tool_result message (mirrors CC's mapToolResultToToolResultBlockParam)
+        result_message = (
+            f"Todos have been modified successfully ({len(validated_todos)} items). "
+            "Ensure that you continue to use the todo list to track your progress. "
+            "Please proceed with the current tasks if applicable."
+        )
+        if nudge_needed:
+            result_message += self._VERIFICATION_NUDGE
+
+        return json.dumps({
+            "message": result_message,
+            "todos": validated_todos,
+            "all_completed": all_done,
+            "verification_nudge": nudge_needed,
+        }, ensure_ascii=False, indent=2)
 
 
 
@@ -1873,10 +1866,16 @@ class BuiltinMemoryTool(Tool):
         ### Memory types
 
         """) + MEMORY_TYPE_SPEC + dedent("""
+        **feedback** — Guidance on how to approach work: what to avoid AND what
+          to keep doing.
+          When to save: any time the user corrects an approach ('don't do X') OR
+          confirms a non-obvious approach worked ('yes exactly', 'perfect').
+          Body structure: lead with the rule, then Why, then How to apply.
+
         ### How to save
         Call `save_memory` with:
         - `title`: short, searchable name (e.g. "user_role", "prefer_pytest")
-        - `content`: what to remember and how to apply it (include Why + How to apply for feedback type)
+        - `content`: what to remember and how to apply it
         - `memory_type`: one of "user", "feedback", "project", "reference"
 
         ### What NOT to save
@@ -1937,16 +1936,18 @@ class BuiltinMemoryTool(Tool):
             Confirmation message with the saved memory file path
         """
         if self._workspace is None:
-            return "Error: No workspace configured. Memory cannot be saved."
+            raise RuntimeError("No workspace configured. Memory cannot be saved.")
 
         valid_types = {"user", "feedback", "project", "reference"}
         if memory_type not in valid_types:
-            return f"Error: Invalid memory_type '{memory_type}'. Must be one of: {valid_types}"
+            raise ValueError(
+                f"Invalid memory_type '{memory_type}'. Must be one of: {valid_types}"
+            )
 
         if not title.strip():
-            return "Error: title cannot be empty."
+            raise ValueError("title cannot be empty.")
         if not content.strip():
-            return "Error: content cannot be empty."
+            raise ValueError("content cannot be empty.")
 
         filepath = await self._workspace.write_memory_entry(
             title=title.strip(),
@@ -1975,7 +1976,7 @@ class BuiltinMemoryTool(Tool):
             JSON formatted search results with matching memories
         """
         if self._workspace is None:
-            return "Error: No workspace configured."
+            raise RuntimeError("No workspace configured.")
 
         results = self._workspace.search_memory(query=query, limit=limit)
 

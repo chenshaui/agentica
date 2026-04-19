@@ -28,43 +28,32 @@ class AirflowTool(Tool):
             self.register(self.read_dag_file)
 
     def save_dag_file(self, contents: str, dag_file: str) -> str:
-        """Saves Python code for an Airflow DAG to a file called `dag_file` and returns the file path if successful.
+        """Saves Python code for an Airflow DAG to a file called `dag_file` and returns the file path.
 
         Args:
             `contents` (str): The contents of the DAG.
             `dag_file` (str): The name of the file to save to.
 
         Returns:
-            str: The file path if successful, otherwise returns an error message.
+            str: The absolute file path.
         """
-
-        try:
-            file_path = self.dags_dir.joinpath(dag_file)
-            logger.debug(f"Saving contents to {file_path}")
-            if not file_path.parent.exists():
-                file_path.parent.mkdir(parents=True, exist_ok=True)
-            file_path.write_text(contents)
-            logger.info(f"Saved: {file_path}")
-            return str(str(file_path))
-        except Exception as e:
-            logger.error(f"Error saving to file: {e}")
-            return f"Error saving to file: {e}"
+        file_path = self.dags_dir.joinpath(dag_file)
+        logger.debug(f"Saving contents to {file_path}")
+        if not file_path.parent.exists():
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(contents)
+        logger.info(f"Saved: {file_path}")
+        return str(file_path)
 
     def read_dag_file(self, dag_file: str) -> str:
-        """Reads an Airflow DAG file `dag_file` and returns the contents if successful.
+        """Reads an Airflow DAG file `dag_file` and returns the contents.
 
         Args:
             `dag_file` (str): The name of the file to read.
 
         Returns:
-            str: The contents of the file if successful, otherwise returns an error message.
+            str: The contents of the file.
         """
-
-        try:
-            logger.info(f"Reading file: {dag_file}")
-            file_path = self.dags_dir.joinpath(dag_file)
-            contents = file_path.read_text()
-            return str(contents)
-        except Exception as e:
-            logger.error(f"Error reading file: {e}")
-            return f"Error reading file: {e}"
+        logger.info(f"Reading file: {dag_file}")
+        file_path = self.dags_dir.joinpath(dag_file)
+        return file_path.read_text()

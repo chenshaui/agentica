@@ -35,32 +35,28 @@ class WebSearchProTool(Tool):
         if not self.api_key:
             return "Please set the ZHIPUAI_API_KEY"
 
-        try:
-            msg = [{"role": "user", "content": query}]
-            tool = "web-search-pro"
-            url = "https://open.bigmodel.cn/api/paas/v4/tools"
-            data = {
-                "request_id": str(uuid.uuid4()),
-                "tool": tool,
-                "stream": False,
-                "messages": msg
-            }
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(
-                    url,
-                    json=data,
-                    headers={'Authorization': self.api_key},
-                    timeout=self.timeout
-                )
-            data = json.loads(resp.content.decode())
-            # parse data
-            results = data['choices'][0]['message']['tool_calls'][1]['search_result']
-            parsed_results = json.dumps(results, indent=2, ensure_ascii=False)
-            logger.debug(f"Searching web for: {query}, results: {parsed_results}")
-            return parsed_results
-        except Exception as e:
-            logger.error(f"Failed to search exa {e}")
-            return f"Error: {e}"
+        msg = [{"role": "user", "content": query}]
+        tool = "web-search-pro"
+        url = "https://open.bigmodel.cn/api/paas/v4/tools"
+        data = {
+            "request_id": str(uuid.uuid4()),
+            "tool": tool,
+            "stream": False,
+            "messages": msg
+        }
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                url,
+                json=data,
+                headers={'Authorization': self.api_key},
+                timeout=self.timeout
+            )
+        data = json.loads(resp.content.decode())
+        # parse data
+        results = data['choices'][0]['message']['tool_calls'][1]['search_result']
+        parsed_results = json.dumps(results, indent=2, ensure_ascii=False)
+        logger.debug(f"Searching web for: {query}, results: {parsed_results}")
+        return parsed_results
 
     async def search_web(self, queries: Union[List[str], str]) -> str:
         """Use this function to search Exa (a web search engine) for a list of queries.

@@ -6,6 +6,7 @@ Workspace management for Agentica agents.
 Inspired by OpenClaw's workspace concept.
 """
 import asyncio
+import json
 import os
 import re
 import shutil
@@ -27,6 +28,7 @@ from agentica.utils.async_file import (
     extract_frontmatter_int,
     strip_frontmatter,
 )
+from agentica.utils.log import logger
 
 
 @dataclass
@@ -52,6 +54,9 @@ class WorkspaceConfig:
     memory_md: str = "MEMORY.md" # user's long-term memory, under users/{user_id}/
     skills_dir: str = "skills" # each user's skills, under users/{user_id}/skills
     conversations_dir: str = "conversations" # conversation archive, under users/{user_id}/conversations
+    reports_dir: str = "reports" # reports, under users/{user_id}/reports
+    # Evidence-gate scratch space for unverified memory candidates (Phase 2)
+    memory_candidates_dir: str = "memory_candidates"
 
 
 class Workspace:
@@ -229,6 +234,35 @@ You are a helpful AI assistant.
     def _get_user_md(self) -> Path:
         """Get current user's USER.md file path."""
         return self._get_user_path() / self.config.user_md
+
+    # ── arch_v5.md §"Workspace Logical Partitioning" ──────────────────
+    # New first-class folders for reports + archives + memory candidates.
+    # Created on demand so existing workspaces don't need migration.
+
+    def _get_user_reports_dir(self) -> Path:
+        """Reports root for the current user (learning, runs, sessions, eval, ...).
+
+        Lazily created to match the sibling helper (memory_candidates_dir)
+        -- callers shouldn't have to choose between helpers based on whether
+        they create the directory. RunJournal (P0 #3) and SessionArchive
+        (P2 #7) both land under `reports/runs/` and `reports/sessions/`
+        respectively; there is no separate top-level `archives/` partition.
+        """
+        path = self._get_user_path() / self.config.reports_dir
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def get_user_learning_reports_dir(self) -> Path:
+        """Folder where structured LearningReport markdown is persisted."""
+        path = self._get_user_reports_dir() / "learning"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _get_user_memory_candidates_dir(self) -> Path:
+        """Quarantine folder for memory entries lacking verified evidence."""
+        path = self._get_user_path() / self.config.memory_candidates_dir
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
     def initialize(self, force: bool = False) -> bool:
         """Initialize workspace.
@@ -824,6 +858,11 @@ You are a helpful AI assistant.
         result += f"\n\n*{self._MEMORY_DRIFT_DEFENSE}*"
         return result
 
+    # ── arch_v5.md §"Evidence Gate" ───────────────────────────────────
+    # Sources allowed to write directly into the canonical memory folder.
+    # Anything else lands in `memory_candidates/` until promoted.
+    _MEMORY_TRUSTED_SOURCES = {"verified", "manual", "user_confirmed"}
+
     async def write_memory_entry(
         self,
         title: str,
@@ -831,6 +870,9 @@ You are a helpful AI assistant.
         memory_type: str = "project",
         description: str = "",
         sync_to_global_agent_md: bool = False,
+        *,
+        source: str = "verified",
+        evidence_refs: Optional[List[str]] = None,
     ) -> str:
         """Write a typed memory entry as an individual file and update MEMORY.md index.
 
@@ -841,46 +883,201 @@ You are a helpful AI assistant.
         The description field is the key relevance signal — it should contain
         searchable keywords that identify when this memory is relevant.
 
+        Evidence gate (arch_v5.md Phase 2):
+            Entries with `source` outside `_MEMORY_TRUSTED_SOURCES` are written
+            to `memory_candidates/` instead of the canonical memory folder, so
+            unverified LLM-extracted content cannot pollute long-term memory.
+            Trusted sources include `verified` (default), `manual`, and
+            `user_confirmed`. Pass `source="auto_extract"` (or any other value)
+            to route writes through the candidate quarantine.
+
         Args:
             title: Short display name for the memory
             content: Full memory content (why + how to apply)
             memory_type: One of "user", "feedback", "project", "reference"
             description: One-line hook for relevance scoring (defaults to title)
             sync_to_global_agent_md: If True, recompile synced memories into
-                ~/.agentica/AGENTS.md after this write.
+                ~/.agentica/AGENTS.md after this write. Ignored for candidates.
+            source: Provenance string — controls which folder the entry lands in.
+            evidence_refs: Optional list of supporting references (file paths,
+                URLs, run_ids). Persisted in the frontmatter so reviewers can
+                trace WHY this memory was written.
 
         Returns:
             Absolute path to the written memory file.
         """
         self._initialize_user_dir()
-        memory_dir = self._get_user_memory_dir()
-        memory_dir.mkdir(parents=True, exist_ok=True)
 
-        # Sanitize title to a safe filename
+        is_trusted = source in self._MEMORY_TRUSTED_SOURCES
+        if is_trusted:
+            target_dir = self._get_user_memory_dir()
+        else:
+            target_dir = self._get_user_memory_candidates_dir()
+        target_dir.mkdir(parents=True, exist_ok=True)
+
         safe_title = re.sub(r"[^\w\-]", "_", title.lower())[:50].strip("_")
         filename = f"{memory_type}_{safe_title}.md"
-        filepath = memory_dir / filename
+        filepath = target_dir / filename
 
         hook = description or title
+        evidence_lines = ""
+        if evidence_refs:
+            cleaned = [str(r) for r in evidence_refs if r]
+            if cleaned:
+                # JSON encode so values containing YAML-special chars (`#`, `:`,
+                # `[`, ...) survive parsing. JSON arrays of strings are valid YAML
+                # flow sequences, so the frontmatter remains parseable by both.
+                evidence_lines = (
+                    f"evidence_refs: {json.dumps(cleaned, ensure_ascii=False)}\n"
+                )
         frontmatter = (
             f"---\nname: {title}\n"
             f"description: {hook}\n"
-            f"type: {memory_type}\n---\n\n"
+            f"type: {memory_type}\n"
+            f"source: {source}\n"
+            f"{evidence_lines}"
+            f"---\n\n"
         )
         await async_write_text(filepath, frontmatter + content)
 
-        # Update MEMORY.md index
-        await self._update_memory_index(
-            index_path=self._get_user_memory_md(),
-            filename=filename,
-            title=title,
-            hook=hook,
-        )
-
-        if sync_to_global_agent_md and memory_type in self._GLOBAL_AGENT_SYNC_TYPES:
-            await self.sync_memories_to_global_agent_md()
+        if is_trusted:
+            # M7 fix: a verified write supersedes any quarantined candidate of
+            # the same name. Drop the stale candidate so the workspace doesn't
+            # accumulate ghost duplicates after a manual promotion.
+            candidate_dup = self._get_user_memory_candidates_dir() / filename
+            if candidate_dup.exists() and candidate_dup != filepath:
+                try:
+                    candidate_dup.unlink()
+                except OSError as e:
+                    logger.warning(
+                        f"failed to drop superseded candidate {candidate_dup}: {e}"
+                    )
+            await self._update_memory_index(
+                index_path=self._get_user_memory_md(),
+                filename=filename,
+                title=title,
+                hook=hook,
+            )
+            if sync_to_global_agent_md and memory_type in self._GLOBAL_AGENT_SYNC_TYPES:
+                await self.sync_memories_to_global_agent_md()
+        else:
+            logger.debug(
+                f"memory entry quarantined to candidates (source={source}): {filepath}"
+            )
 
         return str(filepath)
+
+    # ── arch_v5.md §"Evidence Gate" — candidate review API ────────────
+    # Memory candidates accumulate when LLM-extracted entries fail the
+    # evidence gate. These helpers let an operator (or a future review UI)
+    # list, promote, or reject them so the quarantine doesn't grow forever.
+
+    def list_memory_candidates(self) -> List[Dict[str, Any]]:
+        """List all quarantined memory candidate files for the current user.
+
+        Returns one dict per candidate:
+            {filename, path, name, type, source, mtime, evidence_refs}
+        Frontmatter is parsed best-effort: malformed candidates still appear
+        but with empty metadata so reviewers can see and clean them up.
+        """
+        cand_dir = self._get_user_memory_candidates_dir()
+        out: List[Dict[str, Any]] = []
+        for p in sorted(cand_dir.glob("*.md")):
+            try:
+                raw = p.read_text(encoding="utf-8")
+            except OSError as e:
+                logger.warning(f"unable to read memory candidate {p}: {e}")
+                continue
+            name = extract_frontmatter_value(raw, "name") or p.stem
+            mtype = extract_frontmatter_value(raw, "type") or ""
+            source = extract_frontmatter_value(raw, "source") or ""
+            ev_raw = extract_frontmatter_value(raw, "evidence_refs") or ""
+            evidence: List[str] = []
+            ev_raw = ev_raw.strip()
+            if ev_raw:
+                try:
+                    parsed = json.loads(ev_raw)
+                    if isinstance(parsed, list):
+                        evidence = [str(x) for x in parsed]
+                except (ValueError, TypeError):
+                    pass
+            out.append({
+                "filename": p.name,
+                "path": str(p),
+                "name": name,
+                "type": mtype,
+                "source": source,
+                "mtime": p.stat().st_mtime,
+                "evidence_refs": evidence,
+            })
+        return out
+
+    async def promote_memory_candidate(
+        self,
+        filename: str,
+        sync_to_global_agent_md: bool = False,
+    ) -> Optional[str]:
+        """Promote a quarantined candidate into the canonical memory folder.
+
+        Reads the candidate's body and frontmatter, then re-writes via
+        `write_memory_entry(source="user_confirmed")`. The original candidate
+        file is removed by `write_memory_entry` (M7 cleanup) so each entry
+        ends up in exactly one place.
+
+        Args:
+            filename: bare filename inside `memory_candidates/` (e.g.
+                `feedback_python_style.md`).
+            sync_to_global_agent_md: forward to the underlying writer.
+
+        Returns:
+            Absolute path to the canonical entry, or None if the candidate
+            doesn't exist or its body is empty.
+        """
+        cand_path = self._get_user_memory_candidates_dir() / filename
+        if not cand_path.exists():
+            return None
+
+        raw = await async_read_text(cand_path)
+        title = extract_frontmatter_value(raw, "name") or cand_path.stem
+        mtype = extract_frontmatter_value(raw, "type") or "project"
+        description = extract_frontmatter_value(raw, "description") or ""
+        ev_raw = (extract_frontmatter_value(raw, "evidence_refs") or "").strip()
+        evidence: Optional[List[str]] = None
+        if ev_raw:
+            try:
+                parsed = json.loads(ev_raw)
+                if isinstance(parsed, list):
+                    evidence = [str(x) for x in parsed]
+            except (ValueError, TypeError):
+                evidence = None
+
+        body = strip_frontmatter(raw).strip()
+        if not body:
+            logger.warning(f"refusing to promote empty candidate: {cand_path}")
+            return None
+
+        return await self.write_memory_entry(
+            title=title,
+            content=body,
+            memory_type=mtype,
+            description=description,
+            sync_to_global_agent_md=sync_to_global_agent_md,
+            source="user_confirmed",
+            evidence_refs=evidence,
+        )
+
+    def reject_memory_candidate(self, filename: str) -> bool:
+        """Permanently delete a quarantined candidate. Idempotent.
+
+        Returns True if a file was deleted, False if it didn't exist. Other
+        OS errors raise -- a failed delete on a present file is a real bug
+        the operator needs to see.
+        """
+        cand_path = self._get_user_memory_candidates_dir() / filename
+        if not cand_path.exists():
+            return False
+        cand_path.unlink()
+        return True
 
     async def _update_memory_index(
         self,

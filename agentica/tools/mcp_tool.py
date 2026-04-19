@@ -361,21 +361,17 @@ class McpTool(Tool):
                                     client_session_timeout_seconds=self._server_config["timeout"] or 8.0
                                 )
 
-                            try:
-                                async with MCPClient(server=server) as client:
-                                    # Call the tool (with timeout)
-                                    read_timeout = self._server_config["read_timeout"] or 300.0
-                                    result = await asyncio.wait_for(
-                                        client.call_tool(t_name, kwargs),
-                                        timeout=read_timeout
-                                    )
-                                    # Check if result is a string (error message) or a CallToolResult
-                                    if isinstance(result, str):
-                                        return result  # Already an error message string
-                                    return client.extract_result_text(result)
-                            except Exception as e:
-                                logger.error(f"Error calling MCP tool '{t_name}': {e}")
-                                return f"Error calling MCP tool '{t_name}': {e}"
+                            async with MCPClient(server=server) as client:
+                                # Call the tool (with timeout)
+                                read_timeout = self._server_config["read_timeout"] or 300.0
+                                result = await asyncio.wait_for(
+                                    client.call_tool(t_name, kwargs),
+                                    timeout=read_timeout
+                                )
+                                # Check if result is a string (error message) or a CallToolResult
+                                if isinstance(result, str):
+                                    return result  # Already an error message string
+                                return client.extract_result_text(result)
 
                         def tool_function(**kwargs):
                             """Synchronous wrapper that handles async execution safely"""
@@ -401,7 +397,7 @@ class McpTool(Tool):
                             thread.join(timeout=60)
 
                             if thread.is_alive():
-                                return f"Error: Timeout calling MCP tool '{t_name}'"
+                                raise TimeoutError(f"Timeout calling MCP tool '{t_name}'")
 
                             return future.result()
 

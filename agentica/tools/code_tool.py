@@ -13,14 +13,12 @@ Key features:
 """
 import ast
 import json
-import os
 import re
 import subprocess
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, List, Tuple
 
 from agentica.tools.base import Tool
-from agentica.utils.log import logger
 
 
 class CodeTool(Tool):
@@ -88,23 +86,25 @@ class CodeTool(Tool):
             path = self.work_dir.joinpath(path)
         return path
 
-    def _run_command(self, cmd: List[str], cwd: str = None, timeout: int = 60) -> Tuple[str, str, int]:
-        """Run a shell command and return stdout, stderr, and return code."""
+    def _run_command(self, cmd: List[str], cwd: Optional[str] = None, timeout: int = 60) -> Tuple[str, str, int]:
+        """Run a shell command and return stdout, stderr, and return code.
+
+        Uses Popen + communicate() so we can impose a timeout and gracefully
+        kill the child process on TimeoutExpired.
+        """
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=cwd or str(self.work_dir),
+        )
         try:
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                cwd=cwd or str(self.work_dir)
-            )
             stdout, stderr = process.communicate(timeout=timeout)
-            return stdout, stderr, process.returncode
         except subprocess.TimeoutExpired:
             process.kill()
-            return "", "Command timed out", 1
-        except Exception as e:
-            return "", f"Error executing command: {str(e)}", 1
+            raise TimeoutError(f"Command timed out after {timeout}s: {' '.join(cmd)}")
+        return stdout, stderr, process.returncode
 
     def analyze_code(self, file_path: str) -> str:
         """Analyze Python code structure using AST.
@@ -126,111 +126,102 @@ class CodeTool(Tool):
             result = code_tool.analyze_code("src/main.py")
             # Returns: {"imports": [...], "functions": [...], "classes": [...], ...}
         """
-        try:
-            path = self._resolve_path(file_path)
+        path = self._resolve_path(file_path)
 
-            if not path.exists():
-                return f"Error: File not found: {file_path}"
+        if not path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
 
-            if not file_path.endswith('.py'):
-                return f"Error: Only Python files are supported. File: {file_path}"
+        if not file_path.endswith('.py'):
+            raise ValueError(f"Only Python files are supported. File: {file_path}")
 
-            with open(path, 'r', encoding='utf-8') as f:
-                code = f.read()
+        with open(path, 'r', encoding='utf-8') as f:
+            code = f.read()
 
-            try:
-                tree = ast.parse(code)
-            except SyntaxError as e:
-                return f"Error: Syntax error in {file_path}: {str(e)}"
+        tree = ast.parse(code)  # let SyntaxError propagate
 
-            analysis = {
-                'imports': [],
-                'functions': [],
-                'classes': [],
-                'global_variables': [],
-                'total_lines': len(code.splitlines()),
-                'complexity_estimate': 'low'
-            }
+        analysis = {
+            'imports': [],
+            'functions': [],
+            'classes': [],
+            'global_variables': [],
+            'total_lines': len(code.splitlines()),
+            'complexity_estimate': 'low'
+        }
 
-            # Analyze imports
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    for name in node.names:
-                        analysis['imports'].append({
-                            'name': name.name,
-                            'alias': name.asname
-                        })
-                elif isinstance(node, ast.ImportFrom):
-                    module = node.module or ''
-                    for name in node.names:
-                        analysis['imports'].append({
-                            'name': f"{module}.{name.name}" if module else name.name,
-                            'alias': name.asname,
-                            'from_import': True
-                        })
-
-            # Analyze functions
-            for node in ast.walk(tree):
-                if isinstance(node, ast.FunctionDef):
-                    args = [arg.arg for arg in node.args.args]
-                    docstring = ast.get_docstring(node) or ''
-                    analysis['functions'].append({
-                        'name': node.name,
-                        'args': args,
-                        'line_number': node.lineno,
-                        'docstring': docstring[:100] if docstring else '',
-                        'decorator_list': [d.id if isinstance(d, ast.Name) else "complex_decorator" for d in node.decorator_list]
+        # Analyze imports
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for name in node.names:
+                    analysis['imports'].append({
+                        'name': name.name,
+                        'alias': name.asname
+                    })
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ''
+                for name in node.names:
+                    analysis['imports'].append({
+                        'name': f"{module}.{name.name}" if module else name.name,
+                        'alias': name.asname,
+                        'from_import': True
                     })
 
-            # Analyze classes
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ClassDef):
-                    methods = [child.name for child in node.body if isinstance(child, ast.FunctionDef)]
-                    bases = []
-                    for base in node.bases:
-                        if isinstance(base, ast.Name):
-                            bases.append(base.id)
-                        elif isinstance(base, ast.Attribute):
-                            bases.append(f"{base.value.id}.{base.attr}" if hasattr(base.value, 'id') else "complex_base")
+        # Analyze functions
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef):
+                args = [arg.arg for arg in node.args.args]
+                docstring = ast.get_docstring(node) or ''
+                analysis['functions'].append({
+                    'name': node.name,
+                    'args': args,
+                    'line_number': node.lineno,
+                    'docstring': docstring[:100] if docstring else '',
+                    'decorator_list': [d.id if isinstance(d, ast.Name) else "complex_decorator" for d in node.decorator_list]
+                })
 
-                    docstring = ast.get_docstring(node) or ''
-                    analysis['classes'].append({
-                        'name': node.name,
-                        'methods': methods,
-                        'bases': bases,
-                        'line_number': node.lineno,
-                        'docstring': docstring[:100] if docstring else ''
-                    })
+        # Analyze classes
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                methods = [child.name for child in node.body if isinstance(child, ast.FunctionDef)]
+                bases = []
+                for base in node.bases:
+                    if isinstance(base, ast.Name):
+                        bases.append(base.id)
+                    elif isinstance(base, ast.Attribute):
+                        bases.append(f"{base.value.id}.{base.attr}" if hasattr(base.value, 'id') else "complex_base")
 
-            # Analyze global variables
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Assign) and all(isinstance(target, ast.Name) for target in node.targets):
-                    value = "complex_value"
-                    if isinstance(node.value, ast.Constant):
-                        value = node.value.value if hasattr(node.value, 'value') else "complex_value"
+                docstring = ast.get_docstring(node) or ''
+                analysis['classes'].append({
+                    'name': node.name,
+                    'methods': methods,
+                    'bases': bases,
+                    'line_number': node.lineno,
+                    'docstring': docstring[:100] if docstring else ''
+                })
 
-                    for target in node.targets:
-                        if isinstance(target, ast.Name):
-                            analysis['global_variables'].append({
-                                'name': target.id,
-                                'value': str(value)[:50],
-                                'line_number': node.lineno
-                            })
+        # Analyze global variables
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and all(isinstance(target, ast.Name) for target in node.targets):
+                value = "complex_value"
+                if isinstance(node.value, ast.Constant):
+                    value = node.value.value if hasattr(node.value, 'value') else "complex_value"
 
-            # Estimate complexity
-            func_count = len(analysis['functions'])
-            class_count = len(analysis['classes'])
-            if func_count + class_count > 20 or analysis['total_lines'] > 500:
-                analysis['complexity_estimate'] = 'high'
-            elif func_count + class_count > 10:
-                analysis['complexity_estimate'] = 'medium'
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        analysis['global_variables'].append({
+                            'name': target.id,
+                            'value': str(value)[:50],
+                            'line_number': node.lineno
+                        })
 
-            return json.dumps(analysis, indent=2)
+        # Estimate complexity
+        func_count = len(analysis['functions'])
+        class_count = len(analysis['classes'])
+        if func_count + class_count > 20 or analysis['total_lines'] > 500:
+            analysis['complexity_estimate'] = 'high'
+        elif func_count + class_count > 10:
+            analysis['complexity_estimate'] = 'medium'
 
-        except Exception as e:
-            error_msg = f"Error analyzing code in {file_path}: {str(e)}"
-            logger.error(error_msg)
-            return error_msg
+        return json.dumps(analysis, indent=2)
 
     def format_code(self, file_path: str, formatter: str = "auto") -> str:
         """Format a code file using external formatters.
@@ -250,52 +241,55 @@ class CodeTool(Tool):
             result = code_tool.format_code("src/main.py")  # Uses black for Python
             result = code_tool.format_code("src/app.js", formatter="prettier")
         """
+        path = self._resolve_path(file_path)
+
+        if not path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        file_ext = path.suffix.lower()
+
+        # Auto-select formatter
+        if formatter == "auto":
+            if file_ext == ".py":
+                formatter = "black"
+            elif file_ext in [".js", ".jsx", ".ts", ".tsx", ".json", ".html", ".css"]:
+                formatter = "prettier"
+            else:
+                raise ValueError(f"Cannot auto-determine formatter for {file_ext} files")
+
+        cmd: List[str] = []
+        if formatter == "black":
+            cmd = ["black", str(path)]
+        elif formatter == "autopep8":
+            cmd = ["autopep8", "--in-place", str(path)]
+        elif formatter == "yapf":
+            cmd = ["yapf", "--in-place", str(path)]
+        elif formatter == "prettier":
+            cmd = ["prettier", "--write", str(path)]
+        else:
+            raise ValueError(f"Unsupported formatter: {formatter}")
+
+        # Check if formatter is installed (probe with --version).
+        # FileNotFoundError from Popen is re-raised with a clearer message.
         try:
-            path = self._resolve_path(file_path)
+            subprocess.run(
+                [cmd[0], "--version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+        except FileNotFoundError as e:
+            raise FileNotFoundError(
+                f"{formatter} is not installed. Please install it (e.g., pip install {formatter})"
+            ) from e
 
-            if not path.exists():
-                return f"Error: File not found: {file_path}"
+        stdout, stderr, returncode = self._run_command(cmd)
 
-            file_ext = path.suffix.lower()
-
-            # Auto-select formatter
-            if formatter == "auto":
-                if file_ext == ".py":
-                    formatter = "black"
-                elif file_ext in [".js", ".jsx", ".ts", ".tsx", ".json", ".html", ".css"]:
-                    formatter = "prettier"
-                else:
-                    return f"Error: Cannot auto-determine formatter for {file_ext} files"
-
-            cmd = []
-            if formatter == "black":
-                cmd = ["black", str(path)]
-            elif formatter == "autopep8":
-                cmd = ["autopep8", "--in-place", str(path)]
-            elif formatter == "yapf":
-                cmd = ["yapf", "--in-place", str(path)]
-            elif formatter == "prettier":
-                cmd = ["prettier", "--write", str(path)]
-            else:
-                return f"Error: Unsupported formatter: {formatter}"
-
-            # Check if formatter is installed
-            try:
-                subprocess.run([cmd[0], "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-            except FileNotFoundError:
-                return f"Error: {formatter} is not installed. Please install it (e.g., pip install {formatter})"
-
-            stdout, stderr, returncode = self._run_command(cmd)
-
-            if returncode == 0:
-                return f"Successfully formatted {file_path} with {formatter}"
-            else:
-                return f"Error formatting {file_path} with {formatter}: {stderr or stdout}"
-
-        except Exception as e:
-            error_msg = f"Error formatting {file_path}: {str(e)}"
-            logger.error(error_msg)
-            return error_msg
+        if returncode == 0:
+            return f"Successfully formatted {file_path} with {formatter}"
+        raise RuntimeError(
+            f"Formatting {file_path} with {formatter} failed: {stderr or stdout}"
+        )
 
     def lint_code(self, file_path: str, linter: str = "auto") -> str:
         """Lint a code file and return issues found.
@@ -314,51 +308,56 @@ class CodeTool(Tool):
         Example:
             result = code_tool.lint_code("src/main.py")  # Uses pylint for Python
         """
+        path = self._resolve_path(file_path)
+
+        if not path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        file_ext = path.suffix.lower()
+
+        if linter == "auto":
+            if file_ext == ".py":
+                linter = "pylint"
+            elif file_ext in [".js", ".jsx", ".ts", ".tsx"]:
+                linter = "eslint"
+            else:
+                raise ValueError(f"Cannot auto-determine linter for {file_ext} files")
+
+        cmd: List[str] = []
+        if linter == "pylint":
+            cmd = ["pylint", str(path)]
+        elif linter == "flake8":
+            cmd = ["flake8", str(path)]
+        elif linter == "eslint":
+            cmd = ["eslint", str(path)]
+        else:
+            raise ValueError(f"Unsupported linter: {linter}")
+
+        # Check if linter is installed
         try:
-            path = self._resolve_path(file_path)
+            subprocess.run(
+                [cmd[0], "--version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+        except FileNotFoundError as e:
+            raise FileNotFoundError(
+                f"{linter} is not installed. Please install it first."
+            ) from e
 
-            if not path.exists():
-                return f"Error: File not found: {file_path}"
+        stdout, stderr, returncode = self._run_command(cmd)
 
-            file_ext = path.suffix.lower()
-
-            if linter == "auto":
-                if file_ext == ".py":
-                    linter = "pylint"
-                elif file_ext in [".js", ".jsx", ".ts", ".tsx"]:
-                    linter = "eslint"
-                else:
-                    return f"Error: Cannot auto-determine linter for {file_ext} files"
-
-            cmd = []
-            if linter == "pylint":
-                cmd = ["pylint", str(path)]
-            elif linter == "flake8":
-                cmd = ["flake8", str(path)]
-            elif linter == "eslint":
-                cmd = ["eslint", str(path)]
-            else:
-                return f"Error: Unsupported linter: {linter}"
-
-            # Check if linter is installed
-            try:
-                subprocess.run([cmd[0], "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-            except FileNotFoundError:
-                return f"Error: {linter} is not installed. Please install it first."
-
-            stdout, stderr, returncode = self._run_command(cmd)
-
-            if stdout or stderr:
-                return f"Linting results for {file_path} with {linter}:\n\n{stdout}\n{stderr}"
-            elif returncode == 0:
-                return f"No issues found in {file_path} with {linter}"
-            else:
-                return f"Error linting {file_path} with {linter}: Return code {returncode}"
-
-        except Exception as e:
-            error_msg = f"Error linting {file_path}: {str(e)}"
-            logger.error(error_msg)
-            return error_msg
+        # Linters conventionally exit non-zero when issues are found — that
+        # is a *successful* tool invocation, not a failure. Only surface the
+        # tool-failed case when there is no diagnostic output.
+        if stdout or stderr:
+            return f"Linting results for {file_path} with {linter}:\n\n{stdout}\n{stderr}"
+        if returncode == 0:
+            return f"No issues found in {file_path} with {linter}"
+        raise RuntimeError(
+            f"Linting {file_path} with {linter} failed with return code {returncode}"
+        )
 
     def find_symbols(self, file_path: str, symbol_type: str = "all", pattern: str = "") -> str:
         """Find and list symbols (functions, classes, variables) in a code file.
@@ -374,79 +373,70 @@ class CodeTool(Tool):
         Example:
             result = code_tool.find_symbols("src/main.py", symbol_type="function", pattern="test_.*")
         """
-        try:
-            path = self._resolve_path(file_path)
+        path = self._resolve_path(file_path)
 
-            if not path.exists():
-                return f"Error: File not found: {file_path}"
+        if not path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
 
-            if not file_path.endswith('.py'):
-                return f"Error: Only Python files are supported. File: {file_path}"
+        if not file_path.endswith('.py'):
+            raise ValueError(f"Only Python files are supported. File: {file_path}")
 
-            with open(path, 'r', encoding='utf-8') as f:
-                code = f.read()
+        with open(path, 'r', encoding='utf-8') as f:
+            code = f.read()
 
+        tree = ast.parse(code)  # let SyntaxError propagate
+
+        symbols = []
+
+        def matches_pattern(name):
+            if not pattern:
+                return True
             try:
-                tree = ast.parse(code)
-            except SyntaxError as e:
-                return f"Error: Syntax error in {file_path}: {str(e)}"
+                return bool(re.search(pattern, name))
+            except re.error:
+                return pattern in name
 
-            symbols = []
+        # Find functions
+        if symbol_type in ["all", "function"]:
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef) and matches_pattern(node.name):
+                    args = [arg.arg for arg in node.args.args]
+                    symbols.append({
+                        'type': 'function',
+                        'name': node.name,
+                        'line': node.lineno,
+                        'args': args,
+                        'docstring': (ast.get_docstring(node) or '')[:100]
+                    })
 
-            def matches_pattern(name):
-                if not pattern:
-                    return True
-                try:
-                    return bool(re.search(pattern, name))
-                except re.error:
-                    return pattern in name
+        # Find classes
+        if symbol_type in ["all", "class"]:
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef) and matches_pattern(node.name):
+                    symbols.append({
+                        'type': 'class',
+                        'name': node.name,
+                        'line': node.lineno,
+                        'docstring': (ast.get_docstring(node) or '')[:100],
+                        'methods': [n.name for n in node.body if isinstance(n, ast.FunctionDef)]
+                    })
 
-            # Find functions
-            if symbol_type in ["all", "function"]:
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.FunctionDef) and matches_pattern(node.name):
-                        args = [arg.arg for arg in node.args.args]
-                        symbols.append({
-                            'type': 'function',
-                            'name': node.name,
-                            'line': node.lineno,
-                            'args': args,
-                            'docstring': (ast.get_docstring(node) or '')[:100]
-                        })
+        # Find variables
+        if symbol_type in ["all", "variable"]:
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name) and matches_pattern(target.id):
+                            symbols.append({
+                                'type': 'variable',
+                                'name': target.id,
+                                'line': node.lineno
+                            })
 
-            # Find classes
-            if symbol_type in ["all", "class"]:
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.ClassDef) and matches_pattern(node.name):
-                        symbols.append({
-                            'type': 'class',
-                            'name': node.name,
-                            'line': node.lineno,
-                            'docstring': (ast.get_docstring(node) or '')[:100],
-                            'methods': [n.name for n in node.body if isinstance(n, ast.FunctionDef)]
-                        })
+        # Sort by line number
+        symbols.sort(key=lambda x: x['line'])
 
-            # Find variables
-            if symbol_type in ["all", "variable"]:
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.Assign):
-                        for target in node.targets:
-                            if isinstance(target, ast.Name) and matches_pattern(target.id):
-                                symbols.append({
-                                    'type': 'variable',
-                                    'name': target.id,
-                                    'line': node.lineno
-                                })
-
-            # Sort by line number
-            symbols.sort(key=lambda x: x['line'])
-
-            return json.dumps(symbols, indent=2)
-
-        except Exception as e:
-            error_msg = f"Error finding symbols in {file_path}: {str(e)}"
-            logger.error(error_msg)
-            return error_msg
+        return json.dumps(symbols, indent=2)
 
     def get_code_outline(self, file_path: str) -> str:
         """Generate a hierarchical outline of a code file's structure.
@@ -478,126 +468,119 @@ class CodeTool(Tool):
             # ## Functions
             # ### standalone_func() - Line 30
         """
-        try:
-            path = self._resolve_path(file_path)
+        path = self._resolve_path(file_path)
 
-            if not path.exists():
-                return f"Error: File not found: {file_path}"
+        if not path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
 
-            if not file_path.endswith('.py'):
-                return f"Error: Only Python files are supported. File: {file_path}"
+        if not file_path.endswith('.py'):
+            raise ValueError(f"Only Python files are supported. File: {file_path}")
 
-            with open(path, 'r', encoding='utf-8') as f:
-                code = f.read()
+        with open(path, 'r', encoding='utf-8') as f:
+            code = f.read()
 
-            try:
-                tree = ast.parse(code)
-            except SyntaxError as e:
-                return f"Error: Syntax error in {file_path}: {str(e)}"
+        tree = ast.parse(code)  # let SyntaxError propagate
 
-            outline = [f"# Code Outline: {Path(file_path).name}", ""]
+        outline = [f"# Code Outline: {Path(file_path).name}", ""]
 
-            # Process imports
-            imports = []
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    for name in node.names:
-                        if name.asname:
-                            imports.append(f"import {name.name} as {name.asname}")
-                        else:
-                            imports.append(f"import {name.name}")
-                elif isinstance(node, ast.ImportFrom):
-                    module = node.module or ''
-                    for name in node.names:
-                        if name.asname:
-                            imports.append(f"from {module} import {name.name} as {name.asname}")
-                        else:
-                            imports.append(f"from {module} import {name.name}")
-
-            if imports:
-                outline.append("## Imports")
-                for imp in sorted(set(imports)):
-                    outline.append(f"- `{imp}`")
-                outline.append("")
-
-            # Process classes
-            classes = []
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ClassDef):
-                    class_info = {
-                        'name': node.name,
-                        'line': node.lineno,
-                        'docstring': (ast.get_docstring(node) or '').split('.')[0][:80],
-                        'methods': []
-                    }
-                    if node.bases:
-                        bases = []
-                        for base in node.bases:
-                            if isinstance(base, ast.Name):
-                                bases.append(base.id)
-                            else:
-                                bases.append("...")
-                        class_info['bases'] = bases
-
-                    for child in node.body:
-                        if isinstance(child, ast.FunctionDef):
-                            method_info = {
-                                'name': child.name,
-                                'line': child.lineno,
-                                'args': [arg.arg for arg in child.args.args]
-                            }
-                            class_info['methods'].append(method_info)
-
-                    classes.append(class_info)
-
-            if classes:
-                outline.append("## Classes")
-                for cls in sorted(classes, key=lambda x: x['line']):
-                    if 'bases' in cls and cls['bases']:
-                        outline.append(f"### {cls['name']}({', '.join(cls['bases'])}) - Line {cls['line']}")
+        # Process imports
+        imports = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for name in node.names:
+                    if name.asname:
+                        imports.append(f"import {name.name} as {name.asname}")
                     else:
-                        outline.append(f"### {cls['name']} - Line {cls['line']}")
+                        imports.append(f"import {name.name}")
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ''
+                for name in node.names:
+                    if name.asname:
+                        imports.append(f"from {module} import {name.name} as {name.asname}")
+                    else:
+                        imports.append(f"from {module} import {name.name}")
 
-                    if cls['docstring']:
-                        outline.append(f"> {cls['docstring']}")
+        if imports:
+            outline.append("## Imports")
+            for imp in sorted(set(imports)):
+                outline.append(f"- `{imp}`")
+            outline.append("")
 
-                    for method in sorted(cls['methods'], key=lambda x: x['line']):
-                        args_str = ', '.join(method['args'])
-                        outline.append(f"- **{method['name']}({args_str})** - Line {method['line']}")
+        # Process classes
+        classes = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                class_info = {
+                    'name': node.name,
+                    'line': node.lineno,
+                    'docstring': (ast.get_docstring(node) or '').split('.')[0][:80],
+                    'methods': []
+                }
+                if node.bases:
+                    bases = []
+                    for base in node.bases:
+                        if isinstance(base, ast.Name):
+                            bases.append(base.id)
+                        else:
+                            bases.append("...")
+                    class_info['bases'] = bases
 
-                outline.append("")
+                for child in node.body:
+                    if isinstance(child, ast.FunctionDef):
+                        method_info = {
+                            'name': child.name,
+                            'line': child.lineno,
+                            'args': [arg.arg for arg in child.args.args]
+                        }
+                        class_info['methods'].append(method_info)
 
-            # Process standalone functions
-            functions = []
-            for node in ast.iter_child_nodes(tree):
-                if isinstance(node, ast.FunctionDef):
-                    func_info = {
-                        'name': node.name,
-                        'line': node.lineno,
-                        'docstring': (ast.get_docstring(node) or '').split('.')[0][:80],
-                        'args': [arg.arg for arg in node.args.args]
-                    }
-                    functions.append(func_info)
+                classes.append(class_info)
 
-            if functions:
-                outline.append("## Functions")
-                for func in sorted(functions, key=lambda x: x['line']):
-                    args_str = ', '.join(func['args'])
-                    outline.append(f"### {func['name']}({args_str}) - Line {func['line']}")
-                    if func['docstring']:
-                        outline.append(f"> {func['docstring']}")
-                outline.append("")
+        if classes:
+            outline.append("## Classes")
+            for cls in sorted(classes, key=lambda x: x['line']):
+                if 'bases' in cls and cls['bases']:
+                    outline.append(f"### {cls['name']}({', '.join(cls['bases'])}) - Line {cls['line']}")
+                else:
+                    outline.append(f"### {cls['name']} - Line {cls['line']}")
 
-            return "\n".join(outline)
+                if cls['docstring']:
+                    outline.append(f"> {cls['docstring']}")
 
-        except Exception as e:
-            error_msg = f"Error generating outline for {file_path}: {str(e)}"
-            logger.error(error_msg)
-            return error_msg
+                for method in sorted(cls['methods'], key=lambda x: x['line']):
+                    args_str = ', '.join(method['args'])
+                    outline.append(f"- **{method['name']}({args_str})** - Line {method['line']}")
+
+            outline.append("")
+
+        # Process standalone functions
+        functions = []
+        for node in ast.iter_child_nodes(tree):
+            if isinstance(node, ast.FunctionDef):
+                func_info = {
+                    'name': node.name,
+                    'line': node.lineno,
+                    'docstring': (ast.get_docstring(node) or '').split('.')[0][:80],
+                    'args': [arg.arg for arg in node.args.args]
+                }
+                functions.append(func_info)
+
+        if functions:
+            outline.append("## Functions")
+            for func in sorted(functions, key=lambda x: x['line']):
+                args_str = ', '.join(func['args'])
+                outline.append(f"### {func['name']}({args_str}) - Line {func['line']}")
+                if func['docstring']:
+                    outline.append(f"> {func['docstring']}")
+            outline.append("")
+
+        return "\n".join(outline)
 
 
 if __name__ == '__main__':
     # Simple test
+    import os
+
     tool = CodeTool()
 
     # Create a sample Python file
@@ -625,16 +608,16 @@ class SampleClass:
     with open("sample_code.py", "w") as f:
         f.write(sample_code)
 
-    print("Code Outline:")
-    print(tool.get_code_outline("sample_code.py"))
+    try:
+        print("Code Outline:")
+        print(tool.get_code_outline("sample_code.py"))
 
-    print("\nCode Analysis:")
-    print(tool.analyze_code("sample_code.py"))
+        print("\nCode Analysis:")
+        print(tool.analyze_code("sample_code.py"))
 
-    print("\nFind Symbols:")
-    print(tool.find_symbols("sample_code.py", symbol_type="function"))
-
-    # Clean up
-    import os
-    if os.path.exists("sample_code.py"):
-        os.remove("sample_code.py")
+        print("\nFind Symbols:")
+        print(tool.find_symbols("sample_code.py", symbol_type="function"))
+    finally:
+        # Clean up
+        if os.path.exists("sample_code.py"):
+            os.remove("sample_code.py")

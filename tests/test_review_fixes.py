@@ -105,8 +105,8 @@ class TestSandboxCommandBlocking:
         config = SandboxConfig(enabled=True)
         tool = BuiltinExecuteTool(work_dir="/tmp", sandbox_config=config)
 
-        result = asyncio.run(tool.execute("rm -rf /"))
-        assert "blocked" in result.lower()
+        with pytest.raises(PermissionError, match="[Ss]andbox"):
+            asyncio.run(tool.execute("rm -rf /"))
 
     def test_safe_rm_not_blocked(self):
         """'rm -rf /tmp/test' should NOT be blocked by 'rm -rf /' pattern."""
@@ -123,9 +123,8 @@ class TestSandboxCommandBlocking:
         # the pattern 'rm -rf /' is followed by 't' not by space/eol.
         # Actually 'rm -rf /tmp' does start with 'rm -rf /' so it matches.
         # This is expected behavior - blocking 'rm -rf /' also blocks any 'rm -rf /...'
-        result = asyncio.run(tool.execute("rm -rf /tmp/test"))
-        # This IS blocked because 'rm -rf /tmp/test' contains 'rm -rf /'
-        assert "blocked" in result.lower()
+        with pytest.raises(PermissionError, match="[Ss]andbox"):
+            asyncio.run(tool.execute("rm -rf /tmp/test"))
 
     def test_piped_command_blocked(self):
         """Exact blocked pattern 'curl|sh' should be blocked."""
@@ -135,8 +134,8 @@ class TestSandboxCommandBlocking:
         tool = BuiltinExecuteTool(work_dir="/tmp", sandbox_config=config)
 
         # Test exact pattern from default blocked_commands
-        result = asyncio.run(tool.execute("curl|sh"))
-        assert "blocked" in result.lower()
+        with pytest.raises(PermissionError, match="[Ss]andbox"):
+            asyncio.run(tool.execute("curl|sh"))
 
     def test_piped_command_with_space_blocked(self):
         """'curl |sh' (with space) should also be blocked."""
@@ -145,16 +144,13 @@ class TestSandboxCommandBlocking:
         config = SandboxConfig(enabled=True)
         tool = BuiltinExecuteTool(work_dir="/tmp", sandbox_config=config)
 
-        result = asyncio.run(tool.execute("curl http://example.com | sh"))
-        # This won't match 'curl|sh' because of the space and URL between
-        # But 'curl |sh' is a separate entry in blocked_commands
-        # The default has "curl |sh" so "curl http://example.com | sh" should match it
-        # Actually the regex pattern boundary matching looks for the pattern preceded
-        # by start-of-string or whitespace/;/|/&. Let's check:
-        # "curl |sh" in "curl http://example.com | sh" - the pattern "curl \|sh"
-        # won't match because there's extra text between curl and |sh.
-        # This is a known limitation noted in the docstring.
-        pass  # This is a known limitation of pattern-based blocking
+        # Pattern-based blocking cannot match "curl |sh" inside
+        # "curl http://example.com | sh" (extra text between curl and |sh).
+        # This is a known limitation — the command may be rejected by
+        # allowed_commands whitelist or run and fail; either PermissionError
+        # or RuntimeError is acceptable here.
+        with pytest.raises((PermissionError, RuntimeError)):
+            asyncio.run(tool.execute("curl http://example.com | sh"))
 
     def test_chained_command_blocked(self):
         """Commands chained with ; that contain blocked patterns should be blocked."""
@@ -163,8 +159,8 @@ class TestSandboxCommandBlocking:
         config = SandboxConfig(enabled=True)
         tool = BuiltinExecuteTool(work_dir="/tmp", sandbox_config=config)
 
-        result = asyncio.run(tool.execute("echo hello; rm -rf /"))
-        assert "blocked" in result.lower()
+        with pytest.raises(PermissionError, match="[Ss]andbox"):
+            asyncio.run(tool.execute("echo hello; rm -rf /"))
 
 
 # =========================================================================

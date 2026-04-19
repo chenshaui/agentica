@@ -62,7 +62,6 @@ from agentica.agent.config import (
     WorkspaceMemoryConfig,
 )
 from agentica.model.base import Model
-from agentica.model.openai import OpenAIChat
 from agentica.tools.base import Tool, ModelTool, Function
 from agentica.workspace import Workspace
 
@@ -127,8 +126,8 @@ class DeepAgent(Agent):
         user_input_callback: Optional[Callable] = None,
         **kwargs,
     ):
-        # Default main model
         if model is None:
+            from agentica.model.openai import OpenAIChat
             model = OpenAIChat(id="gpt-4o")
 
         # Default auxiliary_model — reuse the main model so the whole stack

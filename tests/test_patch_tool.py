@@ -221,8 +221,8 @@ class TestPatchTool(unittest.TestCase):
 
     def test_file_not_found(self):
         """Test error handling for non-existent file."""
-        result = self.tool.apply_patch("nonexistent.py", "@@\n-old\n+new")
-        self.assertIn("Error", result)
+        with self.assertRaises((FileNotFoundError, ValueError)):
+            self.tool.apply_patch("nonexistent.py", "@@\n-old\n+new")
 
 
 if __name__ == '__main__':

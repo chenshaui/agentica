@@ -74,6 +74,12 @@ def _make_parent_agent():
         working_memory=working_memory,
         context={},
         _event_callback=None,
+        # arch_v5.md Phase 0 lineage fields read by SubagentRegistry.spawn():
+        # subagent.spawn() expects parent_agent to expose Agent's RunContext
+        # surface (see agentica/agent/base.py). None mirrors the real default
+        # when no run is in flight.
+        run_context=None,
+        run_id=None,
     )
 
 

@@ -23,6 +23,26 @@ from agentica.agent.config import ExperienceConfig, SkillUpgradeConfig
 from agentica.skills import reset_skill_registry
 
 
+# Valid SKILL.md fixture that passes _validate_skill_content (gotcha-first
+# format: minimal frontmatter + Gotchas section + Minimal Example with real
+# code). Tests substitute the name via .replace() when they need a different
+# slug.
+_VALID_SKILL_MD = (
+    "---\nname: pandas-preference\n"
+    "description: Use pandas for tabular data, not the csv module\n"
+    "when-to-use: csv, dataframe, tabular, parsing\n---\n\n"
+    "Reach for pandas.read_csv before the stdlib csv module.\n\n"
+    "## Gotchas\n"
+    "- \u26a0\ufe0f csv.reader strips dtypes: every cell becomes str. "
+    "Fix: pd.read_csv(path, dtype=...).\n"
+    "- \u26a0\ufe0f csv.writer adds CRLF on Windows: rows look doubled. "
+    "Fix: open with newline='' or use df.to_csv.\n\n"
+    "## Minimal Example\n```python\nimport pandas as pd\n"
+    "df = pd.read_csv('data.csv', dtype={'id': int})\n"
+    "df.to_csv('out.csv', index=False)\n```\n"
+)
+
+
 # ===========================================================================
 # SkillUpgradeConfig tests
 # ===========================================================================
@@ -62,6 +82,121 @@ class TestSkillUpgradeConfig(unittest.TestCase):
 # ===========================================================================
 # SkillEvolutionManager tests
 # ===========================================================================
+
+class TestNormalizeSkillMd(unittest.TestCase):
+    """LLM-emitted SKILL.md frontmatter coercion."""
+
+    def _parses(self, normalized: str) -> bool:
+        from agentica.skills.skill import Skill
+        # Skill._parse_frontmatter is a static method.
+        meta, _ = Skill._parse_frontmatter(normalized.strip())
+        return bool(meta) and "name" in meta
+
+    def test_yaml_inline_comment_does_not_truncate_frontmatter(self):
+        """A `# comment` inside YAML must NOT be mistaken for a markdown body."""
+        from agentica.experience.skill_upgrade import _normalize_skill_md
+        raw = (
+            "---\nname: foo\n"
+            "# Reminder: keep slug short\n"
+            "description: bar\n"
+            "when-to-use: never\n\n"
+            "## Body\nactual body\n"
+        )
+        out = _normalize_skill_md(raw)
+        self.assertIn("when-to-use: never", out)
+        self.assertIn("\n---\n## Body", out)
+        from agentica.skills.skill import Skill
+        meta, _ = Skill._parse_frontmatter(out.strip())
+        self.assertEqual(meta.get("when-to-use"), "never")
+        self.assertEqual(meta.get("description"), "bar")
+
+    def test_strips_leading_stray_dash_and_adds_missing_close(self):
+        """Real-world LLM output: stray ``-`` then ``---`` open, no close."""
+        from agentica.experience.skill_upgrade import _normalize_skill_md
+        raw = (
+            "-\n---\nname: list-directory-before-read\n"
+            "description: t\nwhen-to-use: read_file\n\n"
+            "## One-line summary\nEnsure existence.\n\n"
+            "## Gotchas\n- \u26a0\ufe0f a: b. c.\n- \u26a0\ufe0f d: e. f.\n"
+        )
+        out = _normalize_skill_md(raw)
+        self.assertTrue(out.startswith("---\nname:"))
+        self.assertIn("\n---\n## One-line summary", out)
+        self.assertTrue(self._parses(out))
+
+    def test_idempotent_on_canonical_input(self):
+        from agentica.experience.skill_upgrade import _normalize_skill_md
+        canonical = (
+            "---\n"
+            "name: foo\n"
+            "description: bar\n"
+            "---\n"
+            "# Body\n"
+        )
+        out = _normalize_skill_md(canonical)
+        self.assertEqual(out, canonical)
+        self.assertTrue(self._parses(out))
+
+    def test_strips_yaml_code_fence(self):
+        """LLMs frequently emit ```yaml ... ``` instead of ---."""
+        from agentica.experience.skill_upgrade import _normalize_skill_md
+        raw = (
+            "```yaml\n"
+            "name: check-dir\n"
+            "description: check directory\n"
+            "when-to-use: before reading files\n"
+            "```\n"
+            "# Overview\n"
+            "Step 1.\n"
+        )
+        out = _normalize_skill_md(raw)
+        self.assertTrue(out.startswith("---\n"))
+        self.assertIn("---\n# Overview", out)
+        self.assertTrue(self._parses(out))
+
+    def test_strips_mixed_fence_and_dashes(self):
+        """Opening ```yaml fence, closing --- (the failure mode hit in practice)."""
+        from agentica.experience.skill_upgrade import _normalize_skill_md
+        raw = (
+            "```yaml\n"
+            "name: mixed\n"
+            "description: mixed front\n"
+            "---\n"
+            "# Overview\n"
+            "Body.\n"
+        )
+        out = _normalize_skill_md(raw)
+        self.assertTrue(out.startswith("---\n"))
+        self.assertTrue(self._parses(out))
+
+    def test_adds_missing_leading_dashes(self):
+        from agentica.experience.skill_upgrade import _normalize_skill_md
+        raw = (
+            "name: bare\n"
+            "description: bare front\n"
+            "---\n"
+            "# Body\n"
+        )
+        out = _normalize_skill_md(raw)
+        self.assertTrue(out.startswith("---\n"))
+        self.assertTrue(self._parses(out))
+
+    def test_strips_stray_prefix_before_dashes(self):
+        """A leaked '-' or other prefix before the real '---' must be dropped."""
+        from agentica.experience.skill_upgrade import _normalize_skill_md
+        raw = (
+            "-\n"
+            "---\n"
+            "name: leaked\n"
+            "description: leaked front\n"
+            "---\n"
+            "# Overview\n"
+            "Body.\n"
+        )
+        out = _normalize_skill_md(raw)
+        self.assertTrue(out.startswith("---\nname: leaked"))
+        self.assertTrue(self._parses(out))
+
 
 class TestSkillEvolutionManager(unittest.TestCase):
     """Test the SkillEvolutionManager."""
@@ -130,9 +265,15 @@ class TestSkillEvolutionManager(unittest.TestCase):
                 "---\nname: pandas-preference\n"
                 "description: Use pandas for data processing\n"
                 "when-to-use: data processing, CSV, dataframes\n---\n\n"
-                "# Pandas Preference\n\n## Overview\nUse pandas.\n\n"
-                "## Workflow\n1. Import pandas\n2. Use it\n\n"
-                "## Failure Recovery\nFall back to csv module\n"
+                "Use pandas.read_csv instead of the csv module for any "
+                "tabular workload.\n\n## Gotchas\n"
+                "- \u26a0\ufe0f csv.reader strips dtypes: every cell becomes "
+                "str. Fix: pd.read_csv(path, dtype=...).\n"
+                "- \u26a0\ufe0f csv.writer adds CRLF on Windows: rows look "
+                "doubled. Fix: open file with newline='' or use df.to_csv.\n\n"
+                "## Minimal Example\n```python\nimport pandas as pd\n"
+                "df = pd.read_csv('data.csv', dtype={'id': int})\n"
+                "df.to_csv('out.csv', index=False)\n```\n"
             ),
         })))
 
@@ -344,7 +485,12 @@ class TestSkillEvolutionManager(unittest.TestCase):
         model.response = AsyncMock(return_value=MagicMock(content=json.dumps({
             "decision": "revise",
             "reason": "Needs updating",
-            "revised_skill_md": "---\nname: test\ndescription: t\n---\nRevised body",
+            "revised_skill_md": _VALID_SKILL_MD.replace(
+                "name: pandas-preference", "name: test"
+            ).replace(
+                "Reach for pandas.read_csv",
+                "Revised guidance: reach for pandas.read_csv",
+            ),
         })))
 
         manager = SkillEvolutionManager()
@@ -355,7 +501,7 @@ class TestSkillEvolutionManager(unittest.TestCase):
 
         # Verify SKILL.md was updated
         skill_content = (skill_dir / "SKILL.md").read_text()
-        self.assertIn("Revised body", skill_content)
+        self.assertIn("Revised guidance", skill_content)
 
         meta = SkillEvolutionManager.read_meta(skill_dir / "meta.json")
         self.assertEqual(meta["version"], 2)
@@ -408,7 +554,9 @@ class TestSkillEvolutionManager(unittest.TestCase):
             "action": "install_shadow",
             "skill_name": "draft-test",
             "source_experience": "x",
-            "skill_md": "---\nname: draft-test\ndescription: t\n---\nBody",
+            "skill_md": _VALID_SKILL_MD.replace(
+                "name: pandas-preference", "name: draft-test"
+            ),
         })))
 
         manager = SkillEvolutionManager()
@@ -565,6 +713,400 @@ class TestSkillEvolutionManager(unittest.TestCase):
 
 
 # ===========================================================================
+# Gotcha-first validator + INDEX + evidence chain
+# ===========================================================================
+
+class TestSkillContentValidator(unittest.TestCase):
+    """`_validate_skill_content` enforces the No-Execution-No-Memory rules."""
+
+    def test_valid_skill_passes(self):
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+        ok, reason = SkillEvolutionManager._validate_skill_content(_VALID_SKILL_MD)
+        self.assertTrue(ok, reason)
+        self.assertEqual(reason, "")
+
+    def test_missing_gotchas_fails(self):
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+        md = (
+            "---\nname: t\ndescription: t\nwhen-to-use: t\n---\n"
+            "Just a plain body with no warnings."
+        )
+        ok, reason = SkillEvolutionManager._validate_skill_content(md)
+        self.assertFalse(ok)
+        self.assertIn("gotchas", reason.lower())
+
+    def test_todo_placeholder_fails(self):
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+        md = _VALID_SKILL_MD + "\n## Notes\n# TODO: write me\n"
+        ok, reason = SkillEvolutionManager._validate_skill_content(md)
+        self.assertFalse(ok)
+        self.assertIn("placeholder", reason.lower())
+
+    def test_forbidden_textbook_heading_fails(self):
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+        md = _VALID_SKILL_MD + "\n## Workflow\n1. Do thing\n"
+        ok, reason = SkillEvolutionManager._validate_skill_content(md)
+        self.assertFalse(ok)
+        self.assertIn("textbook heading", reason.lower())
+
+    def test_skeleton_code_block_fails(self):
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+        md = (
+            "---\nname: t\ndescription: t\nwhen-to-use: t\n---\n"
+            "summary\n\n## Gotchas\n- \u26a0\ufe0f a: b. c.\n- \u26a0\ufe0f d: e. f.\n\n"
+            "## Minimal Example\n```python\ndef f():\n  pass\n```\n"
+        )
+        ok, reason = SkillEvolutionManager._validate_skill_content(md)
+        self.assertFalse(ok)
+        self.assertIn("skeleton", reason.lower())
+
+
+class TestSpawnSkillEvidenceAndIndex(unittest.TestCase):
+    """Spawn rejects bad LLM output, builds INDEX.md, gates on recoveries."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        self._gen_dir = Path(self._tmpdir) / "gen"
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_spawn_rejects_invalid_skill_md(self):
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+        model = MagicMock()
+        model.response = AsyncMock(return_value=MagicMock(content=json.dumps({
+            "action": "install_shadow",
+            "skill_name": "bad-skill",
+            "source_experience": "x",
+            "skill_md": "---\nname: bad-skill\ndescription: t\n---\nNo gotchas here.",
+        })))
+        manager = SkillEvolutionManager()
+        result = asyncio.run(manager.maybe_spawn_skill(
+            model=model,
+            candidates=[{"title": "x", "content": "y", "repeat_count": 5}],
+            existing_skills=[],
+            generated_skills_dir=self._gen_dir,
+        ))
+        self.assertIsNone(result)
+        self.assertFalse((self._gen_dir / "bad-skill").exists())
+
+    def test_spawn_writes_index_and_source_section(self):
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+        model = MagicMock()
+        model.response = AsyncMock(return_value=MagicMock(content=json.dumps({
+            "action": "install_shadow",
+            "skill_name": "pandas-preference",
+            "source_experience": "use_pandas",
+            "skill_md": _VALID_SKILL_MD,
+        })))
+        manager = SkillEvolutionManager()
+        result = asyncio.run(manager.maybe_spawn_skill(
+            model=model,
+            candidates=[{"title": "x", "content": "y", "repeat_count": 5}],
+            existing_skills=[],
+            generated_skills_dir=self._gen_dir,
+        ))
+        self.assertEqual(result, "pandas-preference")
+
+        skill_md = (self._gen_dir / "pandas-preference" / "SKILL.md").read_text()
+        self.assertIn("## Source", skill_md)
+        self.assertIn("use_pandas", skill_md)
+
+        index_md = (self._gen_dir / "INDEX.md").read_text()
+        self.assertIn("pandas-preference", index_md)
+        self.assertIn("csv, dataframe", index_md)
+
+    def test_spawn_recovery_gate_blocks_when_no_recoveries(self):
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+
+        class _StubStore:
+            async def read_all(self):
+                return [{"event_type": "tool_error", "tool": "x", "error": "boom"}]
+
+        model = MagicMock()
+        model.response = AsyncMock(return_value=MagicMock(content=json.dumps({
+            "action": "install_shadow",
+            "skill_name": "any",
+            "source_experience": "x",
+            "skill_md": _VALID_SKILL_MD,
+        })))
+        manager = SkillEvolutionManager()
+        result = asyncio.run(manager.maybe_spawn_skill(
+            model=model,
+            candidates=[{"title": "x", "content": "y", "repeat_count": 5}],
+            existing_skills=[],
+            generated_skills_dir=self._gen_dir,
+            event_store=_StubStore(),
+            min_success_applications=2,
+        ))
+        self.assertIsNone(result)
+        # Model must NOT have been called — gate runs before LLM
+        model.response.assert_not_called()
+
+    def test_spawn_recovery_gate_passes_with_enough_recoveries(self):
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+
+        class _StubStore:
+            async def read_all(self):
+                return [
+                    {"event_type": "tool_recovery", "skill_name": "s"},
+                    {"event_type": "tool_recovery", "skill_name": "s"},
+                ]
+
+        model = MagicMock()
+        model.response = AsyncMock(return_value=MagicMock(content=json.dumps({
+            "action": "install_shadow",
+            "skill_name": "gated-skill",
+            "source_experience": "x",
+            "skill_md": _VALID_SKILL_MD.replace(
+                "name: pandas-preference", "name: gated-skill"
+            ),
+        })))
+        manager = SkillEvolutionManager()
+        result = asyncio.run(manager.maybe_spawn_skill(
+            model=model,
+            candidates=[{"title": "x", "content": "y", "repeat_count": 5}],
+            existing_skills=[],
+            generated_skills_dir=self._gen_dir,
+            event_store=_StubStore(),
+            min_success_applications=2,
+        ))
+        self.assertEqual(result, "gated-skill")
+
+
+class TestBuildEvidenceText(unittest.TestCase):
+    """`_build_evidence_text` type-aware dispatch:
+    - correction candidates pull user_message events verbatim
+    - tool_error / success_pattern candidates match on strict tool equality
+    - empty events / empty candidates produce empty output
+    """
+
+    def test_empty_events_returns_empty(self):
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+        out = SkillEvolutionManager._build_evidence_text(
+            candidates=[{"title": "x", "type": "correction", "tool": ""}],
+            all_events=[],
+        )
+        self.assertEqual(out, "")
+
+    def test_correction_matches_user_messages_not_tool_errors(self):
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+        events = [
+            {
+                "event_type": "tool_error",
+                "tool": "read_file",
+                "error": "File not found: /tmp/a.txt",
+            },
+            {
+                "event_type": "user_message",
+                "user_message": "Check directory before reading.",
+                "previous_assistant": "I will read /tmp/a.txt now.",
+            },
+            {
+                "event_type": "user_message",
+                "user_message": "Same mistake again!",
+                "previous_assistant": "Reading /tmp/b.txt",
+            },
+        ]
+        out = SkillEvolutionManager._build_evidence_text(
+            candidates=[{
+                "title": "check_directory_before_read",
+                "type": "correction",
+                "tool": "",
+            }],
+            all_events=events,
+        )
+        # correction pulls user_messages only, tool_error ignored
+        self.assertIn("[user_message]", out)
+        self.assertIn("Check directory before reading.", out)
+        self.assertIn("Same mistake again!", out)
+        self.assertNotIn("File not found", out)
+
+    def test_tool_error_candidate_strict_tool_equality(self):
+        """'read' must NOT match 'read_file' — strict equality only."""
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+        events = [
+            {"event_type": "tool_error", "tool": "read_file", "error": "boom-A"},
+            {"event_type": "tool_error", "tool": "read", "error": "boom-B"},
+            {"event_type": "tool_error", "tool": "write_file", "error": "boom-C"},
+        ]
+        out = SkillEvolutionManager._build_evidence_text(
+            candidates=[{
+                "title": "read_file_failure",
+                "type": "tool_error",
+                "tool": "read_file",
+            }],
+            all_events=events,
+        )
+        self.assertIn("boom-A", out)
+        self.assertNotIn("boom-B", out)   # 'read' must not alias
+        self.assertNotIn("boom-C", out)
+
+    def test_tool_error_candidate_without_tool_field_gets_nothing(self):
+        """Candidate missing the 'tool' key must not match anything."""
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+        events = [
+            {"event_type": "tool_error", "tool": "read_file", "error": "x"},
+        ]
+        out = SkillEvolutionManager._build_evidence_text(
+            candidates=[{"title": "x", "type": "tool_error"}],  # no 'tool'
+            all_events=events,
+        )
+        self.assertEqual(out, "")
+
+    def test_per_candidate_limit_truncates(self):
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+        events = [
+            {"event_type": "tool_error", "tool": "t", "error": f"err-{i}"}
+            for i in range(10)
+        ]
+        out = SkillEvolutionManager._build_evidence_text(
+            candidates=[{"title": "c", "type": "tool_error", "tool": "t"}],
+            all_events=events,
+            per_candidate_limit=3,
+        )
+        # Only the last 3 survive
+        self.assertIn("err-9", out)
+        self.assertIn("err-8", out)
+        self.assertIn("err-7", out)
+        self.assertNotIn("err-0", out)
+        self.assertNotIn("err-5", out)
+
+
+class TestAppendSourceSection(unittest.TestCase):
+    """`_append_source_section` must:
+    - append a fresh Source block when none exists
+    - replace any existing Source block (idempotent; LLM-leaked Source is overwritten)
+    """
+
+    def test_appends_source_when_missing(self):
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+        md = "---\nname: x\n---\nBody.\n## Gotchas\n- one"
+        out = SkillEvolutionManager._append_source_section(
+            md, source="card-a", event_count=4,
+        )
+        self.assertIn("## Source", out)
+        self.assertIn("`card-a`", out)
+        self.assertIn("raw events cited: 4", out)
+
+    def test_overwrites_existing_source_section(self):
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+        md = (
+            "---\nname: x\n---\nBody.\n## Gotchas\n- one\n\n"
+            "## Source\n- stale garbage the LLM wrote\n"
+        )
+        out = SkillEvolutionManager._append_source_section(
+            md, source="card-b", event_count=7,
+        )
+        self.assertNotIn("stale garbage", out)
+        self.assertIn("`card-b`", out)
+        self.assertIn("raw events cited: 7", out)
+        # Only one Source section ever
+        self.assertEqual(out.count("## Source"), 1)
+
+    def test_unknown_source_fallback(self):
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+        out = SkillEvolutionManager._append_source_section(
+            "## Gotchas\n- x", source="", event_count=0,
+        )
+        self.assertIn("`unknown`", out)
+
+
+class TestGetCandidateCardsToolField(unittest.TestCase):
+    """get_candidate_cards must load the `tool` frontmatter field so
+    `_build_evidence_text` can do strict tool matching downstream."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        self._exp_dir = Path(self._tmpdir) / "experiences"
+        self._exp_dir.mkdir(parents=True)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_tool_field_is_loaded(self):
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+        (self._exp_dir / "tool_error_read_file_not_found.md").write_text(
+            "---\ntitle: read_file_not_found\ntype: tool_error\n"
+            "tool: read_file\nrepeat_count: 5\ntier: hot\n---\n"
+            "Tool `read_file` failed.",
+            encoding="utf-8",
+        )
+        (self._exp_dir / "correction_check_dir.md").write_text(
+            "---\ntitle: check_dir\ntype: correction\n"
+            "repeat_count: 5\ntier: hot\n---\n"
+            "Rule: check directory before read_file",
+            encoding="utf-8",
+        )
+        candidates = SkillEvolutionManager.get_candidate_cards(
+            self._exp_dir, min_repeat_count=3, min_tier="hot",
+        )
+        by_type = {c["type"]: c for c in candidates}
+        self.assertEqual(by_type["tool_error"]["tool"], "read_file")
+        # correction card with no `tool` field → empty string downstream
+        self.assertEqual(by_type["correction"]["tool"], "")
+
+
+class TestDisableSkillMd(unittest.TestCase):
+    """`_disable_skill_md` renames SKILL.md so SkillLoader skips it."""
+
+    def test_rename_skill_md_to_disabled(self):
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+        with tempfile.TemporaryDirectory() as tmp:
+            skill_dir = Path(tmp) / "s"
+            skill_dir.mkdir()
+            md = skill_dir / "SKILL.md"
+            md.write_text("body", encoding="utf-8")
+            SkillEvolutionManager._disable_skill_md(skill_dir)
+            self.assertFalse(md.exists())
+            self.assertTrue((skill_dir / "SKILL.md.disabled").exists())
+
+    def test_rename_is_safe_when_missing(self):
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+        with tempfile.TemporaryDirectory() as tmp:
+            # Must not raise
+            SkillEvolutionManager._disable_skill_md(Path(tmp))
+
+
+class TestRebuildIndex(unittest.TestCase):
+    """`rebuild_index` writes a keyword-routed L1 INDEX.md."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        self._gen_dir = Path(self._tmpdir) / "gen"
+        self._gen_dir.mkdir(parents=True)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_rebuild_skips_rolled_back_skills(self):
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+        # Active skill
+        active = self._gen_dir / "active"
+        active.mkdir()
+        (active / "SKILL.md").write_text(
+            "---\nname: active\ndescription: alive\nwhen-to-use: foo, bar\n---\nbody"
+        )
+        SkillEvolutionManager.write_meta(active / "meta.json", {"status": "shadow"})
+        # Rolled-back skill
+        dead = self._gen_dir / "dead"
+        dead.mkdir()
+        (dead / "SKILL.md").write_text(
+            "---\nname: dead\ndescription: gone\nwhen-to-use: x\n---\nbody"
+        )
+        SkillEvolutionManager.write_meta(dead / "meta.json", {"status": "rolled_back"})
+
+        idx = SkillEvolutionManager.rebuild_index(self._gen_dir)
+        self.assertIsNotNone(idx)
+        text = idx.read_text()
+        self.assertIn("active", text)
+        self.assertNotIn("dead", text)
+
+
+# ===========================================================================
 # Hooks integration tests
 # ===========================================================================
 
@@ -627,7 +1169,12 @@ class TestHooksSkillUpgradeIntegration(unittest.TestCase):
         compiled_store.run_lifecycle.assert_called_once()
 
     def test_get_skill_info_error_result_not_counted_as_skill_use(self):
-        """Error text from get_skill_info should not count as a used skill."""
+        """A failed get_skill_info call (is_error=True) must not register as use.
+
+        SkillTool now raises ValueError on missing/disabled skills, so the
+        tool framework reports is_error=True. Hooks rely solely on that
+        flag — they do not inspect the result text.
+        """
         hooks = self._make_hooks(
             capture_user_corrections=False,
             skill_upgrade=SkillUpgradeConfig(mode="shadow"),
@@ -639,8 +1186,8 @@ class TestHooksSkillUpgradeIntegration(unittest.TestCase):
             agent,
             tool_name="get_skill_info",
             tool_args={"skill_name": "missing-skill"},
-            result="Error: Skill 'missing-skill' not found.",
-            is_error=False,
+            result="ValueError: Skill 'missing-skill' not found.",
+            is_error=True,
         ))
 
         self.assertEqual(hooks._skills_used[agent.agent_id], set())
@@ -697,6 +1244,146 @@ class TestHooksSkillUpgradeIntegration(unittest.TestCase):
             shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+class TestToolRecoveryEmission(unittest.TestCase):
+    """``tool_recovery`` is emitted on tool success after prior tool_error.
+
+    This is the bootstrap-safe semantic: recovery does NOT require any
+    skill to be installed. A tool simply has to have failed somewhere in
+    the workspace's events.jsonl history, then succeed in the current run.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        os.environ.setdefault("OPENAI_API_KEY", "sk-test-mock-key")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make_hooks_with_real_store(self):
+        from agentica.experience.event_store import ExperienceEventStore
+        from agentica.hooks import ExperienceCaptureHooks
+        config = ExperienceConfig(
+            capture_tool_errors=True,
+            capture_user_corrections=False,
+            capture_success_patterns=True,
+        )
+        hooks = ExperienceCaptureHooks(config)
+        exp_dir = Path(self._tmpdir) / "experiences"
+        exp_dir.mkdir(parents=True, exist_ok=True)
+        store = ExperienceEventStore(exp_dir=exp_dir)
+
+        agent = MagicMock()
+        agent.agent_id = "test-agent"
+        agent.run_input = "do thing"
+        agent.run_id = "run-1"
+        agent.session_id = "sess-1"
+        agent.model = MagicMock()
+        agent.auxiliary_model = None
+        agent.workspace = MagicMock()
+        agent.workspace.get_experience_event_store = MagicMock(return_value=store)
+        compiled_store = MagicMock()
+        compiled_store.write = AsyncMock(return_value="/tmp/exp.md")
+        compiled_store.run_lifecycle = AsyncMock(return_value={"promoted": 0, "demoted": 0, "archived": 0})
+        compiled_store.sync_to_global_agent_md = AsyncMock(return_value="/tmp/AGENTS.md")
+        agent.workspace.get_compiled_experience_store = MagicMock(return_value=compiled_store)
+        agent.workspace._get_global_agent_md_path = MagicMock(return_value="/tmp/AGENTS.md")
+        agent.workspace._get_user_generated_skills_dir = MagicMock(return_value=Path(self._tmpdir) / "gen")
+        agent.workspace._get_user_experience_dir = MagicMock(return_value=Path(self._tmpdir) / "experiences")
+        agent.working_memory = MagicMock()
+        agent.working_memory.messages = []
+        return hooks, agent, store
+
+    def test_no_recovery_without_prior_error(self):
+        """First-ever success of a tool should NOT emit tool_recovery."""
+        hooks, agent, store = self._make_hooks_with_real_store()
+
+        async def _go():
+            await hooks.on_agent_start(agent)
+            await hooks.on_tool_end(
+                agent, tool_name="write_file", tool_args={"path": "/tmp/a"},
+                result="ok", is_error=False, elapsed=0.05,
+            )
+            await hooks.on_agent_end(agent, output="done")
+            return await store.read_all()
+
+        events = asyncio.run(_go())
+        recovery_count = sum(1 for e in events if e.get("event_type") == "tool_recovery")
+        self.assertEqual(recovery_count, 0, events)
+
+    def test_recovery_emitted_after_prior_error(self):
+        """Second-run success of a previously-failed tool emits tool_recovery."""
+        hooks, agent, store = self._make_hooks_with_real_store()
+
+        async def _go():
+            # Run 1: tool fails
+            await hooks.on_agent_start(agent)
+            await hooks.on_tool_end(
+                agent, tool_name="write_file", tool_args={"path": "/tmp/a"},
+                result="permission denied", is_error=True, elapsed=0.01,
+            )
+            await hooks.on_agent_end(agent, output="failed")
+
+            # Run 2: same tool succeeds
+            agent.run_id = "run-2"
+            await hooks.on_agent_start(agent)
+            await hooks.on_tool_end(
+                agent, tool_name="write_file", tool_args={"path": "/tmp/b"},
+                result="ok", is_error=False, elapsed=0.04,
+            )
+            await hooks.on_agent_end(agent, output="ok")
+            return await store.read_all()
+
+        events = asyncio.run(_go())
+        recoveries = [e for e in events if e.get("event_type") == "tool_recovery"]
+        self.assertEqual(len(recoveries), 1, events)
+        self.assertEqual(recoveries[0]["tool"], "write_file")
+
+    def test_no_recovery_when_history_only_has_recovery_events(self):
+        """If a tool only has tool_recovery history (no tool_error), do NOT emit.
+
+        Guards against the gate accidentally counting "tool succeeded after
+        any prior recovery" as further recovery — only past *errors*
+        legitimize a recovery.
+        """
+        hooks, agent, store = self._make_hooks_with_real_store()
+
+        async def _go():
+            await store.append({"event_type": "tool_recovery", "tool": "grep"})
+            await hooks.on_agent_start(agent)
+            await hooks.on_tool_end(
+                agent, tool_name="grep", tool_args={"path": "/tmp/x"},
+                result="ok", is_error=False, elapsed=0.02,
+            )
+            await hooks.on_agent_end(agent, output="ok")
+            return await store.read_all()
+
+        events = asyncio.run(_go())
+        recoveries = [e for e in events if e.get("event_type") == "tool_recovery"]
+        self.assertEqual(len(recoveries), 1, events)
+
+    def test_recovery_dedupes_within_a_run(self):
+        """Multiple successes of the same recovered tool in one run = 1 event."""
+        hooks, agent, store = self._make_hooks_with_real_store()
+
+        async def _go():
+            # Seed: tool failed previously
+            await store.append({"event_type": "tool_error", "tool": "grep", "error": "no match"})
+
+            await hooks.on_agent_start(agent)
+            for path in ("/tmp/a", "/tmp/b", "/tmp/c"):
+                await hooks.on_tool_end(
+                    agent, tool_name="grep", tool_args={"path": path},
+                    result="ok", is_error=False, elapsed=0.02,
+                )
+            await hooks.on_agent_end(agent, output="ok")
+            return await store.read_all()
+
+        events = asyncio.run(_go())
+        recoveries = [e for e in events if e.get("event_type") == "tool_recovery"]
+        self.assertEqual(len(recoveries), 1)
+
+
 class TestSkillToolGeneratedSkillRuntime(unittest.TestCase):
     """Runtime behavior for generated skill visibility and refresh."""
 
@@ -732,7 +1419,8 @@ class TestSkillToolGeneratedSkillRuntime(unittest.TestCase):
         tool = SkillTool(custom_skill_dirs=[str(self._gen_dir)])
 
         self.assertNotIn("draft-skill", tool.list_skills())
-        self.assertIn("not found", tool.get_skill_info("draft-skill"))
+        with self.assertRaisesRegex(ValueError, "not found"):
+            tool.get_skill_info("draft-skill")
 
     def test_reload_generated_skills_refreshes_revised_content(self):
         """Reload should replace cached generated skill content after revise."""
@@ -769,7 +1457,8 @@ class TestSkillToolGeneratedSkillRuntime(unittest.TestCase):
         tool.reload_generated_skills()
 
         self.assertNotIn("rollback-skill", tool.list_skills())
-        self.assertIn("not found", tool.get_skill_info("rollback-skill"))
+        with self.assertRaisesRegex(ValueError, "not found"):
+            tool.get_skill_info("rollback-skill")
 
 
 class TestAgentSkillUpgradeLifecycle(unittest.TestCase):
@@ -1005,7 +1694,11 @@ class TestCrossLayerCleanup(unittest.TestCase):
         prompt = ExperienceCaptureHooks._FEEDBACK_CLASSIFY_PROMPT
         self.assertNotIn("memory_feedback", prompt)
         self.assertIn("experience", prompt)
-        self.assertIn("session_only", prompt)
+        # Scope vocabulary stays "turn_only | session | cross_session".
+        self.assertIn("cross_session", prompt)
+        # arch_v5 §8.D: title is now derived deterministically from `rule`,
+        # so the LLM must NOT be asked to produce a title field.
+        self.assertNotIn('"title"', prompt)
 
 
 # ===========================================================================

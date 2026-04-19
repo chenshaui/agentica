@@ -35,13 +35,13 @@ from uuid import uuid4
 from pathlib import Path
 from dataclasses import dataclass, field
 from agentica.utils.log import logger, set_log_level_to_debug, set_log_level_to_info
-from agentica.model.openai import OpenAIChat
 from agentica.model.message import Message
 from agentica.tools.base import ModelTool, Tool, Function
 from agentica.tools.skill_tool import SkillTool
 from agentica.model.base import Model
 from agentica.run_response import RunResponse, AgentCancelledError
 from agentica.run_config import RunConfig
+from agentica.run_context import RunContext, TaskAnchor
 from agentica.memory import WorkingMemory
 from agentica.memory.session_log import SessionLog
 from agentica.compression import CompressionManager
@@ -150,6 +150,18 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
     working_memory: WorkingMemory = field(default_factory=WorkingMemory)
     run_id: Optional[str] = field(default=None, init=False, repr=False)
     run_input: Optional[Any] = field(default=None, init=False, repr=False)
+    # SDK-first internal run lifecycle (arch_v5.md Phase 0/1).
+    # Created by Runner at run start, holds the current run's TaskAnchor and status.
+    # External code should treat this as read-only.
+    run_context: Optional[RunContext] = field(default=None, init=False, repr=False)
+    # Session-scoped TaskAnchor: pinned ONCE on the first run of a session and
+    # reused for every subsequent run. Reset when session_id changes so a new
+    # conversation can establish its own anchor. Read by prompts.py + Runner.
+    task_anchor: Optional[TaskAnchor] = field(default=None, init=False, repr=False)
+    _anchor_session_id: Optional[str] = field(default=None, init=False, repr=False)
+    # Set by subagent.spawn() before child.run() so the child Runner can record
+    # parent_run_id + RunSource.subagent in its RunContext. None for top-level runs.
+    _parent_run_id: Optional[str] = field(default=None, init=False, repr=False)
     run_response: RunResponse = field(default_factory=RunResponse, init=False, repr=False)
     stream: Optional[bool] = field(default=None, init=False, repr=False)
     stream_intermediate_steps: bool = field(default=False, init=False, repr=False)
@@ -172,6 +184,9 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
     _default_run_hooks: Optional[RunHooks] = field(default=None, init=False, repr=False)
     # Per-run cost budget (USD). Set by Runner before _run_impl, read by Model.
     _run_max_cost_usd: Optional[float] = field(default=None, init=False, repr=False)
+    # Max LLM loop turns. None = unlimited (main agent default).
+    # Subagents set this via SubagentConfig.max_turns as a safety net.
+    _max_turns: Optional[int] = field(default=None, init=False, repr=False)
 
     # Tool/Skill runtime configs (Agent-level enable/disable)
     _tool_runtime_configs: Dict[str, ToolRuntimeConfig] = field(default_factory=dict, init=False, repr=False)
@@ -277,6 +292,10 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
         self.context = context
         self.run_id = None
         self.run_input = None
+        self.run_context = None
+        self.task_anchor = None
+        self._anchor_session_id = None
+        self._parent_run_id = None
         self.run_response = RunResponse()
         self.stream = None
         self.stream_intermediate_steps = False
@@ -790,6 +809,10 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
         clone.agent_id = str(uuid4())
         clone.run_id = None
         clone.run_input = None
+        clone.run_context = None
+        clone.task_anchor = None
+        clone._anchor_session_id = None
+        clone._parent_run_id = None
         clone.run_response = RunResponse()
         clone.stream = None
         clone.stream_intermediate_steps = False
@@ -877,6 +900,7 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
 
     def update_model(self) -> None:
         if self.model is None:
+            from agentica.model.openai import OpenAIChat
             logger.debug("Model not set, Using OpenAIChat as default")
             self.model = OpenAIChat()
         logger.debug(f"Agent '{self.name}' using {self.model.name or self.model.__class__.__name__}(id={self.model.id})")

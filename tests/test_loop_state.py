@@ -47,7 +47,7 @@ def test_turn_count_increments():
     assert state.turn_count == 2
 
 
-def test_no_max_turns_limit():
-    """LoopState should NOT have a max_turns field -- no hard limit on turns."""
+def test_max_turns_default_none():
+    """Main agent: max_turns defaults to None (unlimited). Only subagents set it."""
     state = LoopState()
-    assert not hasattr(state, 'max_turns')
+    assert state.max_turns is None

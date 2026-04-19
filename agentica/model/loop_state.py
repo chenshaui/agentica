@@ -10,6 +10,7 @@ attributes on the Model instance.
 Created fresh at the start of each agentic loop in Runner._run_impl().
 """
 from dataclasses import dataclass, field
+from typing import Optional
 
 
 @dataclass
@@ -20,8 +21,10 @@ class LoopState:
     each time Runner._run_impl() enters its agentic loop.
     """
 
-    # Turn tracking (no hard limit -- mirrors original behaviour)
+    # Turn tracking. None = no limit (main agent default).
+    # Subagents set max_turns=100 as a safety net.
     turn_count: int = 0
+    max_turns: Optional[int] = None
 
     # Max-tokens recovery (finish_reason == "length")
     max_tokens_recovery_count: int = 0

@@ -87,6 +87,35 @@ class PromptsMixin:
         )
         return json_output_prompt
 
+    # ──────────────────────────────────────────────────────────────────
+    # TaskAnchor helpers (arch_v5.md Phase 1 — long-task drift defense)
+    # ──────────────────────────────────────────────────────────────────
+
+    def _get_anchor_query(self) -> str:
+        """Pick the most stable query string for memory / experience retrieval.
+
+        Order of preference:
+        1. The session-scoped TaskAnchor.source_query — pinned on the *first*
+           run of the session and reused for every subsequent turn so retrieval
+           stays bound to the user's *original* goal, not the latest message.
+        2. Current `run_input` (latest turn) — only used before any anchor
+           exists (e.g. tests that build prompts without going through Runner).
+        3. Empty string.
+        """
+        anchor = self.task_anchor
+        if anchor is not None and anchor.source_query:
+            return anchor.source_query
+        if isinstance(self.run_input, str):
+            return self.run_input
+        return ""
+
+    def _get_task_anchor_block(self) -> str:
+        """Render the session-scoped TaskAnchor as a system-prompt block."""
+        anchor = self.task_anchor
+        if anchor is None:
+            return ""
+        return anchor.to_prompt_block()
+
     def _get_instructions_list(self) -> List[str]:
         """Parse self.instructions into a flat list of strings."""
         if self.instructions is None:
@@ -289,6 +318,16 @@ class PromptsMixin:
             system_message_lines.append(system_message_from_model)
 
         # ── DYNAMIC ZONE (at the very end for prefix-cache friendliness) ──
+        # Anchor priority order (arch_v5.md §"Lightweight Anchors"):
+        # original task -> session guidance -> workspace memory -> experience.
+        # The TaskAnchor block is injected first so the original goal stays
+        # visible even after compression drops earlier user turns.
+        anchor_block = self._get_task_anchor_block()
+        if anchor_block:
+            system_message_lines.append("## Original Task")
+            system_message_lines.append(anchor_block)
+            system_message_lines.append("")
+
         session_guidance_prompts = self._get_session_guidance_prompts()
         if session_guidance_prompts:
             system_message_lines.append("## Session Guidance")
@@ -300,7 +339,7 @@ class PromptsMixin:
             )
             system_message_lines.append("")
 
-        _query = self.run_input if isinstance(self.run_input, str) else ""
+        _query = self._get_anchor_query()
         workspace_memory = await self.get_workspace_memory_prompt(query=_query)
         if workspace_memory:
             system_message_lines.append("## Workspace Memory")
@@ -444,6 +483,11 @@ class PromptsMixin:
             resolved_work_dir = os.path.abspath(work_dir)
             system_message_lines.append(f"\n**Working directory:** `{resolved_work_dir}`\n")
 
+        anchor_block = self._get_task_anchor_block()
+        if anchor_block:
+            system_message_lines.append("\n## Original Task")
+            system_message_lines.append(anchor_block)
+
         session_guidance_prompts = self._get_session_guidance_prompts()
         if session_guidance_prompts:
             system_message_lines.append("\n## Session Guidance")
@@ -454,7 +498,7 @@ class PromptsMixin:
                 )
             )
 
-        _query = self.run_input if isinstance(self.run_input, str) else ""
+        _query = self._get_anchor_query()
         workspace_memory = await self.get_workspace_memory_prompt(query=_query)
         if workspace_memory:
             system_message_lines.append("\n## Workspace Memory")

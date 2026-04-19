@@ -58,15 +58,10 @@ from agentica.config import (
 from agentica.utils.log import set_log_level_to_debug, logger, set_log_level_to_info
 from agentica.utils.io import write_audio_to_file
 
-# ── Core Model (fast import) ──
-from agentica.model.base import Model
+# ── Core Model (lightweight types only — no openai SDK at import time) ──
 from agentica.model.message import Message, MessageReferences, UserMessage, AssistantMessage, SystemMessage, ToolMessage
 from agentica.model.content import Media, Video, Audio, Image
-from agentica.model.response import ModelResponse, FileType
 from agentica.model.usage import Usage, RequestUsage, TokenDetails
-from agentica.model.openai.chat import OpenAIChat
-from agentica.model.openai.like import OpenAILike
-from agentica.model.azure.openai_chat import AzureOpenAIChat
 from agentica.model.providers import create_provider, list_providers
 
 # ── Backward-compatible provider aliases ──
@@ -122,6 +117,9 @@ from agentica.db.base import BaseDb, SessionRow, MemoryRow, MetricsRow
 
 # ── Run Response ──
 from agentica.run_response import RunResponse, RunEvent, RunResponseExtraData, ToolCallInfo, pprint_run_response
+from agentica.run_context import RunContext, RunSource, RunStatus, TaskAnchor
+from agentica.run_events import RunEventRecord, RunEventType
+from agentica.learning_report import LearningReport, LearningStatus, write_learning_report
 
 # ── Document ──
 from agentica.document import Document
@@ -162,6 +160,14 @@ _LAZY_IMPORTS = {
     "JsonDb": "agentica.db.json",
     "MysqlDb": "agentica.db.mysql",
     "RedisDb": "agentica.db.redis",
+
+    # model core (pulls in openai SDK)
+    "Model": "agentica.model.base",
+    "ModelResponse": "agentica.model.response",
+    "FileType": "agentica.model.response",
+    "OpenAIChat": "agentica.model.openai.chat",
+    "OpenAILike": "agentica.model.openai.like",
+    "AzureOpenAIChat": "agentica.model.azure.openai_chat",
 
     # model providers (heavy dependencies)
     "LiteLLMChat": "agentica.model.litellm.chat",
@@ -510,6 +516,9 @@ __all__ = [
     "BaseDb", "SessionRow", "MemoryRow", "MetricsRow",
     # run response
     "RunResponse", "RunEvent", "RunResponseExtraData", "ToolCallInfo", "pprint_run_response",
+    "RunContext", "RunSource", "RunStatus", "TaskAnchor",
+    "RunEventRecord", "RunEventType",
+    "LearningReport", "LearningStatus", "write_learning_report",
     # document
     "Document",
     # tools

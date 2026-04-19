@@ -70,51 +70,47 @@ class SearchExaTool(Tool):
         if not self.api_key:
             return "Please set the EXA_API_KEY"
 
-        try:
-            exa = Exa(self.api_key)
-            search_kwargs: Dict[str, Any] = {
-                "text": self.text,
-                "highlights": self.highlights,
-                "num_results": self.num_results or num_results,
-                "start_crawl_date": self.start_crawl_date,
-                "end_crawl_date": self.end_crawl_date,
-                "start_published_date": self.start_published_date,
-                "end_published_date": self.end_published_date,
-                "use_autoprompt": self.use_autoprompt,
-                "type": self.type,
-                "category": self.category,
-                "include_domains": self.include_domains,
-            }
-            # Clean up the kwargs
-            search_kwargs = {k: v for k, v in search_kwargs.items() if v is not None}
-            exa_results = exa.search_and_contents(query, **search_kwargs)
-            exa_results_parsed = []
-            for result in exa_results.results:
-                result_dict = {"url": result.url}
-                if result.title:
-                    result_dict["title"] = result.title
-                if result.author and result.author != "":
-                    result_dict["author"] = result.author
-                if result.published_date:
-                    result_dict["published_date"] = result.published_date
-                if result.text:
-                    _text = result.text
-                    if self.text_length_limit:
-                        _text = _text[: self.text_length_limit]
-                    result_dict["text"] = _text
-                if self.highlights:
-                    try:
-                        if result.highlights:  # type: ignore
-                            result_dict["highlights"] = result.highlights  # type: ignore
-                    except Exception as e:
-                        logger.debug(f"Failed to get highlights {e}")
-                exa_results_parsed.append(result_dict)
-            parsed_results = json.dumps(exa_results_parsed, ensure_ascii=False)
-            logger.info(f"Searching exa for: {query}, results: {parsed_results}")
-            return parsed_results
-        except Exception as e:
-            logger.error(f"Failed to search exa {e}")
-            return f"Error: {e}"
+        exa = Exa(self.api_key)
+        search_kwargs: Dict[str, Any] = {
+            "text": self.text,
+            "highlights": self.highlights,
+            "num_results": self.num_results or num_results,
+            "start_crawl_date": self.start_crawl_date,
+            "end_crawl_date": self.end_crawl_date,
+            "start_published_date": self.start_published_date,
+            "end_published_date": self.end_published_date,
+            "use_autoprompt": self.use_autoprompt,
+            "type": self.type,
+            "category": self.category,
+            "include_domains": self.include_domains,
+        }
+        # Clean up the kwargs
+        search_kwargs = {k: v for k, v in search_kwargs.items() if v is not None}
+        exa_results = exa.search_and_contents(query, **search_kwargs)
+        exa_results_parsed = []
+        for result in exa_results.results:
+            result_dict = {"url": result.url}
+            if result.title:
+                result_dict["title"] = result.title
+            if result.author and result.author != "":
+                result_dict["author"] = result.author
+            if result.published_date:
+                result_dict["published_date"] = result.published_date
+            if result.text:
+                _text = result.text
+                if self.text_length_limit:
+                    _text = _text[: self.text_length_limit]
+                result_dict["text"] = _text
+            if self.highlights:
+                try:
+                    if result.highlights:  # type: ignore
+                        result_dict["highlights"] = result.highlights  # type: ignore
+                except Exception as e:
+                    logger.debug(f"Failed to get highlights {e}")
+            exa_results_parsed.append(result_dict)
+        parsed_results = json.dumps(exa_results_parsed, ensure_ascii=False)
+        logger.info(f"Searching exa for: {query}, results: {parsed_results}")
+        return parsed_results
 
     def search_exa(self, queries: Union[str, List[str]], num_results: int = 5) -> str:
         """Search Exa for single or multiple queries.

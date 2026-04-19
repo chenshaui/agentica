@@ -69,39 +69,37 @@ class TestBuiltinMemoryTool:
 
     def test_save_memory_invalid_type(self):
         """Test saving with invalid memory type."""
-        result = asyncio.run(self.tool.save_memory(
-            title="test",
-            content="test content",
-            memory_type="invalid",
-        ))
-        assert "Error" in result
-        assert "invalid" in result.lower()
+        with pytest.raises(ValueError, match="invalid"):
+            asyncio.run(self.tool.save_memory(
+                title="test",
+                content="test content",
+                memory_type="invalid",
+            ))
 
     def test_save_memory_empty_title(self):
         """Test saving with empty title."""
-        result = asyncio.run(self.tool.save_memory(
-            title="",
-            content="test content",
-        ))
-        assert "Error" in result
+        with pytest.raises(ValueError):
+            asyncio.run(self.tool.save_memory(
+                title="",
+                content="test content",
+            ))
 
     def test_save_memory_empty_content(self):
         """Test saving with empty content."""
-        result = asyncio.run(self.tool.save_memory(
-            title="test",
-            content="",
-        ))
-        assert "Error" in result
+        with pytest.raises(ValueError):
+            asyncio.run(self.tool.save_memory(
+                title="test",
+                content="",
+            ))
 
     def test_save_memory_no_workspace(self):
         """Test saving without workspace configured."""
         tool = BuiltinMemoryTool()
-        result = asyncio.run(tool.save_memory(
-            title="test",
-            content="test content",
-        ))
-        assert "Error" in result
-        assert "No workspace" in result
+        with pytest.raises(RuntimeError, match="No workspace"):
+            asyncio.run(tool.save_memory(
+                title="test",
+                content="test content",
+            ))
 
     def test_search_memory(self):
         """Test searching memories."""
@@ -130,8 +128,8 @@ class TestBuiltinMemoryTool:
     def test_search_memory_no_workspace(self):
         """Test searching without workspace configured."""
         tool = BuiltinMemoryTool()
-        result = tool.search_memory("test")
-        assert "Error" in result
+        with pytest.raises(RuntimeError, match="No workspace"):
+            tool.search_memory("test")
 
     def test_memory_index_updated(self):
         """Test that MEMORY.md index is updated after save."""
@@ -263,31 +261,32 @@ class TestMemoryExtractHooks:
         asyncio.run(hooks.on_agent_start(agent=agent))
         asyncio.run(hooks.on_agent_end(agent=agent, output="hello"))
 
-        # Conversation < 50 chars, should skip extraction
+        # Conversation < 200 chars, should skip extraction
         agent.model.response.assert_not_called()
 
     def test_extract_and_save_passes_global_sync_flag(self):
-        """Extracted user/feedback memories should pass global sync when enabled."""
+        """Extracted user memories should pass global sync when enabled."""
         hooks = MemoryExtractHooks(sync_memories_to_global_agent_md=True)
         workspace = MagicMock()
         workspace.write_memory_entry = AsyncMock()
         model = MagicMock()
         model.response = AsyncMock(return_value=MagicMock(content=json.dumps([
             {
-                "title": "python_style",
-                "content": "Prefer concise, typed Python.",
-                "type": "feedback",
+                "title": "user_role",
+                "content": "User is a senior ML engineer.",
+                "type": "user",
             }
         ])))
 
         asyncio.run(hooks._extract_and_save(model, workspace, "User: test\n\nAssistant: ok"))
 
         workspace.write_memory_entry.assert_awaited_once_with(
-            title="python_style",
-            content="Prefer concise, typed Python.",
-            memory_type="feedback",
-            description="python_style",
+            title="user_role",
+            content="User is a senior ML engineer.",
+            memory_type="user",
+            description="user_role",
             sync_to_global_agent_md=True,
+            source="auto_extract",
         )
 
 

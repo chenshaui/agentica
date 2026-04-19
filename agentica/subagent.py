@@ -82,6 +82,9 @@ class SubagentConfig:
     # Maximum number of tool calls allowed for this subagent
     tool_call_limit: int = 100
 
+    # Maximum LLM loop turns (safety net for runaway subagents)
+    max_turns: int = 100
+
     # Whether this subagent can spawn its own subagents
     can_spawn_subagents: bool = False
 
@@ -624,6 +627,17 @@ class SubagentRegistry:
             child_kwargs["knowledge"] = parent_agent.knowledge
 
         child = Agent(**child_kwargs)
+        child._max_turns = config.max_turns
+
+        # Wire arch_v5.md Phase 0 lineage so the child's RunContext records
+        # who spawned it (used by Runner._run_impl to set parent_run_id +
+        # RunSource.subagent on the child run). Read once by the Runner and
+        # cleared after the run. Both attributes are declared on Agent
+        # (run_context defaults to None when no run is active).
+        if parent_agent.run_context is not None:
+            child._parent_run_id = parent_agent.run_context.run_id
+        elif parent_agent.run_id:
+            child._parent_run_id = parent_agent.run_id
 
         start_time = time.time()
         try:

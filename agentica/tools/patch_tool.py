@@ -489,89 +489,82 @@ class PatchTool(Tool):
             # Handle file creation
             if not file_path.exists():
                 if "*** Add File:" in patch_content or diff_format == "v4a":
-                    try:
-                        # Create file with V4A create mode
-                        new_content = apply_diff("", patch_content, mode="create")
-                        os.makedirs(file_path.parent, exist_ok=True)
-                        file_path.write_text(new_content, encoding='utf-8')
-                        logger.debug(f"Created file: {file_path}")
-                        return f"Created file: {target_file}"
-                    except ValueError as e:
-                        return f"Error creating file: {str(e)}"
-                else:
-                    return f"Error: Cannot apply patch to non-existent file {target_file}"
+                    # Create file with V4A create mode
+                    new_content = apply_diff("", patch_content, mode="create")
+                    os.makedirs(file_path.parent, exist_ok=True)
+                    file_path.write_text(new_content, encoding='utf-8')
+                    logger.debug(f"Created file: {file_path}")
+                    return f"Created file: {target_file}"
+                raise FileNotFoundError(
+                    f"Cannot apply patch to non-existent file {target_file}"
+                )
 
             # Read the original file
             original_content = file_path.read_text(encoding='utf-8')
 
             # Apply the patch based on format
             if diff_format == "v4a":
-                try:
-                    new_content = apply_diff(original_content, patch_content, mode="default")
-                    file_path.write_text(new_content, encoding='utf-8')
-                    logger.debug(f"Applied V4A patch to file: {file_path}")
-                    return f"Successfully patched file: {target_file}"
-                except ValueError as e:
-                    return f"Error applying V4A patch: {str(e)}"
-            else:
-                # Fall back to unified diff format
-                return self._apply_unified_patch(file_path, original_content, patch_content)
-
-        except Exception as e:
-            error_msg = f"Error applying patch to {target_file}: {str(e)}"
-            logger.error(error_msg)
-            return error_msg
+                new_content = apply_diff(original_content, patch_content, mode="default")
+                file_path.write_text(new_content, encoding='utf-8')
+                logger.debug(f"Applied V4A patch to file: {file_path}")
+                return f"Successfully patched file: {target_file}"
+            # Fall back to unified diff format
+            return self._apply_unified_patch(file_path, original_content, patch_content)
+        except ValueError as e:
+            # apply_diff raises ValueError for malformed patches; keep the
+            # specific context but let the runtime record it as a real error.
+            raise ValueError(f"Error applying patch to {target_file}: {e}") from e
 
     def _apply_unified_patch(self, file_path: Path, original_content: str, patch_content: str) -> str:
         """Apply a unified diff format patch."""
-        try:
-            original_lines = original_content.splitlines()
-            patch_lines = patch_content.splitlines()
-            patched_content = list(original_lines)
+        original_lines = original_content.splitlines()
+        patch_lines = patch_content.splitlines()
+        patched_content = list(original_lines)
 
-            i = 0
-            while i < len(patch_lines):
-                line = patch_lines[i]
-                if line.startswith("@@"):
-                    # Parse the hunk header
-                    hunk_match = re.match(r'@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@', line)
-                    if hunk_match:
-                        orig_start = int(hunk_match.group(1)) - 1  # 0-based indexing
+        i = 0
+        while i < len(patch_lines):
+            line = patch_lines[i]
+            if line.startswith("@@"):
+                # Parse the hunk header
+                hunk_match = re.match(r'@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@', line)
+                if hunk_match:
+                    orig_start = int(hunk_match.group(1)) - 1  # 0-based indexing
 
-                        # Process the hunk
-                        j = i + 1
-                        orig_lines_list = []
-                        new_lines = []
+                    # Process the hunk
+                    j = i + 1
+                    orig_lines_list = []
+                    new_lines = []
 
-                        while j < len(patch_lines) and not patch_lines[j].startswith("@@"):
-                            hunk_line = patch_lines[j]
-                            if hunk_line.startswith("+"):
-                                new_lines.append(hunk_line[1:])
-                            elif hunk_line.startswith("-"):
-                                orig_lines_list.append(hunk_line[1:])
-                            else:
-                                line_content = hunk_line[1:] if hunk_line.startswith(" ") else hunk_line
-                                orig_lines_list.append(line_content)
-                                new_lines.append(line_content)
-                            j += 1
+                    while j < len(patch_lines) and not patch_lines[j].startswith("@@"):
+                        hunk_line = patch_lines[j]
+                        if hunk_line.startswith("+"):
+                            new_lines.append(hunk_line[1:])
+                        elif hunk_line.startswith("-"):
+                            orig_lines_list.append(hunk_line[1:])
+                        else:
+                            line_content = hunk_line[1:] if hunk_line.startswith(" ") else hunk_line
+                            orig_lines_list.append(line_content)
+                            new_lines.append(line_content)
+                        j += 1
 
-                        # Apply the changes
-                        patched_content = patched_content[:orig_start] + new_lines + patched_content[orig_start + len(orig_lines_list):]
+                    # Apply the changes
+                    patched_content = (
+                        patched_content[:orig_start]
+                        + new_lines
+                        + patched_content[orig_start + len(orig_lines_list):]
+                    )
 
-                        i = j
-                    else:
-                        i += 1
+                    i = j
                 else:
                     i += 1
+            else:
+                i += 1
 
-            # Write the patched content
-            file_path.write_text("\n".join(patched_content), encoding='utf-8')
-            logger.debug(f"Applied unified patch to file: {file_path}")
+        # Write the patched content
+        file_path.write_text("\n".join(patched_content), encoding='utf-8')
+        logger.debug(f"Applied unified patch to file: {file_path}")
 
-            return f"Successfully patched file: {file_path}"
-
-        except ValueError as ve:
-            return f"Error applying patch: {str(ve)}"
+        return f"Successfully patched file: {file_path}"
 
     def compare_files(self, file1: str, file2: str, context_lines: int = 3) -> str:
         """Compare two files and return the differences.
@@ -584,35 +577,29 @@ class PatchTool(Tool):
         Returns:
             A unified diff of the two files.
         """
-        try:
-            path1 = self._resolve_path(file1)
-            path2 = self._resolve_path(file2)
+        path1 = self._resolve_path(file1)
+        path2 = self._resolve_path(file2)
 
-            if not path1.exists():
-                return f"Error: File not found: {file1}"
-            if not path2.exists():
-                return f"Error: File not found: {file2}"
+        if not path1.exists():
+            raise FileNotFoundError(f"File not found: {file1}")
+        if not path2.exists():
+            raise FileNotFoundError(f"File not found: {file2}")
 
-            # Read file contents
-            content1 = path1.read_text(encoding='utf-8').splitlines()
-            content2 = path2.read_text(encoding='utf-8').splitlines()
+        # Read file contents
+        content1 = path1.read_text(encoding='utf-8').splitlines()
+        content2 = path2.read_text(encoding='utf-8').splitlines()
 
-            # Generate unified diff
-            diff = difflib.unified_diff(
-                content1, content2,
-                fromfile=str(file1), tofile=str(file2),
-                n=context_lines
-            )
+        # Generate unified diff
+        diff = difflib.unified_diff(
+            content1, content2,
+            fromfile=str(file1), tofile=str(file2),
+            n=context_lines
+        )
 
-            # Convert the diff generator to a string
-            diff_text = "\n".join(diff)
+        # Convert the diff generator to a string
+        diff_text = "\n".join(diff)
 
-            return diff_text if diff_text else "Files are identical."
-
-        except Exception as e:
-            error_msg = f"Error comparing files {file1} and {file2}: {str(e)}"
-            logger.error(error_msg)
-            return error_msg
+        return diff_text if diff_text else "Files are identical."
 
 
 if __name__ == '__main__':

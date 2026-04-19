@@ -93,14 +93,14 @@ class TestBuiltinFileToolLs:
         assert types["subdir"] == "dir"
 
     def test_ls_nonexistent_dir(self, file_tool):
-        result = asyncio.run(file_tool.ls("/nonexistent_dir_abc123"))
-        assert "Error" in result
+        with pytest.raises(FileNotFoundError):
+            asyncio.run(file_tool.ls("/nonexistent_dir_abc123"))
 
     def test_ls_file_not_dir(self, file_tool, tmp_dir):
         f = Path(tmp_dir, "afile.txt")
         f.write_text("x")
-        result = asyncio.run(file_tool.ls(str(f)))
-        assert "Error" in result
+        with pytest.raises(NotADirectoryError):
+            asyncio.run(file_tool.ls(str(f)))
 
 
 class TestBuiltinFileToolReadFile:
@@ -123,8 +123,8 @@ class TestBuiltinFileToolReadFile:
         assert "line1\t" not in result  # Use tab to avoid matching "line10"
 
     def test_read_nonexistent_file(self, file_tool):
-        result = asyncio.run(file_tool.read_file("/nonexistent/file.txt"))
-        assert "Error" in result
+        with pytest.raises(FileNotFoundError):
+            asyncio.run(file_tool.read_file("/nonexistent/file.txt"))
 
     def test_read_long_lines_truncated(self, file_tool, tmp_dir):
         p = Path(tmp_dir, "long.txt")
@@ -195,21 +195,20 @@ class TestBuiltinFileToolEditFile:
     def test_edit_string_not_found(self, file_tool, tmp_dir):
         fp = os.path.join(tmp_dir, "nf.txt")
         Path(fp).write_text("hello")
-        result = asyncio.run(file_tool.edit_file(fp, "zzz", "yyy"))
-        assert "Error" in result
+        with pytest.raises(ValueError):
+            asyncio.run(file_tool.edit_file(fp, "zzz", "yyy"))
         # File should be unchanged
         assert Path(fp).read_text() == "hello"
 
     def test_edit_nonexistent_file(self, file_tool):
-        result = asyncio.run(file_tool.edit_file("/no/such/file.txt", "a", "b"))
-        assert "Error" in result
+        with pytest.raises(FileNotFoundError):
+            asyncio.run(file_tool.edit_file("/no/such/file.txt", "a", "b"))
 
     def test_edit_multiple_matches_no_replace_all(self, file_tool, tmp_dir):
         fp = os.path.join(tmp_dir, "dup.txt")
         Path(fp).write_text("foo bar foo")
-        result = asyncio.run(file_tool.edit_file(fp, "foo", "baz"))
-        # Should fail because there are multiple matches and replace_all is not set
-        assert "Error" in result or "Found 2 occurrences" in result
+        with pytest.raises(ValueError, match="Found 2 occurrences"):
+            asyncio.run(file_tool.edit_file(fp, "foo", "baz"))
         # File unchanged
         assert Path(fp).read_text() == "foo bar foo"
 
@@ -217,8 +216,8 @@ class TestBuiltinFileToolEditFile:
         """A failed edit should not modify the file."""
         fp = os.path.join(tmp_dir, "atomic.txt")
         Path(fp).write_text("aaa bbb")
-        result = asyncio.run(file_tool.edit_file(fp, "zzz", "999"))
-        assert "Error" in result
+        with pytest.raises(ValueError):
+            asyncio.run(file_tool.edit_file(fp, "zzz", "999"))
         # File should be unchanged
         assert Path(fp).read_text() == "aaa bbb"
 
@@ -248,8 +247,8 @@ class TestBuiltinFileToolGlob:
         assert files == []
 
     def test_glob_nonexistent_dir(self, file_tool):
-        result = asyncio.run(file_tool.glob("*", "/nonexistent_dir_xyz"))
-        assert "Error" in result
+        with pytest.raises(FileNotFoundError):
+            asyncio.run(file_tool.glob("*", "/nonexistent_dir_xyz"))
 
 
 class TestBuiltinFileToolGrep:
@@ -288,8 +287,8 @@ class TestBuiltinFileToolGrep:
         assert "No matches" in result
 
     def test_grep_nonexistent_dir(self, file_tool):
-        result = asyncio.run(file_tool.grep("test", "/nonexistent_xyz"))
-        assert "Error" in result
+        with pytest.raises(FileNotFoundError):
+            asyncio.run(file_tool.grep("test", "/nonexistent_xyz"))
 
     def test_grep_case_insensitive(self, file_tool, tmp_dir):
         Path(tmp_dir, "mixed.txt").write_text("Hello WORLD\n")
@@ -313,8 +312,8 @@ class TestBuiltinExecuteTool:
         assert "hello" in result
 
     def test_execute_returns_exit_code_on_failure(self, execute_tool):
-        result = asyncio.run(execute_tool.execute("exit 42"))
-        assert "Exit code: 42" in result
+        with pytest.raises(RuntimeError, match="exit(ed)? (with )?code 42"):
+            asyncio.run(execute_tool.execute("exit 42"))
 
     def test_execute_captures_stderr(self, execute_tool):
         result = asyncio.run(execute_tool.execute("echo error_msg >&2"))
@@ -322,8 +321,8 @@ class TestBuiltinExecuteTool:
 
     def test_execute_timeout(self):
         tool = BuiltinExecuteTool(timeout=1)
-        result = asyncio.run(tool.execute("sleep 30"))
-        assert "timed out" in result
+        with pytest.raises(TimeoutError, match="timed out"):
+            asyncio.run(tool.execute("sleep 30"))
 
     def test_execute_python_code(self, execute_tool):
         result = asyncio.run(execute_tool.execute("python3 -c 'print(2+3)'"))
@@ -372,10 +371,10 @@ class TestBuiltinWebSearchTool:
         tool = BuiltinWebSearchTool()
         tool._search.baidu_search = AsyncMock(side_effect=Exception("network error"))
 
-        result = asyncio.run(tool.web_search("fail"))
-        parsed = json.loads(result)
-        assert "error" in parsed
-        assert "network error" in parsed["error"]
+        # After方案A: search failures propagate as exceptions instead of Error strings.
+        # Runner/FunctionCall.invoke captures them into function_call.error.
+        with pytest.raises(Exception, match="network error"):
+            asyncio.run(tool.web_search("fail"))
 
 
 # ===========================================================================
@@ -414,20 +413,20 @@ class TestBuiltinTodoTool:
         assert parsed["verification_nudge"] is False
 
     def test_write_todos_invalid_status(self, todo_tool):
-        result = todo_tool.write_todos([{"content": "Bad", "status": "unknown"}])
-        assert "Error" in result
+        with pytest.raises(ValueError):
+            todo_tool.write_todos([{"content": "Bad", "status": "unknown"}])
 
     def test_write_todos_missing_content(self, todo_tool):
-        result = todo_tool.write_todos([{"status": "pending"}])
-        assert "Error" in result
+        with pytest.raises(ValueError):
+            todo_tool.write_todos([{"status": "pending"}])
 
     def test_write_todos_none(self, todo_tool):
-        result = todo_tool.write_todos(None)
-        assert "Error" in result
+        with pytest.raises(ValueError):
+            todo_tool.write_todos(None)
 
     def test_write_todos_empty_list(self, todo_tool):
-        result = todo_tool.write_todos([])
-        assert "Error" in result
+        with pytest.raises(ValueError):
+            todo_tool.write_todos([])
 
     def test_write_todos_overwrites(self, todo_tool):
         """Writing new todos replaces old ones entirely."""

@@ -57,6 +57,8 @@ class Model(ABC):
     # -*- Functions available to the Model to call -*-
     functions: Optional[Dict[str, Function]] = None
     function_call_stack: Optional[List[FunctionCall]] = None
+    # Per-run tracker for repeated failed tool calls (soft notice, not blocking)
+    _failed_call_counts: Optional[Dict[str, int]] = None
 
     # System prompt from the model added to the Agent.
     system_prompt: Optional[str] = None
@@ -398,6 +400,8 @@ class Model(ABC):
         """
         if self.function_call_stack is None:
             self.function_call_stack = []
+        if self._failed_call_counts is None:
+            self._failed_call_counts = {}
 
         # Phase 1: Emit started events for all function calls
         _agent = self._agent_ref() if self._agent_ref is not None else None
@@ -435,6 +439,13 @@ class Model(ABC):
 
         safe_indices   = [i for i, fc in enumerate(function_calls) if fc.function.concurrency_safe]
         unsafe_indices = [i for i, fc in enumerate(function_calls) if not fc.function.concurrency_safe]
+
+        if safe_indices or unsafe_indices:
+            logger.debug(
+                f"[tool-exec] batch: {len(function_calls)} call(s), "
+                f"safe={len(safe_indices)} (parallel), "
+                f"unsafe={len(unsafe_indices)} (serial)"
+            )
 
         # Default timeout for tool execution (seconds)
         _DEFAULT_TOOL_TIMEOUT = 120
@@ -664,9 +675,40 @@ class Model(ABC):
                 except Exception as persist_err:
                     logger.debug(f"Tool result persistence skipped: {persist_err}")
 
+            # Soft-error detection: builtin tools return error as prefixed
+            # strings ("Error: File not found", "Error: Directory not found", ...)
+            # rather than raising. Without this, ExperienceCaptureHooks and the
+            # death-spiral detector treat them as successes, and the whole
+            # self-evolution pipeline goes blind to "tool ran but failed".
+            # We flip the error flag but keep the original output as content so
+            # the LLM still sees the error message verbatim.
+            soft_error = (
+                function_call_success
+                and isinstance(function_call_output, str)
+                and function_call_output.lstrip().startswith("Error:")
+            )
+            if soft_error:
+                function_call_success = False
+
+            # Track repeated failures and append a notice (not blocking)
+            _result_content = (
+                function_call_output
+                if (function_call_success or soft_error)
+                else function_call.error
+            )
+            if not function_call_success:
+                _call_key = f"{function_call.function.name}:{json.dumps(function_call.arguments, sort_keys=True, default=str)}"
+                self._failed_call_counts[_call_key] = self._failed_call_counts.get(_call_key, 0) + 1
+                _n = self._failed_call_counts[_call_key]
+                if _n >= 2 and isinstance(_result_content, str):
+                    _result_content += (
+                        f"\n\n[Notice: This exact call has failed {_n} times "
+                        f"this run with the same error. Consider a different approach.]"
+                    )
+
             function_call_result = Message(
                 role=tool_role,
-                content=function_call_output if function_call_success else function_call.error,
+                content=_result_content,
                 tool_call_id=function_call.call_id,
                 tool_name=function_call.function.name,
                 tool_args=function_call.arguments,
@@ -693,12 +735,21 @@ class Model(ABC):
 
             # --- Lifecycle: tool end ---
             if _agent is not None and hasattr(_agent, '_run_hooks') and _agent._run_hooks is not None:
+                # For soft-errors (builtin tools returning "Error: ..." strings
+                # without raising), function_call.error is None but the output
+                # carries the human-readable error message. Forward the output
+                # so ExperienceCaptureHooks records a non-empty error.
+                hook_result = (
+                    function_call_output
+                    if (function_call_success or soft_error)
+                    else function_call.error
+                )
                 await _agent._run_hooks.on_tool_end(
                     agent=_agent,
                     tool_name=function_call.function.name,
                     tool_call_id=function_call.call_id or "",
                     tool_args=function_call.arguments,
-                    result=function_call_output if function_call_success else function_call.error,
+                    result=hook_result,
                     is_error=not function_call_success,
                     elapsed=timers[i].elapsed,
                 )
@@ -1130,5 +1181,6 @@ class Model(ABC):
         self.usage = Usage()
         self.functions = None
         self.function_call_stack = None
+        self._failed_call_counts = None
         self.session_id = None
         self.last_finish_reason = None

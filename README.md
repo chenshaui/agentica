@@ -135,34 +135,57 @@ agent = DeepAgent(
 agentica --model_provider zhipuai --model_name glm-4.7-flash
 ```
 
-安装外部 skill 集合：
+安装外部 skill 集合时，**推荐使用新的 `skills` 命令**：
 
 ```bash
-agentica extensions install https://github.com/obra/superpowers
+agentica skills install https://github.com/obra/superpowers
+agentica skills list
+agentica skills remove learn-from-experience
+agentica skills reload
 ```
 
-如果你已经进入交互式 CLI，也可以直接在会话里安装并立刻刷新当前 skills：
+如果你已经进入交互式 CLI，也可以直接在会话里安装、查看和卸载 skills：
 
 ```text
-> /extensions install https://github.com/obra/superpowers
-> /extensions list
-> /extensions remove learn-from-experience
-> /extensions reload
+> /skills install https://github.com/obra/superpowers
+> /skills list
+> /skills inspect learn-from-experience
+> /skills remove learn-from-experience
+> /skills reload
 ```
 
 也支持安装本地目录或指定目标目录：
 
 ```bash
-agentica extensions install /path/to/skill-repo --target-dir ~/.agentica/skills
+agentica skills install /path/to/skill-repo --target-dir ~/.agentica/skills
 ```
 
 如果你安装到自定义目录而不是标准搜索路径，记得把这个目录加入 `AGENTICA_EXTRA_SKILL_PATH`，这样 `DeepAgent` 和 CLI 才会自动发现它。
 
 <img src="https://github.com/shibing624/agentica/blob/main/docs/assets/cli_snap.png" width="800" />
 
-## Web UI
+## Web UI / Gateway
 
-通过 [agentica-gateway](https://github.com/shibing624/agentica-gateway) 提供 Web 页面，同时支持飞书 App、企业微信直连调用 Agentica。
+**Gateway 现在已经集成到 `agentica` 主库中**。
+
+安装 Gateway 运行时：
+
+```bash
+pip install -U "agentica[gateway]"
+```
+
+设置一个最小可运行配置后直接启动：
+
+```bash
+export AGENTICA_MODEL_PROVIDER=zhipuai
+export AGENTICA_MODEL_NAME=glm-4.7-flash
+export GATEWAY_TOKEN=change-me
+agentica-gateway
+```
+
+默认会启动在 `http://127.0.0.1:8789/chat`。如需改监听地址，可设置 `HOST` 和 `PORT`；如需接入 Telegram / Discord / Slack，可分别安装 `agentica[telegram]`、`agentica[discord]`、`agentica[slack]`。
+
+Gateway 内置了 Web UI、API、WebSocket、cron scheduler，以及飞书 / Telegram / Discord 等 channel 接入能力，适合把 `agentica` 从本地 CLI 扩展到常驻服务。
 
 ## 示例
 

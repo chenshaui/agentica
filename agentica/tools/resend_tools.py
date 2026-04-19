@@ -44,19 +44,15 @@ class ResendTools(Tool):
         logger.info(f"Sending email to: {to_email}")
 
         resend.api_key = self.api_key
-        try:
-            params = {
-                "from": self.from_email,
-                "to": to_email,
-                "subject": subject,
-                "html": body,
-            }
+        params = {
+            "from": self.from_email,
+            "to": to_email,
+            "subject": subject,
+            "html": body,
+        }
 
-            resend.Emails.send(params)
-            return f"Email sent to {to_email} successfully."
-        except Exception as e:
-            logger.error(f"Failed to send email {e}")
-            return f"Error: {e}"
+        resend.Emails.send(params)
+        return f"Email sent to {to_email} successfully."
 
 if __name__ == '__main__':
     resend_tool = ResendTools(api_key="your_api_key")

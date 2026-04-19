@@ -469,96 +469,91 @@ class VideoAnalysisTool(Tool):
         is_url = all([parsed_url.scheme, parsed_url.netloc])
 
         downloaded_video_path = None
-        try:
-            if is_url:
-                downloaded_video_path = (
-                    self.video_downloader_toolkit.download_video(video_path)
+        if is_url:
+            downloaded_video_path = (
+                self.video_downloader_toolkit.download_video(video_path)
+            )
+            if not downloaded_video_path or not os.path.exists(
+                    downloaded_video_path
+            ):
+                raise ValueError(
+                    f"Failed to download video from {video_path}"
                 )
-                if not downloaded_video_path or not os.path.exists(
-                        downloaded_video_path
-                ):
+            video_path = downloaded_video_path
+
+        if not os.path.exists(video_path):
+            raise FileNotFoundError(f"Video file not found: {video_path}")
+
+        audio_transcript = "No audio transcription available."
+        if self._use_audio_transcription:
+            audio_path = self._extract_audio_from_video(video_path)
+            audio_transcript = self._transcribe_audio(audio_path)
+
+        video_frames = self._extract_keyframes(video_path)
+
+        self.vl_model = cast(Model, self.vl_model)
+        prompt = VIDEO_QA_PROMPT.format(
+            audio_transcription=audio_transcript,
+            question=question,
+            output_language=self.output_language,
+        )
+
+        hybrid_content = []
+        hybrid_content.append(
+            {
+                "type": "text",
+                "text": prompt,
+            }
+        )
+        if video_frames and len(video_frames) > 0:
+            for image in video_frames:
+                if image.format is None:
                     raise ValueError(
-                        f"Failed to download video from {video_path}"
+                        f"Image's `format` is `None`, please "
+                        f"transform the `PIL.Image.Image` to  one of "
+                        f"following supported formats, such as "
+                        f"{list(OpenAIImageType)}"
                     )
-                video_path = downloaded_video_path
 
-            if not os.path.exists(video_path):
-                raise FileNotFoundError(f"Video file not found: {video_path}")
-
-            audio_transcript = "No audio transcription available."
-            if self._use_audio_transcription:
-                audio_path = self._extract_audio_from_video(video_path)
-                audio_transcript = self._transcribe_audio(audio_path)
-
-            video_frames = self._extract_keyframes(video_path)
-
-            self.vl_model = cast(Model, self.vl_model)
-            prompt = VIDEO_QA_PROMPT.format(
-                audio_transcription=audio_transcript,
-                question=question,
-                output_language=self.output_language,
-            )
-
-            hybrid_content = []
-            hybrid_content.append(
-                {
-                    "type": "text",
-                    "text": prompt,
-                }
-            )
-            if video_frames and len(video_frames) > 0:
-                for image in video_frames:
-                    if image.format is None:
-                        raise ValueError(
-                            f"Image's `format` is `None`, please "
-                            f"transform the `PIL.Image.Image` to  one of "
-                            f"following supported formats, such as "
-                            f"{list(OpenAIImageType)}"
-                        )
-
-                    image_type: str = image.format.lower()
-                    if image_type not in OpenAIImageType:
-                        raise ValueError(
-                            f"Image type {image.format} "
-                            f"is not supported by OpenAI vision model"
-                        )
-                    with io.BytesIO() as buffer:
-                        image.save(fp=buffer, format=image.format)
-                        encoded_image = base64.b64encode(buffer.getvalue()).decode(
-                            "utf-8"
-                        )
-                    image_prefix = f"data:image/{image_type};base64,"
-                    hybrid_content.append(
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"{image_prefix}{encoded_image}"
-                            }
+                image_type: str = image.format.lower()
+                if image_type not in OpenAIImageType:
+                    raise ValueError(
+                        f"Image type {image.format} "
+                        f"is not supported by OpenAI vision model"
+                    )
+                with io.BytesIO() as buffer:
+                    image.save(fp=buffer, format=image.format)
+                    encoded_image = base64.b64encode(buffer.getvalue()).decode(
+                        "utf-8"
+                    )
+                image_prefix = f"data:image/{image_type};base64,"
+                hybrid_content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"{image_prefix}{encoded_image}"
                         }
-                    )
-
-            messages = [
-                {
-                    "role": "user",
-                    "content": hybrid_content
-                }
-            ]
-            response = self.vl_model.get_client().chat.completions.create(
-                model=self.model_name, messages=messages, max_tokens=4000
-            )
-            if not response or not response.choices:
-                logger.error("Model returned empty response")
-                return (
-                    "Failed to generate an answer. "
-                    "The model returned an empty response."
+                    }
                 )
 
-            answer = response.choices[0].message.content
-            return answer
-        except Exception as e:
-            error_message = f"Error processing video: {e}"
-            logger.error(error_message)
-            return f"Error: {error_message}"
+        messages = [
+            {
+                "role": "user",
+                "content": hybrid_content
+            }
+        ]
+        response = self.vl_model.get_client().chat.completions.create(
+            model=self.model_name, messages=messages, max_tokens=4000
+        )
+        if not response or not response.choices:
+            logger.error("Model returned empty response")
+            return (
+                "Failed to generate an answer. "
+                "The model returned an empty response."
+            )
+
+        answer = response.choices[0].message.content
+        return answer
 
 if __name__ == '__main__':
     # demo case

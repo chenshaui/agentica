@@ -120,6 +120,14 @@ class SkillTool(Tool):
             )
         return new
 
+    def initialize(self) -> None:
+        """Force skill registry to load now (instead of lazily on first use).
+
+        Useful when the caller wants to inspect ``self.registry`` /
+        ``list_skills()`` before the agent makes any tool call. Idempotent.
+        """
+        self._ensure_initialized()
+
     def _ensure_initialized(self):
         """Ensure skills are loaded before use."""
         if self._initialized:
@@ -279,14 +287,14 @@ class SkillTool(Tool):
         """
         # Check if skill is enabled
         if self._agent is not None and not self._agent._is_skill_enabled(skill_name):
-            return f"Error: Skill '{skill_name}' is disabled."
+            raise ValueError(f"Skill '{skill_name}' is disabled.")
 
         skill_obj = self.registry.get(skill_name)
 
         if skill_obj is None:
             available = [s.name for s in self._get_enabled_skills()]
-            return (
-                f"Error: Skill '{skill_name}' not found.\n"
+            raise ValueError(
+                f"Skill '{skill_name}' not found.\n"
                 f"Available skills: {', '.join(available[:50]) if available else 'None'}"
             )
 

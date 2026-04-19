@@ -22,19 +22,31 @@ if TYPE_CHECKING:
     pass
 
 class RunEvent(str, Enum):
-    """Events that can be sent by the run() functions"""
+    """Events that can be sent by the run() functions.
+
+    Legacy CamelCase values are retained for backward compatibility with
+    existing CLI display + gateway consumers. New SDK-internal lifecycle
+    events live on `agentica.run_events.RunEventType` and are dispatched via
+    `Runner._emit_event` to `agent._event_callback` -- they do NOT replace
+    the streaming-content events listed here.
+    """
 
     run_started = "RunStarted"
     run_response = "RunResponse"
     run_completed = "RunCompleted"
+    run_failed = "RunFailed"
+    run_cancelled = "RunCancelled"
     tool_call_started = "ToolCallStarted"
     tool_call_completed = "ToolCallCompleted"
+    tool_call_failed = "ToolCallFailed"
     reasoning_started = "ReasoningStarted"
     reasoning_step = "ReasoningStep"
     reasoning_completed = "ReasoningCompleted"
     updating_memory = "UpdatingMemory"
     workflow_started = "WorkflowStarted"
     workflow_completed = "WorkflowCompleted"
+    subagent_spawned = "SubagentSpawned"
+    subagent_completed = "SubagentCompleted"
 
 
 class ToolCallInfo(BaseModel):

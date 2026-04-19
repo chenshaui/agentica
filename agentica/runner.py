@@ -53,6 +53,8 @@ from agentica.model.message import Message
 from agentica.model.response import ModelResponse, ModelResponseEvent
 from agentica.run_response import AgentCancelledError, RunEvent, RunResponse
 from agentica.run_config import RunConfig
+from agentica.run_context import RunContext, RunSource, RunStatus, TaskAnchor
+from agentica.run_events import RunEventRecord, RunEventType
 from agentica.memory import AgentRun
 from agentica.utils.string import parse_structured_output
 from agentica.utils.tokens import count_tokens
@@ -76,6 +78,46 @@ class Runner:
 
     def __init__(self, agent: "Agent"):
         self.agent = agent
+
+    # =========================================================================
+    # Internal event emission (Phase 3 of arch_v5.md)
+    # =========================================================================
+
+    def _emit_event(
+        self,
+        event_type: RunEventType,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Emit a structured RunEventRecord through the agent's event callback.
+
+        Always safe to call: silently no-ops when the agent has no callback,
+        no run_id yet, or the callback raises (event bus must never break a run).
+        """
+        agent = self.agent
+        cb = agent._event_callback
+        run_ctx = agent.run_context
+        if run_ctx is None:
+            return
+        record = RunEventRecord(
+            run_id=run_ctx.run_id,
+            event_type=event_type,
+            agent_id=run_ctx.agent_id,
+            parent_run_id=run_ctx.parent_run_id,
+            payload=payload or {},
+        )
+        if cb is not None:
+            try:
+                cb(record.to_dict())
+            except Exception as e:
+                # Event bus is the single telemetry entry point. Failures must
+                # be visible (warning, not debug) and carry a traceback so a
+                # broken display callback or langfuse exporter is diagnosable.
+                # We still swallow the exception: a misbehaving event consumer
+                # must never abort the agent run itself.
+                logger.warning(
+                    f"event callback failed for {event_type.value}: {e}",
+                    exc_info=True,
+                )
 
     # =========================================================================
     # Agentic loop helpers (safety checks + state)
@@ -174,6 +216,15 @@ class Runner:
         if self._check_death_spiral(messages, loop_state):
             return "\n\n[Error: All tool calls have failed repeatedly. Stopping to prevent infinite loop.]"
 
+        if (
+            loop_state.max_turns is not None
+            and loop_state.turn_count >= loop_state.max_turns
+        ):
+            return (
+                f"\n\n[Reached max_turns={loop_state.max_turns} limit. "
+                f"Returning results collected so far.]"
+            )
+
         _cost_msg = self._check_cost_budget(
             agent.model._cost_tracker, agent._run_max_cost_usd
         )
@@ -204,12 +255,24 @@ class Runner:
                 messages.append(
                     Message(role="user", content="Continue from where you left off.")
                 )
+                logger.debug(
+                    f"[loop] max_tokens recovery #{loop_state.max_tokens_recovery_count}: "
+                    "injecting 'Continue' and looping"
+                )
                 return True  # continue
+            logger.debug(
+                f"[loop] exit: no tool_calls, finish_reason={_finish!r}, "
+                f"turn={loop_state.turn_count}"
+            )
             return False  # break
 
         # Check stop_after_tool_call
         for m in reversed(messages):
             if m.stop_after_tool_call:
+                logger.debug(
+                    f"[loop] exit: stop_after_tool_call on {m.tool_name!r}, "
+                    f"turn={loop_state.turn_count}"
+                )
                 return False  # break
             if m.role == "assistant" and not m.tool_calls:
                 break
@@ -259,6 +322,23 @@ class Runner:
         if not function_calls:
             # All tool calls had errors (already appended to messages by parse_tool_calls)
             return True
+
+        # Log what the LLM asked for this turn — primary signal when diagnosing
+        # "tool loop too many iterations" or "model keeps retrying the same tool".
+        if logger.isEnabledFor(10):  # logging.DEBUG == 10
+            _names = [fc.function.name for fc in function_calls]
+            _first_args = {}
+            if function_calls:
+                _args = function_calls[0].arguments or {}
+                if isinstance(_args, dict):
+                    _first_args = {
+                        k: (str(v)[:80] + "..." if len(str(v)) > 80 else v)
+                        for k, v in list(_args.items())[:3]
+                    }
+            logger.debug(
+                f"[tool-calls] LLM requested {len(function_calls)} tool(s): "
+                f"{_names} first_args={_first_args}"
+            )
 
         # Execute tool calls
         function_call_results: List[Message] = []
@@ -328,7 +408,7 @@ class Runner:
           Stage 5 (reactive compact) is handled in _call_with_retry on API error.
         """
         cb = agent._event_callback
-        agent_name = getattr(agent, "name", None) or "Agent"
+        agent_name = agent.name or "Agent"
 
         # Stage 1: tool result budget (persist oversized results to disk)
         _sid = agent.run_id or 'default'
@@ -417,7 +497,7 @@ class Runner:
             if cb is not None:
                 cb({
                     "type": "compact.reactive",
-                    "agent_name": getattr(agent, "name", None) or "Agent",
+                    "agent_name": agent.name or "Agent",
                     "before": before,
                     "after": len(messages),
                     "elapsed": time.monotonic() - t0,
@@ -596,11 +676,47 @@ class Runner:
                 agent._run_task = asyncio.current_task()
             except RuntimeError:
                 pass
+            # SDK-first run lifecycle (arch_v5.md Phase 0/1/3):
+            # build RunContext + TaskAnchor BEFORE any try/except so the
+            # original goal is anchored from the very first event we emit.
+            #
+            # TaskAnchor is *session-scoped*, not run-scoped. The first run of
+            # a session pins the user's original goal; subsequent runs in the
+            # same session reuse it so retrieval and the prompt's "Original
+            # Task" block stay stable across multi-turn conversations.
+            # When session_id changes, the anchor resets so a brand-new
+            # conversation can establish its own original task.
+            if (
+                agent.task_anchor is None
+                or agent._anchor_session_id != agent.session_id
+            ):
+                agent.task_anchor = TaskAnchor.from_message(message)
+                agent._anchor_session_id = agent.session_id
+            _anchor = agent.task_anchor
+
+            _run_source = RunSource.subagent if agent._parent_run_id else RunSource.sdk
+            _run_ctx = RunContext(
+                session_id=agent.session_id,
+                parent_run_id=agent._parent_run_id,
+                agent_id=agent.agent_id,
+                source=_run_source,
+                task_anchor=_anchor,
+            )
+            agent.run_context = _run_ctx
+            agent.run_id = _run_ctx.run_id
             try:  # R-01 fix: ensure _running is reset on any exception
                 agent.stream = stream and agent.is_streamable
                 agent.stream_intermediate_steps = stream_intermediate_steps and agent.stream
-                agent.run_id = str(uuid4())
                 agent.run_response = RunResponse(run_id=agent.run_id, agent_id=agent.agent_id)
+                _run_ctx.mark_running()
+                self._emit_event(
+                    RunEventType.run_started,
+                    {
+                        "agent_name": agent.name or "Agent",
+                        "source_query": _anchor.source_query,
+                        "session_id": agent.session_id,
+                    },
+                )
 
                 # --- Session resume (CC-style JSONL) ---
                 # On first run, if a session log exists, replay messages from
@@ -632,8 +748,10 @@ class Runner:
                     and agent.workspace.exists()
                     and agent.workspace.get_frozen_context() is None
                 ):
-                    _query = message if isinstance(message, str) else ""
-                    await agent.workspace.freeze_snapshots(query=_query)
+                    # Use the run's TaskAnchor as the freeze query so memory
+                    # retrieval is bound to the *original* goal, not whatever
+                    # `message` happens to be on subsequent runs.
+                    await agent.workspace.freeze_snapshots(query=_anchor.source_query)
 
                 # Set query-level tool/skill filtering (cleared after run)
                 agent._enabled_tools = enabled_tools
@@ -704,7 +822,7 @@ class Runner:
 
                 # 4. Generate response from the Model
                 # The agentic loop (tool call → LLM → ...) is driven here.
-                loop_state = LoopState()
+                loop_state = LoopState(max_turns=agent._max_turns)
 
                 model_response: ModelResponse
                 agent.model = cast(Model, agent.model)
@@ -1078,6 +1196,32 @@ class Runner:
                                 }
                         agent._session_log.append("assistant", _assistant_text, **_model_meta)
 
+                # Run reached natural completion -- mark + emit terminal event.
+                _run_ctx.mark_completed()
+                self._emit_event(
+                    RunEventType.run_completed,
+                    {
+                        "duration_seconds": _run_ctx.duration_seconds,
+                        "had_response": agent.run_response.content is not None,
+                    },
+                )
+            except (AgentCancelledError, asyncio.CancelledError) as _cancel_exc:
+                _run_ctx.mark_cancelled(reason=str(_cancel_exc) or "cancelled")
+                self._emit_event(
+                    RunEventType.run_cancelled,
+                    {"reason": _run_ctx.error},
+                )
+                raise
+            except Exception as _run_exc:
+                _run_ctx.mark_failed(error=f"{type(_run_exc).__name__}: {_run_exc}")
+                self._emit_event(
+                    RunEventType.run_failed,
+                    {
+                        "error": _run_ctx.error,
+                        "exception_type": type(_run_exc).__name__,
+                    },
+                )
+                raise
             finally:
                 agent._running = False
                 agent._run_loop = None

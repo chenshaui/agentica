@@ -56,12 +56,11 @@ class TestSkillToolEmpty(unittest.TestCase):
         self.assertIn(".agentica/skills", result)
 
     def test_get_skill_info_nonexistent(self):
-        """Test get_skill_info() with non-existent skill returns error message."""
+        """Test get_skill_info() with non-existent skill raises ValueError."""
         skill_tool = SkillTool(auto_load=False)
-        result = skill_tool.get_skill_info("nonexistent-skill")
-        
-        self.assertIn("Error", result)
-        self.assertIn("not found", result)
+        with self.assertRaises(ValueError) as ctx:
+            skill_tool.get_skill_info("nonexistent-skill")
+        self.assertIn("not found", str(ctx.exception))
 
     def test_get_system_prompt_empty(self):
         """Test get_system_prompt() returns valid prompt even with no skills."""

@@ -63,66 +63,58 @@ class SearchBochaTool(Tool):
         if not self.api_key:
             return "Please set the BOCHA_API_KEY"
 
-        try:
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "query": query,
+            "summary": self.summary,
+            "count": count or self.count,
+        }
+
+        if self.freshness:
+            payload["freshness"] = self.freshness
+        if self.include:
+            payload["include"] = self.include
+        if self.exclude:
+            payload["exclude"] = self.exclude
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                self.api_url, headers=headers, content=json.dumps(payload), timeout=30
+            )
+            response.raise_for_status()
+            result = response.json()
+
+        if result.get("code") != 200:
+            error_msg = result.get("msg", "Unknown error")
+            logger.error(f"Bocha API error: {error_msg}")
+            raise RuntimeError(f"Bocha API error: {error_msg}")
+
+        data = result.get("data", {})
+        web_pages = data.get("webPages", {})
+        values = web_pages.get("value", [])
+
+        parsed_results = []
+        for item in values:
+            result_dict = {
+                "url": item.get("url", ""),
+                "title": item.get("name", ""),
             }
+            if item.get("snippet"):
+                result_dict["snippet"] = item.get("summary") or item.get("snippet")
+            if item.get("siteName"):
+                result_dict["site_name"] = item.get("siteName")
+            if item.get("datePublished"):
+                result_dict["published_date"] = item.get("datePublished")
 
-            payload = {
-                "query": query,
-                "summary": self.summary,
-                "count": count or self.count,
-            }
+            parsed_results.append(result_dict)
 
-            if self.freshness:
-                payload["freshness"] = self.freshness
-            if self.include:
-                payload["include"] = self.include
-            if self.exclude:
-                payload["exclude"] = self.exclude
-
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    self.api_url, headers=headers, content=json.dumps(payload), timeout=30
-                )
-                response.raise_for_status()
-                result = response.json()
-
-            if result.get("code") != 200:
-                error_msg = result.get("msg", "Unknown error")
-                logger.error(f"Bocha API error: {error_msg}")
-                return f"Error: {error_msg}"
-
-            data = result.get("data", {})
-            web_pages = data.get("webPages", {})
-            values = web_pages.get("value", [])
-
-            parsed_results = []
-            for item in values:
-                result_dict = {
-                    "url": item.get("url", ""),
-                    "title": item.get("name", ""),
-                }
-                if item.get("snippet"):
-                    result_dict["snippet"] = item.get("summary") or item.get("snippet")
-                if item.get("siteName"):
-                    result_dict["site_name"] = item.get("siteName")
-                if item.get("datePublished"):
-                    result_dict["published_date"] = item.get("datePublished")
-
-                parsed_results.append(result_dict)
-
-            parsed_json = json.dumps(parsed_results, ensure_ascii=False)
-            logger.debug(f"Searching bocha for: {query}, results count: {len(parsed_results)}")
-            return parsed_json
-
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Failed to search bocha: {e}")
-            return f"Error: {e}"
-        except Exception as e:
-            logger.error(f"Failed to search bocha: {e}")
-            return f"Error: {e}"
+        parsed_json = json.dumps(parsed_results, ensure_ascii=False)
+        logger.debug(f"Searching bocha for: {query}, results count: {len(parsed_results)}")
+        return parsed_json
 
     async def search_bocha(self, queries: Union[str, List[str]], count: Optional[int] = None) -> str:
         """Search Bocha for single or multiple queries.

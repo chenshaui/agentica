@@ -545,42 +545,37 @@ class LspTool(Tool):
         if not client:
             return f"No LSP server for file: {file_path}"
 
-        try:
-            path = Path(file_path).resolve()
-            if not path.exists():
-                return f"File not found: {file_path}"
+        path = Path(file_path).resolve()
+        if not path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
 
-            self._open_document(client, path)
+        self._open_document(client, path)
 
-            # Small delay to allow server to analyze the file
-            time.sleep(0.5)
+        # Small delay to allow server to analyze the file
+        time.sleep(0.5)
 
-            result = client.hover(path, line, character)
-            if not result:
-                return "No hover information available"
+        result = client.hover(path, line, character)
+        if not result:
+            return "No hover information available"
 
-            contents = result.get("contents")
-            if not contents:
-                return "No hover information available"
+        contents = result.get("contents")
+        if not contents:
+            return "No hover information available"
 
-            # Parse hover contents (can be string or MarkupContent)
-            if isinstance(contents, dict):
-                return contents.get("value", str(contents))
-            elif isinstance(contents, list) and contents:
-                # Array of MarkedString
-                parts = []
-                for item in contents:
-                    if isinstance(item, dict):
-                        parts.append(item.get("value", str(item)))
-                    else:
-                        parts.append(str(item))
-                return "\n".join(parts)
-            else:
-                return str(contents)
-
-        except Exception as e:
-            logger.error(f"LSP hover error: {e}")
-            return f"Error: {str(e)}"
+        # Parse hover contents (can be string or MarkupContent)
+        if isinstance(contents, dict):
+            return contents.get("value", str(contents))
+        elif isinstance(contents, list) and contents:
+            # Array of MarkedString
+            parts = []
+            for item in contents:
+                if isinstance(item, dict):
+                    parts.append(item.get("value", str(item)))
+                else:
+                    parts.append(str(item))
+            return "\n".join(parts)
+        else:
+            return str(contents)
 
     def format_document(self, file_path: str) -> str:
         """Format document using LSP formatter.
@@ -595,60 +590,55 @@ class LspTool(Tool):
         if not client:
             return f"No LSP server for file: {file_path}"
 
-        try:
-            path = Path(file_path).resolve()
-            if not path.exists():
-                return f"File not found: {file_path}"
+        path = Path(file_path).resolve()
+        if not path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
 
-            self._open_document(client, path)
+        self._open_document(client, path)
 
-            edits = client.format_document(path)
+        edits = client.format_document(path)
 
-            if not edits:
-                return "No formatting changes needed"
+        if not edits:
+            return "No formatting changes needed"
 
-            # Apply edits
-            content = path.read_text(encoding='utf-8')
-            # Sort edits in reverse order (to preserve positions)
-            sorted_edits = sorted(
-                edits,
-                key=lambda e: (e["range"]["start"]["line"], e["range"]["start"]["character"]),
-                reverse=True
-            )
+        # Apply edits
+        content = path.read_text(encoding='utf-8')
+        # Sort edits in reverse order (to preserve positions)
+        sorted_edits = sorted(
+            edits,
+            key=lambda e: (e["range"]["start"]["line"], e["range"]["start"]["character"]),
+            reverse=True
+        )
 
-            lines = content.split("\n")
-            for edit in sorted_edits:
-                range_info = edit["range"]
-                start = range_info["start"]
-                end = range_info["end"]
-                new_text = edit["newText"]
+        lines = content.split("\n")
+        for edit in sorted_edits:
+            range_info = edit["range"]
+            start = range_info["start"]
+            end = range_info["end"]
+            new_text = edit["newText"]
 
-                # Convert to 0-based indices
-                start_line = start["line"]
-                start_char = start["character"]
-                end_line = end["line"]
-                end_char = end["character"]
+            # Convert to 0-based indices
+            start_line = start["line"]
+            start_char = start["character"]
+            end_line = end["line"]
+            end_char = end["character"]
 
-                # Apply edit
-                if start_line == end_line:
-                    lines[start_line] = lines[start_line][:start_char] + new_text + lines[start_line][end_char:]
-                else:
-                    # Multi-line edit
-                    before = lines[start_line][:start_char]
-                    after = lines[end_line][end_char:]
-                    new_lines = new_text.split("\n")
-                    lines[start_line] = before + new_lines[0]
-                    lines[start_line + 1:end_line + 1] = new_lines[1:] if len(new_lines) > 1 else []
-                    if new_lines:
-                        lines[start_line] += after
+            # Apply edit
+            if start_line == end_line:
+                lines[start_line] = lines[start_line][:start_char] + new_text + lines[start_line][end_char:]
+            else:
+                # Multi-line edit
+                before = lines[start_line][:start_char]
+                after = lines[end_line][end_char:]
+                new_lines = new_text.split("\n")
+                lines[start_line] = before + new_lines[0]
+                lines[start_line + 1:end_line + 1] = new_lines[1:] if len(new_lines) > 1 else []
+                if new_lines:
+                    lines[start_line] += after
 
-            # Write back
-            path.write_text("\n".join(lines), encoding='utf-8')
-            return f"Document formatted: {file_path}"
-
-        except Exception as e:
-            logger.error(f"LSP format error: {e}")
-            return f"Error formatting document: {str(e)}"
+        # Write back
+        path.write_text("\n".join(lines), encoding='utf-8')
+        return f"Document formatted: {file_path}"
 
     def __del__(self):
         """Cleanup LSP servers on deletion."""

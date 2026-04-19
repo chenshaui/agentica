@@ -108,6 +108,10 @@ class TestExperienceCaptureHooks(unittest.TestCase):
         # New store-based mocks (hooks now call these)
         mock_event_store = MagicMock()
         mock_event_store.append = AsyncMock(return_value="/tmp/events.jsonl")
+        mock_event_store.read_all = AsyncMock(return_value=[])
+        # events_path needs .stat() for the failed-tools cache; point at a
+        # known-missing path so .stat() raises FileNotFoundError -> empty set.
+        mock_event_store.events_path = Path("/tmp/agentica_test_nonexistent_events.jsonl")
         agent.workspace.get_experience_event_store = MagicMock(return_value=mock_event_store)
         mock_compiled_store = MagicMock()
         mock_compiled_store.write = AsyncMock(return_value="/tmp/exp.md")
@@ -218,7 +222,6 @@ class TestExperienceCaptureHooks(unittest.TestCase):
             "scope": "cross_session",
             "should_persist": True,
             "persist_target": "experience",
-            "title": "use_pandas_not_csv",
             "rule": "Use pandas for data processing, not raw CSV parsing",
             "why": "User prefers pandas for data tasks",
             "how_to_apply": "When doing data processing tasks",
@@ -229,17 +232,28 @@ class TestExperienceCaptureHooks(unittest.TestCase):
         asyncio.run(hooks.on_user_prompt(agent, "No, use pandas instead of csv module"))
         asyncio.run(hooks.on_agent_end(agent, output="OK, switching to pandas."))
 
-        # Should have written via compiled_store.write with the classified title
+        # Title is now derived deterministically from the rule via _rule_to_title
+        # capped at _TITLE_TOKEN_CAP stems (4 by default).
         compiled_store = agent.workspace.get_compiled_experience_store()
         calls = compiled_store.write.call_args_list
         correction_calls = [c for c in calls if c[0][0].experience_type == "correction"]
         self.assertEqual(len(correction_calls), 1)
-        self.assertEqual(correction_calls[0][0][0].title, "use_pandas_not_csv")
+        self.assertEqual(
+            correction_calls[0][0][0].title,
+            "panda_data_process_raw",
+        )
 
     def test_on_agent_end_llm_classification_low_confidence_skips(self):
         """Low confidence classification should not persist."""
         hooks = self._make_hooks()
         agent = self._mock_agent()
+
+        # Provide a previous assistant turn so the structural gate lets the
+        # LLM classifier run (corrections require prior assistant context).
+        prev_msg = MagicMock()
+        prev_msg.role = "assistant"
+        prev_msg.content = "Here is what I did before."
+        agent.working_memory.messages = [prev_msg]
 
         mock_response = MagicMock()
         mock_response.content = json.dumps({
@@ -264,6 +278,12 @@ class TestExperienceCaptureHooks(unittest.TestCase):
         """persist_target=memory_feedback should be ignored (no cross-layer write)."""
         hooks = self._make_hooks()
         agent = self._mock_agent()
+
+        # Previous assistant turn required for the classification gate.
+        prev_msg = MagicMock()
+        prev_msg.role = "assistant"
+        prev_msg.content = "Here is my prior verbose reply."
+        agent.working_memory.messages = [prev_msg]
 
         mock_response = MagicMock()
         mock_response.content = json.dumps({
@@ -420,6 +440,30 @@ class TestExperienceCaptureHooks(unittest.TestCase):
         model_call = agent.model.response.call_args
         prompt_content = model_call[0][0][0].content
         self.assertIn("CSV parsing", prompt_content)
+
+    def test_first_turn_skips_llm_classification(self):
+        """No previous assistant message -> LLM classification must be skipped.
+
+        First-turn user messages cannot be corrections (there is nothing to
+        correct yet), so the expensive classifier call is pruned by a
+        structural gate — no keyword heuristics.
+        """
+        hooks = self._make_hooks()
+        agent = self._mock_agent()
+        # _mock_agent already sets working_memory.messages = [] — explicit here.
+        agent.working_memory.messages = []
+        agent.model.response = AsyncMock()
+
+        asyncio.run(hooks.on_agent_start(agent))
+        asyncio.run(hooks.on_user_prompt(agent, "No, use pandas instead"))
+        asyncio.run(hooks.on_agent_end(agent, output="OK"))
+
+        # Structural gate: no prev assistant -> classifier never runs.
+        agent.model.response.assert_not_called()
+        compiled_store = agent.workspace.get_compiled_experience_store()
+        calls = compiled_store.write.call_args_list
+        correction_calls = [c for c in calls if c[0][0].experience_type == "correction"]
+        self.assertEqual(len(correction_calls), 0)
 
     def test_events_written_before_experience_cards(self):
         """Raw events should be appended via ExperienceEventStore.append."""
@@ -607,9 +651,28 @@ class TestRunInputCrossRoundFix(unittest.TestCase):
         asyncio.run(hooks.on_agent_start(agent))
         asyncio.run(hooks.on_tool_end(agent, tool_name="read_file"))
 
-        # Simulate Runner setting run_input
-        agent.run_input = "What files handle authentication?"
-        asyncio.run(hooks.on_agent_end(agent, output="The auth files are..."))
+        # Simulate Runner setting run_input. The message must exceed the
+        # MemoryExtractHooks 200-char skip threshold, otherwise the structural
+        # gate drops the LLM call before we can assert on the prompt.
+        agent.run_input = (
+            "What files handle authentication in this codebase, and how is "
+            "the session/token lifecycle wired between the middleware, the "
+            "auth provider, and the database layer?"
+        )
+        asyncio.run(hooks.on_agent_end(
+            agent,
+            output=(
+                "The auth files are in agentica/auth/*; session lifecycle is "
+                "in middleware.py and tokens are minted in provider.py. "
+                "Specifically, the middleware intercepts each incoming request, "
+                "checks the Authorization header for a Bearer token, validates "
+                "it via provider.py's verify_token() function, and stores the "
+                "decoded user context in request.state.user. The database "
+                "layer persists session metadata in the sessions table, with "
+                "expiry tracked via a TTL column that the middleware checks on "
+                "every request to decide whether to refresh or reject."
+            ),
+        ))
 
         # Verify model was called with the CURRENT run_input
         model_call = agent.model.response.call_args
@@ -1002,15 +1065,78 @@ class TestExperienceCompiler(unittest.TestCase):
         classification = {
             "is_correction": True, "confidence": 0.9,
             "should_persist": True, "persist_target": "experience",
-            "title": "use_pandas", "rule": "Use pandas",
+            "rule": "Always use pandas for tabular data",
             "why": "Better", "how_to_apply": "Always",
             "category": "preference", "scope": "cross_session",
         }
         card = ExperienceCompiler.compile_correction(classification)
         self.assertIsNotNone(card)
-        self.assertEqual(card.title, "use_pandas")
+        # Title is derived deterministically from rule, ignoring any LLM-supplied title.
+        # "always" + "use" + "for" are stop-words; "pandas" stems to "panda".
+        self.assertEqual(card.title, "panda_tabular_data")
         self.assertEqual(card.experience_type, "correction")
         self.assertIn("pandas", card.content)
+
+    def test_compile_correction_ignores_llm_title(self):
+        """LLM-supplied 'title' must not influence the compiled card title."""
+        from agentica.experience.compiler import ExperienceCompiler
+        base = {
+            "is_correction": True, "should_persist": True,
+            "persist_target": "experience",
+            "rule": "Check directory exists before reading file",
+        }
+        a = ExperienceCompiler.compile_correction({**base, "title": "foo_bar"})
+        b = ExperienceCompiler.compile_correction({**base, "title": "totally_different"})
+        self.assertEqual(a.title, b.title)
+        self.assertNotIn("foo_bar", a.title)
+
+    def test_compile_correction_empty_rule_returns_none(self):
+        from agentica.experience.compiler import ExperienceCompiler
+        card = ExperienceCompiler.compile_correction({
+            "is_correction": True, "should_persist": True,
+            "persist_target": "experience", "rule": "   ",
+        })
+        self.assertIsNone(card)
+
+    def test_rule_to_title_stable_across_rewordings(self):
+        from agentica.experience.compiler import _rule_to_title, _TITLE_TOKEN_CAP
+        # Same semantic rule, different surface form → identical title.
+        t1 = _rule_to_title("Always check that the directory exists before reading")
+        t2 = _rule_to_title("Check directory exists before reading")
+        self.assertEqual(t1, t2)
+        self.assertTrue(t1)
+        # Stop-word-only input degrades to empty string.
+        self.assertEqual(_rule_to_title("the and or"), "")
+        # Caps at _TITLE_TOKEN_CAP stems.
+        long_rule = "alpha beta gamma delta epsilon zeta eta theta"
+        self.assertEqual(
+            _rule_to_title(long_rule).count("_"), _TITLE_TOKEN_CAP - 1,
+        )
+
+    def test_rule_to_title_stems_inflections(self):
+        """Cheap stemming collapses read/reading/reads onto the same token."""
+        from agentica.experience.compiler import _rule_to_title
+        a = _rule_to_title("check directory before read file")
+        b = _rule_to_title("check directory before reading file")
+        c = _rule_to_title("check directory before reads file")
+        self.assertEqual(a, b)
+        self.assertEqual(b, c)
+
+    def test_rule_to_title_dedups_repeated_stems(self):
+        """Repeated tokens should not eat into the cap."""
+        from agentica.experience.compiler import _rule_to_title
+        title = _rule_to_title("read read read directory file alpha")
+        # 'read' counted once, then 'directory', 'file', 'alpha'
+        self.assertEqual(title, "read_directory_file_alpha")
+
+    def test_rule_to_title_drops_process_noise(self):
+        """Step / first / second / call / list-noise must not appear in title."""
+        from agentica.experience.compiler import _rule_to_title
+        title = _rule_to_title(
+            "Step 1: call ls. Step 2: confirm file. Always check directory before read file."
+        )
+        for noise in ("step", "call", "always", "first", "second"):
+            self.assertNotIn(noise, title)
 
     def test_compile_correction_not_correction(self):
         from agentica.experience.compiler import ExperienceCompiler

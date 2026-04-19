@@ -173,59 +173,54 @@ class ShellTool(Tool):
         Returns:
             str: The output of the command (stdout + stderr) with exit code
         """
+        # Convert python -c with multi-line code to heredoc format
+        command = self._convert_python_c_to_heredoc(command)
+
+        logger.debug(f"Executing command: {command}")
+
+        # Execute command using async subprocess
+        process = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(self.work_dir) if self.work_dir else None,
+        )
+
         try:
-            # Convert python -c with multi-line code to heredoc format
-            command = self._convert_python_c_to_heredoc(command)
-
-            logger.debug(f"Executing command: {command}")
-
-            # Execute command using async subprocess
-            process = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(self.work_dir) if self.work_dir else None,
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=self.timeout
             )
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+            logger.warning(f"Command timed out after {self.timeout}s: {command}")
+            raise TimeoutError(f"Command timed out after {self.timeout} seconds")
 
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(),
-                    timeout=self.timeout
-                )
-            except asyncio.TimeoutError:
-                process.kill()
-                await process.wait()
-                logger.warning(f"Command timed out after {self.timeout}s: {command}")
-                return f"Error: Command timed out after {self.timeout} seconds"
+        # Decode output
+        stdout_str = stdout.decode(errors='replace') if stdout else ""
+        stderr_str = stderr.decode(errors='replace') if stderr else ""
 
-            # Decode output
-            stdout_str = stdout.decode(errors='replace') if stdout else ""
-            stderr_str = stderr.decode(errors='replace') if stderr else ""
+        # Combine stdout and stderr
+        output_parts = []
+        if stdout_str:
+            output_parts.append(stdout_str)
+        if stderr_str:
+            output_parts.append(f"[stderr]\n{stderr_str}")
 
-            # Combine stdout and stderr
-            output_parts = []
-            if stdout_str:
-                output_parts.append(stdout_str)
-            if stderr_str:
-                output_parts.append(f"[stderr]\n{stderr_str}")
+        output = "\n".join(output_parts).strip()
 
-            output = "\n".join(output_parts).strip()
+        # Truncate if too long
+        if len(output) > self.max_output_length:
+            output = output[:self.max_output_length] + "\n... (output truncated)"
 
-            # Truncate if too long
-            if len(output) > self.max_output_length:
-                output = output[:self.max_output_length] + "\n... (output truncated)"
+        # Add exit code info
+        returncode = process.returncode
+        if returncode != 0:
+            output = f"{output}\n\n[Exit code: {returncode}]"
 
-            # Add exit code info
-            returncode = process.returncode
-            if returncode != 0:
-                output = f"{output}\n\n[Exit code: {returncode}]"
-
-            logger.debug(f"Command exit code: {returncode}")
-            return output if output else f"Command executed successfully (exit code: {returncode})"
-
-        except Exception as e:
-            logger.warning(f"Failed to run shell command: {e}")
-            return f"Error: {e}"
+        logger.debug(f"Command exit code: {returncode}")
+        return output if output else f"Command executed successfully (exit code: {returncode})"
 
 
 if __name__ == '__main__':

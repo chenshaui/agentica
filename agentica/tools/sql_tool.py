@@ -9,6 +9,7 @@ from typing import List, Optional, Dict, Any
 
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import ResourceClosedError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.inspection import inspect
 from sqlalchemy.sql.expression import text
@@ -71,13 +72,9 @@ class SQLTool(Tool):
         if self.tables is not None:
             return json.dumps(self.tables)
 
-        try:
-            table_names = inspect(self.db_engine).get_table_names()
-            logger.debug(f"table_names: {table_names}")
-            return json.dumps(table_names)
-        except Exception as e:
-            logger.error(f"Error getting tables: {e}")
-            return f"Error getting tables: {e}"
+        table_names = inspect(self.db_engine).get_table_names()
+        logger.debug(f"table_names: {table_names}")
+        return json.dumps(table_names)
 
     def describe_table(self, table_name: str) -> str:
         """Use this function to describe a table.
@@ -89,13 +86,9 @@ class SQLTool(Tool):
             str: schema of a table
         """
 
-        try:
-            table_names = inspect(self.db_engine)
-            table_schema = table_names.get_columns(table_name)
-            return json.dumps([str(column) for column in table_schema])
-        except Exception as e:
-            logger.error(f"Error getting table schema: {e}")
-            return f"Error getting table schema: {e}"
+        table_names = inspect(self.db_engine)
+        table_schema = table_names.get_columns(table_name)
+        return json.dumps([str(column) for column in table_schema])
 
     def run_sql_query(self, query: str, limit: Optional[int] = 10) -> str:
         """Use this function to run a SQL query and return the result.
@@ -108,11 +101,7 @@ class SQLTool(Tool):
             str: Result of the SQL query. The result may be empty if the query does not return any data.
         """
 
-        try:
-            return json.dumps(self._run_sql(sql=query, limit=limit), default=str, ensure_ascii=False)
-        except Exception as e:
-            logger.error(f"Error running query: {e}")
-            return f"Error running query: {e}"
+        return json.dumps(self._run_sql(sql=query, limit=limit), default=str, ensure_ascii=False)
 
     def _run_sql(self, sql: str, limit: Optional[int] = None) -> List[dict]:
         """Internal function to run a sql query.
@@ -129,15 +118,15 @@ class SQLTool(Tool):
         with self.Session() as sess, sess.begin():
             result = sess.execute(text(sql))
 
-            # Check if the operation has returned rows.
+            # Non-SELECT statements (DDL/DML) don't expose a rowset; fetch*
+            # raises ResourceClosedError in that case — treat it as "no rows".
             try:
                 if limit:
                     rows = result.fetchmany(limit)
                 else:
                     rows = result.fetchall()
                 return [row._asdict() for row in rows]
-            except Exception as e:
-                logger.error(f"Error while executing SQL: {e}")
+            except ResourceClosedError:
                 return []
 
 

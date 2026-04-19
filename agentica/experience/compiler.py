@@ -7,8 +7,88 @@ Pure/stateless experience compiler.
 Transforms raw captured data (tool errors, user messages, success patterns)
 into compiled experience cards. No I/O, no state — takes inputs, returns outputs.
 """
+import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional
+
+
+# arch_v5 §8: title is the dedup key for `CompiledExperienceStore.write`.
+# Letting the LLM freely name the title means semantically-equivalent rules
+# end up as different files, so `repeat_count` never crosses the skill-spawn
+# threshold. We derive the title deterministically from `rule` instead.
+_RULE_STOPWORDS = frozenset({
+    "a", "an", "the", "is", "are", "be", "being", "been", "to", "of", "in",
+    "on", "at", "for", "by", "with", "from", "as", "or", "and", "but", "not",
+    "no", "always", "never", "should", "must", "when", "if", "then", "else",
+    "this", "that", "you", "your", "please", "do", "does", "did", "make",
+    "sure", "try", "use", "using", "used", "via",
+    # Process / sequence noise that LLMs love to sprinkle in but that
+    # carries no rule identity. Dropping these lets paraphrases like
+    # "Step 1: check X before Y" and "always check X before Y" collapse
+    # to the same dedup key.
+    "step", "steps", "first", "second", "third", "fourth", "fifth",
+    "follow", "follows", "following", "followed",
+    "every", "any", "each", "all", "next", "once", "now", "again",
+    "ensure", "ensures", "ensuring",
+    "attempt", "attempts", "attempting", "attempted",
+    "perform", "performs", "performing", "performed",
+    "call", "calls", "calling", "called",
+    "appear", "appears", "appearing", "appeared",
+    "proceed", "proceeds", "proceeding", "proceeded",
+    "remember", "remembers", "remembering", "remembered",
+})
+
+# Dedup-key budget. Only the first N stems form the filename — keep this
+# small so different LLM rewordings of the same rule still collide.
+# 4 stems is the sweet spot in practice: long enough to avoid false
+# merges across distinct procedural rules, short enough that the
+# common verb-object kernel survives noisy paraphrasing.
+_TITLE_TOKEN_CAP = 4
+
+
+def _stem(token: str) -> str:
+    """Cheap suffix stripping so 'read' / 'reading' / 'reads' collide.
+
+    Not a real stemmer — just trims the most common English inflections
+    that flip an LLM's rewording into a different filename. Conservative:
+    only strips when the surviving root is still >= 3 chars.
+    """
+    for suf in ("ings", "ing", "ies", "ied", "ed", "es", "s"):
+        if token.endswith(suf) and len(token) - len(suf) >= 3:
+            base = token[: -len(suf)]
+            if suf == "ies":
+                base += "y"
+            return base
+    return token
+
+
+def _rule_to_title(rule: str) -> str:
+    """Deterministic snake_case title derived from rule text.
+
+    Stable across LLM rewordings: ``"Always check directory exists before
+    reading"`` and ``"Check that the directory exists before you read"`` both
+    collapse onto a token set close enough that the resulting filenames will
+    bump each other's ``repeat_count``.
+
+    Returns empty string when nothing meaningful survives stop-word filtering;
+    callers should treat that as "give up on this rule".
+    """
+    tokens = re.findall(r"[a-z]+", rule.lower())
+    seen: set = set()
+    keep: list = []
+    for raw in tokens:
+        if raw in _RULE_STOPWORDS or len(raw) <= 2:
+            continue
+        stem = _stem(raw)
+        if stem in _RULE_STOPWORDS or len(stem) <= 2:
+            continue
+        if stem in seen:
+            continue
+        seen.add(stem)
+        keep.append(stem)
+    if not keep:
+        return ""
+    return "_".join(keep[:_TITLE_TOKEN_CAP])
 
 
 @dataclass(frozen=True)
@@ -123,8 +203,12 @@ class ExperienceCompiler:
         if classification.get("persist_target", "none") != "experience":
             return None
 
-        title = classification.get("title", "user_correction")
-        rule = classification.get("rule", "")
+        rule = (classification.get("rule") or "").strip()
+        if not rule:
+            # rule is the dedup key under arch_v5 — without it the card has
+            # no stable identity and would just bump itself per turn.
+            return None
+        title = _rule_to_title(rule) or "user_correction"
         why = classification.get("why", "")
         how_to_apply = classification.get("how_to_apply", "")
         category = classification.get("category", "")

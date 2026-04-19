@@ -620,6 +620,5 @@ class TestFileUndoEdit:
         tool = BuiltinFileTool(work_dir=tempfile.mkdtemp())
         asyncio.run(tool.write_file("test.txt", "content"))
 
-        result = asyncio.run(tool.undo_edit("test.txt"))
-        assert "Error" in result
-        assert "No previous version" in result
+        with pytest.raises(FileNotFoundError, match="No previous version"):
+            asyncio.run(tool.undo_edit("test.txt"))

@@ -9,10 +9,16 @@ Two levels of hooks:
   on_llm_end, on_tool_start, on_tool_end, on_agent_transfer), passed to run()
 - ConversationArchiveHooks: auto-archives conversations to workspace after each run
 """
+import asyncio
 import json
-from typing import Any, Optional, List, Dict
+from typing import Any, Optional, List, Dict, Tuple
 
 from agentica.experience.skill_upgrade import SkillEvolutionManager
+from agentica.learning_report import (
+    LearningReport,
+    LearningStatus,
+    write_learning_report,
+)
 from agentica.model.message import Message
 from agentica.tools.skill_tool import SkillTool
 from agentica.utils.log import logger
@@ -27,15 +33,6 @@ MEMORY_TYPE_SPEC = (
     "  When to save: when you learn details about the user's role, preferences, "
     "responsibilities, or knowledge.\n"
     "  Example: 'User is a data scientist focused on observability/logging.'\n\n"
-    "**feedback** — Guidance on how to approach work: what to avoid AND what "
-    "to keep doing.\n"
-    "  When to save: any time the user corrects an approach ('don't do X') OR "
-    "confirms a non-obvious approach worked ('yes exactly', 'perfect'). "
-    "Corrections are easy to notice; confirmations are quieter — watch for them.\n"
-    "  Body structure: lead with the rule, then **Why:** (the reason), then "
-    "**How to apply:** (when/where this kicks in).\n"
-    "  Example: 'Integration tests must use real DB. Why: mock/prod divergence "
-    "masked a broken migration. How to apply: tests/integration/.'\n\n"
     "**project** — Information about ongoing work, goals, bugs, or incidents "
     "NOT derivable from code or git history.\n"
     "  When to save: when you learn who is doing what, why, or by when. "
@@ -124,6 +121,11 @@ class RunHooks:
                 self.event_counter += 1
                 print(f"#{self.event_counter}: Agent {agent.name} ended")
     """
+
+    # Hooks with parallelizable=True can run concurrently via asyncio.gather
+    # in _CompositeRunHooks.on_agent_end. Set to False for hooks that must
+    # run after all parallel hooks complete (e.g. skill spawning).
+    parallelizable: bool = True
 
     async def on_agent_start(self, agent: Any, **kwargs) -> None:
         """Called when any agent begins execution within this run."""
@@ -308,8 +310,9 @@ class MemoryExtractHooks(RunHooks):
         + MEMORY_EXCLUSION_SPEC +
         "\n## Output format\n\n"
         "For each memory, output a JSON object with fields:\n"
-        '  {"title": "short_name", "content": "what to remember (include Why + '
-        'How to apply for feedback type)", "type": "user|feedback|project|reference"}\n\n'
+        '  {"title": "short_name", "content": "what to remember", '
+        '"type": "user|project|reference"}\n\n'
+        "Do NOT extract feedback/corrections — those are handled separately.\n\n"
         "Output a JSON array of memories. If nothing worth remembering, output: []\n\n"
         "Conversation:\n"
     )
@@ -358,8 +361,17 @@ class MemoryExtractHooks(RunHooks):
         if output and isinstance(output, str):
             conversation_text += f"Assistant: {output}\n"
 
-        # Skip very short conversations (nothing to extract)
-        if len(conversation_text) < 50:
+        # Skip short conversations. 200 chars filters out trivial interactions
+        # like "read file X" + "file not found" (~80 chars) where there is
+        # nothing memory-worthy to extract, saving a full LLM round-trip per
+        # turn in tool-heavy workflows.
+        if len(conversation_text) < 200:
+            return
+
+        # Tool-heavy turns with short output are almost always tool-result
+        # summaries (e.g. "File not found", "Directory listing: ...") with no
+        # substantive reasoning worth memorizing. Skip the LLM extraction.
+        if tool_calls and output and len(output) < 500:
             return
 
         # Use the agent's model to extract memories
@@ -402,7 +414,7 @@ class MemoryExtractHooks(RunHooks):
                 mem_type = mem.get("type", "project").strip()
                 if not title or not content:
                     continue
-                if mem_type not in ("user", "feedback", "project", "reference"):
+                if mem_type not in ("user", "project", "reference"):
                     mem_type = "project"
 
                 await workspace.write_memory_entry(
@@ -411,8 +423,9 @@ class MemoryExtractHooks(RunHooks):
                     memory_type=mem_type,
                     description=title,
                     sync_to_global_agent_md=(
-                        self._sync_memories_to_global_agent_md and mem_type in ("user", "feedback")
+                        self._sync_memories_to_global_agent_md and mem_type == "user"
                     ),
+                    source="auto_extract",
                 )
                 logger.debug(f"Auto-extracted memory: {title} (type: {mem_type})")
 
@@ -445,6 +458,8 @@ class ExperienceCaptureHooks(RunHooks):
         response = await agent.run("Hello", config=RunConfig(hooks=hooks))
     """
 
+    parallelizable = False
+
     # LLM prompt for feedback classification
     _FEEDBACK_CLASSIFY_PROMPT = (
         "You are judging whether the user's latest message is a correction or "
@@ -455,22 +470,33 @@ class ExperienceCaptureHooks(RunHooks):
         "Decide:\n"
         "1. Is the user correcting the assistant, rejecting its approach, or "
         "imposing a behavioral constraint?\n"
-        "2. Is this feedback only relevant to the current turn, or should it be "
-        "remembered across future sessions?\n"
-        "3. If it should be remembered, normalize it into a reusable rule.\n\n"
+        "2. Is this a reusable rule worth remembering for future sessions?\n"
+        "3. If yes, normalize it into a reusable rule.\n\n"
         "Important:\n"
-        "- Do not rely on literal phrases.\n"
-        "- Indirect corrections count.\n"
-        "- Quoted text, examples, or hypothetical statements are NOT corrections.\n"
-        "- Only mark should_persist=true when the feedback is generalizable.\n\n"
+        "- Do not rely on literal phrases. Indirect corrections still count.\n"
+        "- Code snippets, log lines, or hypothetical examples in quotes are NOT corrections.\n"
+        "- A pure retry request (e.g. 'try again', 'read another file') is NOT "
+        "a correction.\n"
+        "- When the user explicitly states a workflow, procedure, or rule (e.g. "
+        "'always do X before Y', 'the rule is ...', '下次请先 ...'), set "
+        "should_persist=true and persist_target=\"experience\".\n"
+        "- Set persist_target=\"experience\" for any cross-session reusable "
+        "rule; use \"none\" only for turn-specific feedback or non-corrections.\n\n"
+        "Rule field requirements (CRITICAL — this becomes the dedup key):\n"
+        "- If the user gives an explicit quoted rule string (\"the rule is: '<X>'\", "
+        "'apply this rule: \"<X>\"', etc.), copy <X> verbatim into the rule field. "
+        "Do not paraphrase, do not add steps, do not prepend 'Always'.\n"
+        "- Otherwise, condense to a single short verb-object phrase, "
+        "<= 8 words, no leading 'Always/Never/Please', no trailing period.\n"
+        "- The rule must be the same string every time the same intent recurs — "
+        "it is hashed to a filename.\n\n"
         "Return JSON only with these fields:\n"
         '{"is_correction": bool, "confidence": float (0-1), '
         '"category": "factual|preference|workflow|tool_usage|rejection|not_correction", '
         '"scope": "turn_only|session|cross_session", '
         '"should_persist": bool, '
-        '"persist_target": "none|experience|session_only", '
-        '"title": "snake_case_short_name", '
-        '"rule": "one-line reusable rule", '
+        '"persist_target": "none|experience", '
+        '"rule": "verb-object phrase, <= 8 words", '
         '"why": "reason this matters", '
         '"how_to_apply": "when and where to apply this rule"}\n\n'
     )
@@ -483,6 +509,11 @@ class ExperienceCaptureHooks(RunHooks):
         self._last_assistant_output: Dict[str, Optional[str]] = {}
         self._skills_used: Dict[str, set] = {}  # agent_id -> set of skill names loaded via get_skill_info
         self._correction_detected: Dict[str, bool] = {}  # agent_id -> True if correction persisted this run
+        # Cache for the tool_recovery gate. Keyed by workspace events.jsonl
+        # path; value is (last_seen_size, set_of_failed_tool_names). Avoids
+        # rescanning the entire jsonl on every on_agent_end. Refreshed when
+        # the file has grown since last lookup.
+        self._failed_tools_cache: Dict[str, Tuple[int, set]] = {}
 
     async def on_agent_start(self, agent: Any, **kwargs) -> None:
         """Initialize per-agent capture state."""
@@ -526,11 +557,45 @@ class ExperienceCaptureHooks(RunHooks):
             })
 
         # Track generated skills only when get_skill_info returned real content.
+        # After方案A: skill_tool raises on missing/disabled skills, so is_error=True
+        # filters out those cases. No need to inspect the result text.
         if tool_name == "get_skill_info" and tool_args and not is_error:
-            result_text = str(result) if result is not None else ""
             skill_name = tool_args.get("skill_name") or tool_args.get("name", "")
-            if skill_name and not result_text.startswith("Error:"):
+            if skill_name:
                 self._skills_used.setdefault(aid, set()).add(skill_name)
+
+    async def _get_past_failed_tools(self, event_store: Any) -> set:
+        """Set of tool names with at least one prior ``tool_error`` event.
+
+        Cheap path: if events.jsonl size is unchanged since the last call,
+        return the cached set. Otherwise re-read the file and refresh the
+        cache (size + set). Detects peer writers because any append from
+        another process / hook instance grows the file.
+
+        Note: ``tool_error`` events written earlier in the current
+        ``on_agent_end`` (step 1, before step 1b runs) are visible here
+        because they were already appended via ``event_store.append`` —
+        which is why a tool that fails AND succeeds in the same turn
+        correctly counts as a recovery.
+        """
+        path = event_store.events_path
+        cache_key = str(path)
+        try:
+            current_size = path.stat().st_size
+        except FileNotFoundError:
+            return self._failed_tools_cache.setdefault(cache_key, (0, set()))[1]
+
+        cached = self._failed_tools_cache.get(cache_key)
+        if cached is not None and cached[0] == current_size:
+            return cached[1]
+
+        failed = {
+            e.get("tool")
+            for e in await event_store.read_all()
+            if e.get("event_type") == "tool_error" and e.get("tool")
+        }
+        self._failed_tools_cache[cache_key] = (current_size, failed)
+        return failed
 
     async def on_agent_end(self, agent: Any, output: Any, **kwargs) -> None:
         """Persist captured experiences to workspace.
@@ -538,6 +603,10 @@ class ExperienceCaptureHooks(RunHooks):
         Flow: write raw events -> compile cards -> persist -> lifecycle -> sync.
         Delegates compilation to ExperienceCompiler (pure, no I/O).
         Delegates persistence to ExperienceEventStore / CompiledExperienceStore.
+
+        Also emits a structured LearningReport (arch_v5.md Phase 2) so the
+        operator can answer "did this run actually learn anything?" without
+        grepping logs.
         """
         from agentica.experience.compiler import ExperienceCompiler
 
@@ -553,6 +622,15 @@ class ExperienceCaptureHooks(RunHooks):
         workspace = agent.workspace
         if workspace is None:
             return
+
+        # Build the LearningReport scaffold up-front so each branch below can
+        # mutate counters / status as it goes. Persistence happens at the end.
+        report = LearningReport(
+            run_id=agent.run_id or aid,
+            agent_id=aid,
+            session_id=agent.session_id,
+            tool_errors_captured=len(errors),
+        )
 
         # Read run_input directly — Runner sets it before calling on_agent_end
         run_input = agent.run_input
@@ -575,6 +653,41 @@ class ExperienceCaptureHooks(RunHooks):
         )
         for event in raw_events:
             await event_store.append(event)
+        if raw_events:
+            logger.debug(
+                f"[experience] appended {len(raw_events)} raw event(s): "
+                f"types={[e.get('event_type') for e in raw_events]}"
+            )
+
+        # ── 1b. Emit tool_recovery events (decoupled from skill installation) ──
+        # Semantic: emit one ``tool_recovery`` per (run, tool) when a tool
+        # invocation succeeds in this run AND the same tool has any prior
+        # ``tool_error`` event in the workspace's events.jsonl (including
+        # earlier in the very same run — failures from raw_events written
+        # in step 1 above are visible here because they were already
+        # appended). This is the bootstrap signal that drives
+        # ``min_success_applications``; it is independent of whether any
+        # skill is installed (solves the chicken-and-egg problem).
+        #
+        # Concurrent writers: each agent run is independent evidence of
+        # recovery — two parallel agents that both succeed at write_file
+        # legitimately contribute two recovery events. No lock is needed;
+        # events.jsonl is append-only and the in-process cache only gates
+        # the cheap path (a stat+size delta forces a refresh whenever a
+        # peer has written).
+        if successes and self._config.capture_success_patterns:
+            failed_tools = await self._get_past_failed_tools(event_store)
+            emitted_tools: set = set()
+            for s in successes:
+                tool = s.get("tool")
+                if not tool or tool not in failed_tools or tool in emitted_tools:
+                    continue
+                emitted_tools.add(tool)
+                await event_store.append({
+                    "event_type": "tool_recovery",
+                    "tool": tool,
+                    "elapsed": s.get("elapsed", 0.0),
+                })
 
         # ── 2. Compile and persist experience cards ──
 
@@ -589,25 +702,36 @@ class ExperienceCaptureHooks(RunHooks):
             seen_titles.add(card.title)
             try:
                 await compiled_store.write(card)
+                report.cards_written += 1
             except Exception as e:
                 logger.warning(f"Failed to write tool error experience: {e}")
 
-        # 2b. LLM-based correction classification
-        if self._config.capture_user_corrections and user_msg:
+        # 2b. LLM-based correction classification.
+        # Structural pre-filter (no keyword heuristics): a correction requires
+        # a previous assistant turn to correct. First-turn messages cannot be
+        # corrections by definition, so skip the LLM call entirely.
+        if (
+            self._config.capture_user_corrections
+            and user_msg
+            and previous_assistant_text
+        ):
             model = self._get_classification_model(agent)
             if model is not None:
                 was_correction = await self._classify_and_persist_feedback(
                     model, event_store, compiled_store,
-                    user_msg, previous_assistant_text or "",
+                    user_msg, previous_assistant_text,
                 )
                 if was_correction:
                     correction_this_run = True
+                    report.corrections_persisted += 1
+                    report.cards_written += 1
 
         # 2c. Success pattern
         success_card = ExperienceCompiler.compile_success_pattern(successes)
         if success_card and not errors:
             try:
                 await compiled_store.write(success_card)
+                report.cards_written += 1
             except Exception as e:
                 logger.warning(f"Failed to write success pattern experience: {e}")
 
@@ -645,6 +769,12 @@ class ExperienceCaptureHooks(RunHooks):
                         min_repeat_count=skill_cfg.min_repeat_count,
                         min_tier=skill_cfg.min_tier,
                     )
+                    logger.debug(
+                        f"[skill-upgrade] scanned {exp_dir.name}/: "
+                        f"{len(candidates)} candidate(s) "
+                        f"(min_repeat={skill_cfg.min_repeat_count}, "
+                        f"min_tier={skill_cfg.min_tier!r})"
+                    )
                     if candidates:
                         existing = set(
                             [d.name for d in gen_dir.iterdir() if d.is_dir()]
@@ -657,6 +787,13 @@ class ExperienceCaptureHooks(RunHooks):
                             candidates=candidates,
                             existing_skills=sorted(existing),
                             generated_skills_dir=gen_dir,
+                            event_store=event_store,
+                            min_success_applications=skill_cfg.min_success_applications,
+                        )
+                        logger.debug(
+                            f"[skill-upgrade] maybe_spawn_skill → {spawned!r} "
+                            f"(mode={skill_cfg.mode}, "
+                            f"min_success_applications={skill_cfg.min_success_applications})"
                         )
                         # In draft mode, mark as draft instead of shadow
                         if spawned and skill_cfg.mode == "draft":
@@ -668,6 +805,13 @@ class ExperienceCaptureHooks(RunHooks):
 
                         if spawned and skill_cfg.mode == "shadow":
                             should_reload_generated_skills = True
+                        if spawned:
+                            report.skill_candidate = spawned
+                            report.skill_state_change = (
+                                "spawned_draft" if skill_cfg.mode == "draft"
+                                else "spawned_shadow"
+                            )
+                            report.upgrade_decision = "spawned"
 
                     # Phase B: record episode only for skills actually used this run
                     if skill_cfg.mode == "shadow" and skills_used and gen_dir.exists():
@@ -706,12 +850,15 @@ class ExperienceCaptureHooks(RunHooks):
                             )
                             if decision is not None:
                                 should_reload_generated_skills = True
+                                report.skill_state_change = decision
+                                report.upgrade_decision = decision
 
                     if should_reload_generated_skills and skill_tool is not None:
                         skill_tool.reload_generated_skills()
                         agent.refresh_tool_system_prompts()
             except Exception as e:
                 logger.debug(f"Skill upgrade check failed: {e}")
+                report.mark_error(f"skill_upgrade_failed: {e}")
 
         # ── 4. Sync to global AGENTS.md ──
         if self._config.sync_to_global_agent_md:
@@ -720,6 +867,23 @@ class ExperienceCaptureHooks(RunHooks):
                 await compiled_store.sync_to_global_agent_md(global_md)
             except Exception as e:
                 logger.debug(f"Experience sync to global AGENTS.md failed: {e}")
+
+        # ── 5. Emit LearningReport (arch_v5.md Phase 2) ──
+        if (
+            report.cards_written
+            or report.corrections_persisted
+            or report.skill_state_change
+        ):
+            report.mark_learned()
+        elif errors:
+            report.mark_skipped("errors_observed_but_no_card_persisted")
+        else:
+            report.skip_reason = report.skip_reason or "nothing_actionable"
+
+        # write_learning_report owns its own I/O fault tolerance (logs warnings,
+        # returns None on failure). No outer try here -- it would only mask
+        # programming bugs as silent debug noise.
+        write_learning_report(workspace, report)
 
     @staticmethod
     def _get_previous_assistant_text(agent: Any) -> Optional[str]:
@@ -765,6 +929,8 @@ class ExperienceCaptureHooks(RunHooks):
         """
         from agentica.experience.compiler import ExperienceCompiler
 
+        # Title is derived deterministically from `rule` in compile_correction,
+        # so we no longer need to feed existing titles back to the LLM.
         prompt = (
             self._FEEDBACK_CLASSIFY_PROMPT
             + f"Previous assistant message:\n{previous_assistant_text[:1000]}\n\n"
@@ -837,7 +1003,14 @@ class _CompositeRunHooks(RunHooks):
             await h.on_agent_start(agent=agent, **kwargs)
 
     async def on_agent_end(self, agent: Any, output: Any, **kwargs) -> None:
-        for h in self._hooks_list:
+        parallel = [h for h in self._hooks_list if h.parallelizable]
+        serial = [h for h in self._hooks_list if not h.parallelizable]
+        if parallel:
+            await asyncio.gather(*(
+                h.on_agent_end(agent=agent, output=output, **kwargs)
+                for h in parallel
+            ))
+        for h in serial:
             await h.on_agent_end(agent=agent, output=output, **kwargs)
 
     async def on_llm_start(self, agent: Any, messages: Optional[List[Dict[str, Any]]] = None, **kwargs) -> None:

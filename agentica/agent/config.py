@@ -191,6 +191,19 @@ class SkillUpgradeConfig:
     checkpoint_interval: int = 5
     rollback_consecutive_failures: int = 2
     notify_user: bool = True
+    # Require at least N ``tool_recovery`` events in the workspace before
+    # any candidate is allowed to spawn a skill.
+    #
+    # A ``tool_recovery`` is emitted by ExperienceCaptureHooks whenever a
+    # tool succeeds in a run AND that same tool has previously failed
+    # somewhere in this workspace's events.jsonl. It signals "the agent
+    # has demonstrated it CAN solve this problem on its own" — without it
+    # we'd be capturing skills for things the agent perpetually fails at.
+    # The semantic is decoupled from skill installation (no chicken-egg).
+    #
+    # Defaults to 1 (gate on). Set to 0 for cold-start / demo workspaces
+    # where no successful recovery has happened yet.
+    min_success_applications: int = 1
 
 
 @dataclass

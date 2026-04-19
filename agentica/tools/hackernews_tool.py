@@ -63,21 +63,17 @@ class HackerNewsTool(Tool):
             str: JSON string of the user details.
         """
 
-        try:
-            logger.info(f"Getting details for user: {username}")
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(f"https://hacker-news.firebaseio.com/v0/user/{username}.json")
-                user = resp.json()
-            user_details = {
-                "id": user.get("user_id"),
-                "karma": user.get("karma"),
-                "about": user.get("about"),
-                "total_items_submitted": len(user.get("submitted", [])),
-            }
-            return json.dumps(user_details, indent=2, ensure_ascii=False)
-        except Exception as e:
-            logger.exception(e)
-            return f"Error getting user details: {e}"
+        logger.info(f"Getting details for user: {username}")
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"https://hacker-news.firebaseio.com/v0/user/{username}.json")
+            user = resp.json()
+        user_details = {
+            "id": user.get("user_id"),
+            "karma": user.get("karma"),
+            "about": user.get("about"),
+            "total_items_submitted": len(user.get("submitted", [])),
+        }
+        return json.dumps(user_details, indent=2, ensure_ascii=False)
 
 
 if __name__ == '__main__':
