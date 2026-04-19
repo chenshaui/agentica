@@ -834,7 +834,10 @@ class TestSpawnSkillEvidenceAndIndex(unittest.TestCase):
         manager = SkillEvolutionManager()
         result = asyncio.run(manager.maybe_spawn_skill(
             model=model,
-            candidates=[{"title": "x", "content": "y", "repeat_count": 5}],
+            candidates=[{
+                "title": "x", "content": "y", "repeat_count": 5,
+                "type": "tool_error", "tool": "x",
+            }],
             existing_skills=[],
             generated_skills_dir=self._gen_dir,
             event_store=_StubStore(),
@@ -844,14 +847,15 @@ class TestSpawnSkillEvidenceAndIndex(unittest.TestCase):
         # Model must NOT have been called — gate runs before LLM
         model.response.assert_not_called()
 
-    def test_spawn_recovery_gate_passes_with_enough_recoveries(self):
+    def test_spawn_recovery_gate_passes_with_enough_relevant_recoveries(self):
+        """Per-candidate gate: only recoveries on the candidate's tool count."""
         from agentica.experience.skill_upgrade import SkillEvolutionManager
 
         class _StubStore:
             async def read_all(self):
                 return [
-                    {"event_type": "tool_recovery", "skill_name": "s"},
-                    {"event_type": "tool_recovery", "skill_name": "s"},
+                    {"event_type": "tool_recovery", "tool": "pandas_read"},
+                    {"event_type": "tool_recovery", "tool": "pandas_read"},
                 ]
 
         model = MagicMock()
@@ -866,7 +870,10 @@ class TestSpawnSkillEvidenceAndIndex(unittest.TestCase):
         manager = SkillEvolutionManager()
         result = asyncio.run(manager.maybe_spawn_skill(
             model=model,
-            candidates=[{"title": "x", "content": "y", "repeat_count": 5}],
+            candidates=[{
+                "title": "pandas_read_failure", "content": "y", "repeat_count": 5,
+                "type": "tool_error", "tool": "pandas_read",
+            }],
             existing_skills=[],
             generated_skills_dir=self._gen_dir,
             event_store=_StubStore(),
@@ -874,57 +881,103 @@ class TestSpawnSkillEvidenceAndIndex(unittest.TestCase):
         ))
         self.assertEqual(result, "gated-skill")
 
+    def test_spawn_recovery_gate_blocks_when_recoveries_are_for_other_tool(self):
+        """Workspace-global recoveries on tool A must NOT unlock spawn for tool B."""
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+
+        class _StubStore:
+            async def read_all(self):
+                return [
+                    {"event_type": "tool_recovery", "tool": "read_file"},
+                    {"event_type": "tool_recovery", "tool": "read_file"},
+                    {"event_type": "tool_recovery", "tool": "read_file"},
+                ]
+
+        model = MagicMock()
+        model.response = AsyncMock(return_value=MagicMock(content=json.dumps({
+            "action": "install_shadow",
+            "skill_name": "should-not-spawn",
+            "source_experience": "x",
+            "skill_md": _VALID_SKILL_MD,
+        })))
+        manager = SkillEvolutionManager()
+        result = asyncio.run(manager.maybe_spawn_skill(
+            model=model,
+            candidates=[{
+                "title": "grep_TimeoutError", "content": "y", "repeat_count": 5,
+                "type": "tool_error", "tool": "grep",  # candidate is for grep
+            }],
+            existing_skills=[],
+            generated_skills_dir=self._gen_dir,
+            event_store=_StubStore(),
+            min_success_applications=1,
+        ))
+        self.assertIsNone(result)
+        model.response.assert_not_called()
+
 
 class TestBuildEvidenceText(unittest.TestCase):
-    """`_build_evidence_text` type-aware dispatch:
-    - correction candidates pull user_message events verbatim
+    """`_build_evidence_text` per-candidate dispatch via `_EventIndex`:
+    - correction candidates pull `correction_classification` events
+      filtered by `correction_key` (NOT raw user_message) so two distinct
+      corrections never share evidence
     - tool_error / success_pattern candidates match on strict tool equality
     - empty events / empty candidates produce empty output
     """
 
+    @staticmethod
+    def _index(events):
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+        return SkillEvolutionManager._index_events_once(events)
+
     def test_empty_events_returns_empty(self):
         from agentica.experience.skill_upgrade import SkillEvolutionManager
         out = SkillEvolutionManager._build_evidence_text(
-            candidates=[{"title": "x", "type": "correction", "tool": ""}],
-            all_events=[],
+            candidates=[{"title": "x", "type": "correction", "correction_key": "k"}],
+            idx=self._index([]),
         )
         self.assertEqual(out, "")
 
-    def test_correction_matches_user_messages_not_tool_errors(self):
+    def test_correction_matches_only_its_own_correction_key(self):
+        """Two corrections in the same workspace must not share evidence."""
         from agentica.experience.skill_upgrade import SkillEvolutionManager
         events = [
-            {
+            {  # unrelated tool_error
                 "event_type": "tool_error",
                 "tool": "read_file",
                 "error": "File not found: /tmp/a.txt",
             },
-            {
-                "event_type": "user_message",
+            {  # belongs to candidate A only
+                "event_type": "correction_classification",
+                "is_correction": True,
+                "should_persist": True,
+                "correction_key": "list_directory_read_file",
+                "rule": "list directory before read file",
                 "user_message": "Check directory before reading.",
-                "previous_assistant": "I will read /tmp/a.txt now.",
             },
-            {
-                "event_type": "user_message",
-                "user_message": "Same mistake again!",
-                "previous_assistant": "Reading /tmp/b.txt",
+            {  # belongs to candidate B only
+                "event_type": "correction_classification",
+                "is_correction": True,
+                "should_persist": True,
+                "correction_key": "use_rg_not_grep",
+                "rule": "use rg not grep",
+                "user_message": "Always use rg, never grep.",
             },
         ]
         out = SkillEvolutionManager._build_evidence_text(
             candidates=[{
-                "title": "check_directory_before_read",
+                "title": "list_directory_read_file",
                 "type": "correction",
-                "tool": "",
+                "correction_key": "list_directory_read_file",
             }],
-            all_events=events,
+            idx=self._index(events),
         )
-        # correction pulls user_messages only, tool_error ignored
-        self.assertIn("[user_message]", out)
+        self.assertIn("[correction]", out)
         self.assertIn("Check directory before reading.", out)
-        self.assertIn("Same mistake again!", out)
-        self.assertNotIn("File not found", out)
+        self.assertNotIn("Always use rg", out)   # cross-key bleed
+        self.assertNotIn("File not found", out)  # tool_error ignored
 
     def test_tool_error_candidate_strict_tool_equality(self):
-        """'read' must NOT match 'read_file' — strict equality only."""
         from agentica.experience.skill_upgrade import SkillEvolutionManager
         events = [
             {"event_type": "tool_error", "tool": "read_file", "error": "boom-A"},
@@ -937,21 +990,20 @@ class TestBuildEvidenceText(unittest.TestCase):
                 "type": "tool_error",
                 "tool": "read_file",
             }],
-            all_events=events,
+            idx=self._index(events),
         )
         self.assertIn("boom-A", out)
-        self.assertNotIn("boom-B", out)   # 'read' must not alias
+        self.assertNotIn("boom-B", out)
         self.assertNotIn("boom-C", out)
 
     def test_tool_error_candidate_without_tool_field_gets_nothing(self):
-        """Candidate missing the 'tool' key must not match anything."""
         from agentica.experience.skill_upgrade import SkillEvolutionManager
         events = [
             {"event_type": "tool_error", "tool": "read_file", "error": "x"},
         ]
         out = SkillEvolutionManager._build_evidence_text(
-            candidates=[{"title": "x", "type": "tool_error"}],  # no 'tool'
-            all_events=events,
+            candidates=[{"title": "x", "type": "tool_error"}],
+            idx=self._index(events),
         )
         self.assertEqual(out, "")
 
@@ -963,10 +1015,9 @@ class TestBuildEvidenceText(unittest.TestCase):
         ]
         out = SkillEvolutionManager._build_evidence_text(
             candidates=[{"title": "c", "type": "tool_error", "tool": "t"}],
-            all_events=events,
+            idx=self._index(events),
             per_candidate_limit=3,
         )
-        # Only the last 3 survive
         self.assertIn("err-9", out)
         self.assertIn("err-8", out)
         self.assertIn("err-7", out)
@@ -1937,6 +1988,118 @@ class TestSourceTasksPersistence(unittest.TestCase):
         self.assertIn("- originating tasks:", out)
         self.assertIn("- alpha task", out)
         self.assertIn("- beta task", out)
+
+
+class TestCorrectionKeyDataChain(unittest.TestCase):
+    """End-to-end correction_key flow: rule → key → frontmatter → events
+    → per-candidate evidence selection."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        os.environ.setdefault("OPENAI_API_KEY", "sk-test-mock-key")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_correction_key_helper_is_stable_across_rewordings(self):
+        from agentica.experience.compiler import ExperienceCompiler
+        a = ExperienceCompiler.correction_key_from_rule("list directory before read file")
+        b = ExperienceCompiler.correction_key_from_rule("Always list the directory before reading files")
+        self.assertTrue(a)
+        self.assertEqual(a, b)
+
+    def test_correction_key_helper_returns_empty_for_all_stopwords(self):
+        from agentica.experience.compiler import ExperienceCompiler
+        self.assertEqual(
+            ExperienceCompiler.correction_key_from_rule("the the and the"),
+            "",
+        )
+
+    def test_compile_correction_attaches_correction_key(self):
+        from agentica.experience.compiler import ExperienceCompiler
+        card = ExperienceCompiler.compile_correction({
+            "is_correction": True, "should_persist": True, "persist_target": "experience",
+            "rule": "list directory before read file", "confidence": 0.9,
+        })
+        self.assertIsNotNone(card)
+        self.assertTrue(card.correction_key)
+        # Title and key are aligned by design
+        self.assertEqual(card.title, card.correction_key)
+
+    def test_correction_card_persists_correction_key_in_frontmatter(self):
+        from agentica.experience.compiled_store import CompiledExperienceStore
+        from agentica.experience.compiler import ExperienceCompiler
+        from agentica.utils.async_file import extract_frontmatter_value
+        exp_dir = Path(self._tmpdir) / "experiences"
+        exp_dir.mkdir(parents=True, exist_ok=True)
+        compiled_store = CompiledExperienceStore(
+            exp_dir=exp_dir, index_path=exp_dir / "EXPERIENCE.md",
+        )
+        card = ExperienceCompiler.compile_correction({
+            "is_correction": True, "should_persist": True, "persist_target": "experience",
+            "rule": "list directory before read file", "confidence": 0.9,
+        })
+        path = asyncio.run(compiled_store.write(card))
+        text = Path(path).read_text(encoding="utf-8")
+        self.assertEqual(
+            extract_frontmatter_value(text, "correction_key"),
+            card.correction_key,
+        )
+
+    def test_get_candidate_cards_exposes_correction_key(self):
+        from agentica.experience.compiled_store import CompiledExperienceStore
+        from agentica.experience.compiler import ExperienceCompiler
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+        exp_dir = Path(self._tmpdir) / "experiences"
+        exp_dir.mkdir(parents=True, exist_ok=True)
+        compiled_store = CompiledExperienceStore(
+            exp_dir=exp_dir, index_path=exp_dir / "EXPERIENCE.md",
+        )
+
+        async def _go():
+            for _ in range(3):  # repeat_count >= 3
+                card = ExperienceCompiler.compile_correction({
+                    "is_correction": True, "should_persist": True, "persist_target": "experience",
+                    "rule": "list directory before read file", "confidence": 0.9,
+                })
+                await compiled_store.write(card)
+
+        asyncio.run(_go())
+        candidates = SkillEvolutionManager.get_candidate_cards(
+            exp_dir=exp_dir, min_repeat_count=3, min_tier="hot",
+        )
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(
+            candidates[0]["correction_key"],
+            ExperienceCompiler.correction_key_from_rule("list directory before read file"),
+        )
+
+    def test_correction_recovery_gate_uses_correction_key(self):
+        """A correction candidate counts confirmations matching its key only."""
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+        events = [
+            {  # 2 confirmations for key A
+                "event_type": "correction_classification",
+                "is_correction": True, "should_persist": True,
+                "correction_key": "list_directory_read_file",
+            },
+            {
+                "event_type": "correction_classification",
+                "is_correction": True, "should_persist": True,
+                "correction_key": "list_directory_read_file",
+            },
+            {  # 0 confirmations for key B (despite many for A)
+                "event_type": "correction_classification",
+                "is_correction": False, "should_persist": False,
+                "correction_key": "use_rg_not_grep",
+            },
+        ]
+        idx = SkillEvolutionManager._index_events_once(events)
+        c_a = {"type": "correction", "correction_key": "list_directory_read_file"}
+        c_b = {"type": "correction", "correction_key": "use_rg_not_grep"}
+        self.assertEqual(SkillEvolutionManager._candidate_recovery_count(c_a, idx), 2)
+        self.assertEqual(SkillEvolutionManager._candidate_recovery_count(c_b, idx), 0)
 
 
 class TestCrossLayerCleanup(unittest.TestCase):

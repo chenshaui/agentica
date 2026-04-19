@@ -13,6 +13,7 @@ LLM is only invoked for semantic judgment at spawn time and at checkpoints.
 """
 import json
 import re
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -26,6 +27,24 @@ from agentica.utils.async_file import (
     extract_frontmatter_list,
     extract_frontmatter_value,
 )
+
+
+@dataclass
+class _EventIndex:
+    """One-shot bucketed view of events.jsonl used by the spawn pipeline.
+
+    Built once per ``maybe_spawn_skill`` call and consumed by both the
+    per-candidate recovery gate and the per-candidate evidence builder,
+    so each candidate is O(1) instead of O(N) re-scans.
+    """
+    # tool -> count of tool_recovery events
+    recovery_count_by_tool: Dict[str, int] = field(default_factory=dict)
+    # tool -> tool_error + tool_recovery events, in original log order
+    events_by_tool: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
+    # correction_key -> all correction_classification events (any verdict)
+    classifications_by_key: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
+    # correction_key -> count of confirmed-and-persisted classifications
+    correction_count_by_key: Dict[str, int] = field(default_factory=dict)
 
 
 _FENCE_FRONTMATTER_RE = re.compile(
@@ -270,20 +289,35 @@ class SkillEvolutionManager:
         if event_store is not None:
             all_events = await event_store.read_all()
 
-        # Recovery gate: require ≥ N tool_recovery events overall before
-        # spawning anything. "Failed N times" alone is not evidence the
-        # rule actually works — we want at least one observed save.
+        # One-shot index: O(N) scan up front, then both the gate and the
+        # evidence builder do O(1) bucket lookups instead of O(N) re-scans
+        # per candidate. Also lets us answer "is this candidate relevant"
+        # without a second pass.
+        idx = self._index_events_once(all_events)
+
+        # Per-candidate relevance gate. Workspace-global recovery counts
+        # let an unrelated tool's recoveries unlock a brand-new skill —
+        # that's how silent mis-spawns happen. Filter candidates down to
+        # only those with their own evidence of working.
         if min_success_applications > 0 and event_store is not None:
-            recoveries = sum(
-                1 for e in all_events
-                if e.get("event_type") == "tool_recovery"
-            )
-            if recoveries < min_success_applications:
+            kept: List[Dict] = []
+            for c in candidates:
+                relevant = self._candidate_recovery_count(c, idx)
+                if relevant >= min_success_applications:
+                    kept.append(c)
+                else:
+                    logger.debug(
+                        f"Skill spawn: candidate {c.get('title')!r} has only "
+                        f"{relevant} relevant recovery/confirmation events "
+                        f"(need {min_success_applications}); skipping."
+                    )
+            if not kept:
                 logger.debug(
-                    f"Skill spawn: only {recoveries} tool_recovery events "
-                    f"(need {min_success_applications}); deferring."
+                    "Skill spawn: no candidate met per-candidate recovery "
+                    "gate; deferring."
                 )
                 return None
+            candidates = kept
 
         # Build context for LLM
         cards_text = "\n\n".join(
@@ -292,9 +326,11 @@ class SkillEvolutionManager:
         existing_text = ", ".join(existing_skills) if existing_skills else "(none)"
 
         # Evidence chain: attach the most recent raw tool_error / tool_recovery
-        # events per candidate. The LLM is forbidden from inventing gotchas;
-        # this is what it cites.
-        evidence_text = self._build_evidence_text(candidates, all_events)
+        # (for tool/success cards) or correction_classification (for
+        # correction cards, filtered by correction_key so two distinct
+        # corrections don't share each other's user utterances). The LLM
+        # is forbidden from inventing gotchas; this is what it cites.
+        evidence_text = self._build_evidence_text(candidates, idx)
 
         prompt = (
             self._SPAWN_PROMPT
@@ -703,6 +739,7 @@ class SkillEvolutionManager:
             title = extract_frontmatter_value(raw, "title") or filepath.stem
             exp_type = extract_frontmatter_value(raw, "type") or "unknown"
             tool_name = extract_frontmatter_value(raw, "tool") or ""
+            correction_key = extract_frontmatter_value(raw, "correction_key") or ""
             source_tasks = extract_frontmatter_list(raw, "source_tasks")
 
             if repeat_count < min_repeat_count:
@@ -720,6 +757,7 @@ class SkillEvolutionManager:
                 "type": exp_type,
                 "tier": tier,
                 "tool": tool_name,
+                "correction_key": correction_key,
                 "filename": filepath.name,
                 "source_tasks": source_tasks,
             })
@@ -843,49 +881,93 @@ class SkillEvolutionManager:
         return f"{header}\n{body}\n\nSource tasks (samples):\n{rendered}"
 
     @staticmethod
+    def _index_events_once(all_events: List[Dict[str, Any]]) -> "_EventIndex":
+        """Single O(N) scan of events.jsonl into per-bucket indices.
+
+        Used by both the per-candidate recovery gate and the per-candidate
+        evidence builder; without this, large workspaces would re-scan all
+        events O(C × N) times during a single spawn decision.
+        """
+        idx = _EventIndex()
+        for e in all_events:
+            etype = e.get("event_type")
+            if etype == "tool_error":
+                tool = str(e.get("tool", ""))
+                if tool:
+                    idx.events_by_tool.setdefault(tool, []).append(e)
+            elif etype == "tool_recovery":
+                tool = str(e.get("tool", ""))
+                if tool:
+                    idx.events_by_tool.setdefault(tool, []).append(e)
+                    idx.recovery_count_by_tool[tool] = (
+                        idx.recovery_count_by_tool.get(tool, 0) + 1
+                    )
+            elif etype == "correction_classification":
+                key = str(e.get("correction_key", ""))
+                if not key:
+                    continue
+                idx.classifications_by_key.setdefault(key, []).append(e)
+                if e.get("is_correction") and e.get("should_persist"):
+                    idx.correction_count_by_key[key] = (
+                        idx.correction_count_by_key.get(key, 0) + 1
+                    )
+        return idx
+
+    @staticmethod
+    def _candidate_recovery_count(
+        candidate: Dict, idx: "_EventIndex",
+    ) -> int:
+        """How many *relevant* recovery / confirmation events exist for one card.
+
+        - ``tool_error`` / ``success_pattern``: count ``tool_recovery``
+          events whose ``tool`` matches the candidate's tool.
+        - ``correction``: count ``correction_classification`` events with
+          ``is_correction=True`` AND matching ``correction_key`` — each
+          such event represents the user re-stating the same rule, which
+          is the closest signal we have to "this rule is real".
+        - Anything missing the join key (no tool / no correction_key)
+          returns 0; the gate then refuses to spawn.
+        """
+        ctype = candidate.get("type", "")
+        if ctype == "correction":
+            key = (candidate.get("correction_key") or "").strip()
+            return idx.correction_count_by_key.get(key, 0) if key else 0
+        tool = (candidate.get("tool") or "").strip()
+        return idx.recovery_count_by_tool.get(tool, 0) if tool else 0
+
+    @staticmethod
     def _build_evidence_text(
         candidates: List[Dict],
-        all_events: List[Dict[str, Any]],
+        idx: "_EventIndex",
         per_candidate_limit: int = 5,
     ) -> str:
         """Render the per-candidate raw-event evidence block for the LLM.
 
-        Matching strategy is type-aware so the LLM cannot be fed cross-wired
-        events:
+        Matching is strictly per-candidate so the LLM cannot be fed
+        cross-wired events:
 
-        - ``tool_error`` / ``success_pattern`` candidates: match events
-          whose ``tool`` field equals the candidate's ``tool`` (strict
-          equality — no substring fallback, which previously produced
-          false matches like ``"read"`` aliasing ``"read_file"``).
-        - ``correction`` candidates: surface the most recent
-          ``user_message`` events verbatim so the LLM can ground the rule
-          wording in real user utterances. Correction cards have no
-          ``tool`` field, so we do not try to match tool_error events for
-          them.
+        - ``tool_error`` / ``success_pattern``: events whose ``tool``
+          equals the candidate's ``tool`` (strict equality).
+        - ``correction``: ``correction_classification`` events whose
+          ``correction_key`` equals the candidate's ``correction_key``.
+          Two distinct corrections in the same workspace will therefore
+          NEVER share evidence even though both fire ``user_message``
+          events — this was the audit-failing bug from review.
 
-        Each error message is truncated so the prompt does not balloon when
-        the workspace has thousands of events.
+        Each event is truncated so the prompt does not balloon when the
+        workspace has thousands of events.
         """
-        if not all_events:
-            return ""
-
         sections: List[str] = []
         for c in candidates:
             ctype = c.get("type", "")
             title = c.get("title", "")
-            tool = (c.get("tool") or "").strip()
 
-            matches: List[Dict[str, Any]] = []
             if ctype == "correction":
-                for e in all_events:
-                    if e.get("event_type") == "user_message":
-                        matches.append(e)
-            elif tool:
-                for e in all_events:
-                    if e.get("event_type") not in ("tool_error", "tool_recovery"):
-                        continue
-                    if str(e.get("tool", "")) == tool:
-                        matches.append(e)
+                key = (c.get("correction_key") or "").strip()
+                matches = idx.classifications_by_key.get(key, []) if key else []
+            else:
+                tool = (c.get("tool") or "").strip()
+                matches = idx.events_by_tool.get(tool, []) if tool else []
             if not matches:
                 continue
 
@@ -893,10 +975,12 @@ class SkillEvolutionManager:
             lines = [f"### {title}"]
             for e in recent:
                 etype = e.get("event_type", "?")
-                if etype == "user_message":
+                if etype == "correction_classification":
                     user = str(e.get("user_message", ""))[:200]
-                    prev = str(e.get("previous_assistant", ""))[:120]
-                    lines.append(f"- [user_message] user={user!r} after_assistant={prev!r}")
+                    rule = str(e.get("rule", ""))[:120]
+                    lines.append(
+                        f"- [correction] user={user!r} rule={rule!r}"
+                    )
                 else:
                     err = str(e.get("error", "") or e.get("note", ""))[:200]
                     lines.append(f"- [{etype}] {err}")

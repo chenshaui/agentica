@@ -745,20 +745,6 @@ class TestWorkspaceExperience(unittest.TestCase):
         result = asyncio.run(self.store.get_relevant(query="python import", limit=1))
         self.assertIn("python_error", result)
 
-    def test_bump_experience(self):
-        asyncio.run(self.store.write(
-            self._card(title="test_bump", content="Test content", etype="tool_error"),
-        ))
-        result = asyncio.run(self.store.bump("test_bump", "tool_error"))
-        self.assertTrue(result)
-        filepath = self.workspace._get_user_experience_dir() / "tool_error_test_bump.md"
-        content = filepath.read_text()
-        self.assertIn("repeat_count: 2", content)
-
-    def test_bump_nonexistent(self):
-        result = asyncio.run(self.store.bump("nonexistent"))
-        self.assertFalse(result)
-
     def test_lifecycle_promotion(self):
         asyncio.run(self.store.write(
             self._card(title="frequent_error", content="This error happens a lot", etype="tool_error"),
@@ -1272,19 +1258,6 @@ class TestCompiledExperienceStore(unittest.TestCase):
         asyncio.run(store.write(card))
         result = asyncio.run(store.get_relevant(query="file permissions"))
         self.assertIn("file_perms", result)
-
-    def test_bump(self):
-        from agentica.experience.compiler import CompiledCard
-        store = self._store()
-        card = CompiledCard(title="bump_test", content="Test", experience_type="tool_error")
-        asyncio.run(store.write(card))
-        result = asyncio.run(store.bump("bump_test", "tool_error"))
-        self.assertTrue(result)
-
-    def test_bump_nonexistent(self):
-        store = self._store()
-        result = asyncio.run(store.bump("nonexistent"))
-        self.assertFalse(result)
 
     def test_lifecycle(self):
         from agentica.experience.compiler import CompiledCard

@@ -1008,6 +1008,18 @@ class ExperienceCaptureHooks(RunHooks):
             is_correction = result.get("is_correction", False)
             confidence = result.get("confidence", 0.0)
 
+            # Compute correction_key once via the canonical helper. We
+            # stamp it on both the raw classification event AND on the
+            # downstream compile_correction call so the card and its
+            # evidence chain all share the same association key. Empty
+            # rule / all-stop-words rule yields an empty key and
+            # everything downstream treats it as "no key, ignore for
+            # per-key gating".
+            rule = (result.get("rule") or "").strip()
+            correction_key = (
+                ExperienceCompiler.correction_key_from_rule(rule) if rule else ""
+            )
+
             # Write classification result as raw event
             classify_event: Dict[str, Any] = {
                 "event_type": "correction_classification",
@@ -1016,6 +1028,8 @@ class ExperienceCaptureHooks(RunHooks):
                 "should_persist": result.get("should_persist", False),
                 "persist_target": result.get("persist_target", "none"),
                 "user_message": user_message[:300],
+                "rule": rule,
+                "correction_key": correction_key,
             }
             if original_task:
                 classify_event["original_task"] = original_task

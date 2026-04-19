@@ -8,6 +8,7 @@ CRUD for experience .md files with YAML frontmatter, lifecycle governance
 (promotion/demotion/archive), relevance-scored retrieval, and global sync.
 """
 import re
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -110,8 +111,9 @@ class CompiledExperienceStore:
     ) -> str:
         """Build the canonical frontmatter block for a compiled card.
 
-        ``source_tasks`` is omitted (not written as ``[]``) when empty so
-        legacy cards without the field stay diff-clean on re-write.
+        ``source_tasks`` and ``correction_key`` are both omitted when
+        empty (not written as ``[]`` / blank) so legacy cards without
+        the fields stay diff-clean on re-write.
         """
         lines = [
             "---",
@@ -123,6 +125,8 @@ class CompiledExperienceStore:
             f"last_seen: {last_seen}",
             "tier: hot",
         ]
+        if card.correction_key:
+            lines.append(f"correction_key: {card.correction_key}")
         if source_tasks:
             lines.append(f"source_tasks: {format_frontmatter_list(source_tasks)}")
         lines.append("---\n\n")
@@ -152,8 +156,16 @@ class CompiledExperienceStore:
             first_seen = extract_frontmatter_value(existing, "first_seen") or today
             existing_tasks = extract_frontmatter_list(existing, "source_tasks")
             merged_tasks = self._merge_source_tasks(existing_tasks, new_task)
+            # Preserve a previously-stamped correction_key if the new card
+            # didn't bring one (e.g. a tool_error card landing on the same
+            # file as a correction by collision — defensive only).
+            effective_card = card
+            if not card.correction_key:
+                prior_key = extract_frontmatter_value(existing, "correction_key") or ""
+                if prior_key:
+                    effective_card = replace(card, correction_key=prior_key)
             frontmatter = self._build_frontmatter(
-                card=card,
+                card=effective_card,
                 repeat_count=new_count,
                 first_seen=first_seen,
                 last_seen=today,
@@ -198,56 +210,6 @@ class CompiledExperienceStore:
             lines.pop(0)
 
         await async_write_text(self._index_path, "\n".join(lines))
-
-    # ── Bump ──────────────────────────────────────────────────────────────
-
-    async def bump(self, title: str, experience_type: str = "") -> bool:
-        """Increment repeat_count for an existing experience.
-
-        Args:
-            title: Experience title to bump.
-            experience_type: Optional type prefix for faster lookup.
-
-        Returns:
-            True if found and bumped, False otherwise.
-        """
-        if not self._exp_dir.exists():
-            return False
-
-        safe_title = re.sub(r"[^\w\-]", "_", title.lower())[:50].strip("_")
-        candidates = []
-        if experience_type:
-            candidates.append(f"{experience_type}_{safe_title}.md")
-        candidates.extend(f.name for f in self._exp_dir.glob(f"*_{safe_title}.md"))
-
-        for filename in candidates:
-            filepath = self._exp_dir / filename
-            if filepath.exists():
-                raw = (await async_read_text(filepath)).strip()
-                count = extract_frontmatter_int(raw, "repeat_count", 1) + 1
-                first_seen = extract_frontmatter_value(raw, "first_seen") or date.today().isoformat()
-                body = strip_frontmatter(raw)
-                etype = extract_frontmatter_value(raw, "type") or experience_type or "unknown"
-                tool = extract_frontmatter_value(raw, "tool") or ""
-                source_tasks = extract_frontmatter_list(raw, "source_tasks")
-                today = date.today().isoformat()
-
-                frontmatter = self._build_frontmatter(
-                    card=CompiledCard(
-                        title=title,
-                        content=body,
-                        experience_type=etype,
-                        tool_name=tool,
-                    ),
-                    repeat_count=count,
-                    first_seen=first_seen,
-                    last_seen=today,
-                    source_tasks=source_tasks,
-                )
-                await async_write_text(filepath, frontmatter + body)
-                return True
-
-        return False
 
     # ── Retrieval ─────────────────────────────────────────────────────────
 
