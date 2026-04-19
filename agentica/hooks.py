@@ -514,15 +514,6 @@ class ExperienceCaptureHooks(RunHooks):
         # rescanning the entire jsonl on every on_agent_end. Refreshed when
         # the file has grown since last lookup.
         self._failed_tools_cache: Dict[str, Tuple[int, set]] = {}
-        # The "original task" that opened each agent's work. Captured once
-        # at on_agent_start (per agent_id) and threaded into every event /
-        # card we write so downstream skill-spawning can ground gotchas in
-        # the actual task that triggered them. For subagents this is just
-        # the task they were spawned with (= their own run_input); we do
-        # NOT walk up the parent chain because that would require new
-        # cross-agent plumbing and the user-facing task is naturally
-        # reflected in run_input already.
-        self._original_task: Dict[str, str] = {}
 
     async def on_agent_start(self, agent: Any, **kwargs) -> None:
         """Initialize per-agent capture state."""
@@ -532,23 +523,30 @@ class ExperienceCaptureHooks(RunHooks):
         self._last_assistant_output[aid] = None
         self._skills_used[aid] = set()
         self._correction_detected[aid] = False
-        # Cache the original task once; on re-entry (multi-turn loops on
-        # the same agent_id) keep the very first observed task.
-        if aid not in self._original_task:
-            self._original_task[aid] = self._extract_original_task(agent)
 
     @staticmethod
     def _extract_original_task(agent: Any) -> str:
-        """Best-effort extraction of the user-facing task for this agent.
+        """Best-effort extraction of the user-facing task for this run.
+
+        Read at ``on_agent_end`` time because the Runner sets
+        ``agent.run_input`` only just before invoking ``on_agent_end`` —
+        it is None during ``on_agent_start``. Multi-task aggregation
+        (one card touched by N runs) happens in CompiledExperienceStore,
+        so per-run capture here is enough.
 
         Order of preference:
-            1. ``agent.run_input`` (set by Runner before on_agent_start)
-            2. First user-role message in ``agent.working_memory.messages``
-            3. Empty string (caller treats it as "unknown")
+            1. ``agent.run_input`` if it is a non-empty string
+            2. ``agent.run_input["content"]`` if it is a Message-dict
+            3. First user-role message in ``agent.working_memory.messages``
+            4. Empty string (caller treats it as "unknown")
         """
         run_input = getattr(agent, "run_input", None)
         if isinstance(run_input, str) and run_input.strip():
             return run_input.strip()[:500]
+        if isinstance(run_input, dict):
+            content = run_input.get("content")
+            if isinstance(content, str) and content.strip():
+                return content.strip()[:500]
         wm = getattr(agent, "working_memory", None)
         messages = getattr(wm, "messages", None) or []
         for msg in messages:
@@ -680,8 +678,9 @@ class ExperienceCaptureHooks(RunHooks):
         # Stamp the run's original_task on every error / success dict so the
         # downstream pure compilers (compile_tool_errors / _success_pattern)
         # can read it and embed it into CompiledCard.source_task without
-        # needing extra arguments.
-        original_task = self._original_task.get(aid, "")
+        # needing extra arguments. Captured lazily here because Runner sets
+        # agent.run_input only just before on_agent_end.
+        original_task = self._extract_original_task(agent)
         if original_task:
             for err in errors:
                 err.setdefault("original_task", original_task)

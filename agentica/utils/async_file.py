@@ -7,9 +7,10 @@ Single source of truth — do not duplicate these functions.
 """
 import asyncio
 import functools
+import json
 import re
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 
 async def async_read_text(path: Path, encoding: str = "utf-8") -> str:
@@ -40,3 +41,29 @@ def strip_frontmatter(content: str) -> str:
     """Remove YAML frontmatter block (---...---) from content."""
     stripped = re.sub(r"^---[\s\S]*?---\s*", "", content, flags=re.MULTILINE).strip()
     return stripped
+
+
+def extract_frontmatter_list(content: str, key: str) -> List[str]:
+    """Extract a list value from frontmatter, written as a JSON array.
+
+    We deliberately use JSON-array syntax (e.g. ``source_tasks: ["a", "b"]``)
+    instead of YAML's block-style list to keep parsing pure-stdlib and to
+    avoid multi-line frontmatter changes that would complicate the existing
+    ``extract_frontmatter_value`` regex callers. JSON arrays are valid YAML,
+    so any standard YAML reader still parses these values.
+    """
+    raw = extract_frontmatter_value(content, key)
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    if isinstance(parsed, list):
+        return [str(x) for x in parsed if isinstance(x, (str, int, float))]
+    return []
+
+
+def format_frontmatter_list(values: List[str]) -> str:
+    """Render a list of strings as a one-line JSON array for frontmatter."""
+    return json.dumps(values, ensure_ascii=False)

@@ -22,8 +22,9 @@ from agentica.model.message import Message
 from agentica.utils.async_file import (
     async_read_text,
     async_write_text,
-    extract_frontmatter_value,
     extract_frontmatter_int,
+    extract_frontmatter_list,
+    extract_frontmatter_value,
 )
 
 
@@ -286,9 +287,7 @@ class SkillEvolutionManager:
 
         # Build context for LLM
         cards_text = "\n\n".join(
-            f"### {c['title']} (repeat: {c.get('repeat_count', 1)}, "
-            f"type: {c.get('type', 'unknown')})\n{c.get('content', '')}"
-            for c in candidates
+            self._format_card_for_prompt(c) for c in candidates
         )
         existing_text = ", ".join(existing_skills) if existing_skills else "(none)"
 
@@ -363,6 +362,19 @@ class SkillEvolutionManager:
         # normalize to canonical `---` form before persisting.
         skill_md = _normalize_skill_md(skill_md)
 
+        # Aggregate originating tasks across all source candidates so the
+        # SKILL.md Source block records every distinct user request that
+        # ever produced this skill (capped). Most-recent-first ordering.
+        merged_source_tasks: List[str] = []
+        seen_tasks: set = set()
+        for c in candidates:
+            for t in (c.get("source_tasks") or []):
+                clean = str(t).strip()
+                if not clean or clean in seen_tasks:
+                    continue
+                seen_tasks.add(clean)
+                merged_source_tasks.append(clean)
+
         # Append the auto-managed Source section so it always reflects truth
         # (LLM is told to leave it blank). Counts let humans audit.
         skill_md = self._append_source_section(
@@ -372,6 +384,7 @@ class SkillEvolutionManager:
                 1 for e in all_events
                 if e.get("event_type") in ("tool_error", "tool_recovery")
             ),
+            source_tasks=merged_source_tasks,
         )
 
         # "No Execution, No Memory" gate: refuse skeletons / placeholders /
@@ -690,6 +703,7 @@ class SkillEvolutionManager:
             title = extract_frontmatter_value(raw, "title") or filepath.stem
             exp_type = extract_frontmatter_value(raw, "type") or "unknown"
             tool_name = extract_frontmatter_value(raw, "tool") or ""
+            source_tasks = extract_frontmatter_list(raw, "source_tasks")
 
             if repeat_count < min_repeat_count:
                 continue
@@ -707,6 +721,7 @@ class SkillEvolutionManager:
                 "tier": tier,
                 "tool": tool_name,
                 "filename": filepath.name,
+                "source_tasks": source_tasks,
             })
 
         return candidates
@@ -797,6 +812,36 @@ class SkillEvolutionManager:
 
         return True, ""
 
+    # Token-budget caps for source-task injection. The spawn prompt
+    # already carries cards + raw event evidence; weak models (e.g.
+    # GLM-4-Flash) start judging ``action=ignore`` if the prompt grows
+    # past a few KB. These caps bound the worst case at ≤ 600 chars per
+    # candidate (3 tasks × ~200 chars).
+    _SOURCE_TASKS_PER_CARD = 3
+    _SOURCE_TASK_DISPLAY_LEN = 200
+
+    @classmethod
+    def _format_card_for_prompt(cls, card: Dict) -> str:
+        """Render one candidate card section for the spawn prompt.
+
+        Includes a "Source tasks (samples)" subsection so the LLM can
+        write a more grounded ``description`` / ``when-to-use``. Capped
+        per ``_SOURCE_TASKS_PER_CARD`` and ``_SOURCE_TASK_DISPLAY_LEN``
+        to control token usage on weak models.
+        """
+        header = (
+            f"### {card['title']} (repeat: {card.get('repeat_count', 1)}, "
+            f"type: {card.get('type', 'unknown')})"
+        )
+        body = card.get("content", "")
+        sample_tasks = (card.get("source_tasks") or [])[:cls._SOURCE_TASKS_PER_CARD]
+        if not sample_tasks:
+            return f"{header}\n{body}"
+        rendered = "\n".join(
+            f"- {str(t)[:cls._SOURCE_TASK_DISPLAY_LEN]}" for t in sample_tasks
+        )
+        return f"{header}\n{body}\n\nSource tasks (samples):\n{rendered}"
+
     @staticmethod
     def _build_evidence_text(
         candidates: List[Dict],
@@ -862,19 +907,27 @@ class SkillEvolutionManager:
     @staticmethod
     def _append_source_section(
         skill_md: str, source: str, event_count: int,
+        source_tasks: Optional[List[str]] = None,
     ) -> str:
         """Replace / append the trailing ``## Source`` section.
 
         The prompt instructs the LLM to leave Source blank — we fill it in
-        deterministically so audit info (origin card + raw event count) is
-        always accurate.
+        deterministically so audit info (origin card + raw event count +
+        originating user tasks) is always accurate.
         """
-        block = (
-            "\n\n## Source\n"
-            f"- generated from experience card: `{source or 'unknown'}`\n"
-            f"- raw events cited: {event_count}\n"
-            f"- generated_at: {date.today().isoformat()}\n"
-        )
+        lines = [
+            "\n\n## Source",
+            f"- generated from experience card: `{source or 'unknown'}`",
+            f"- raw events cited: {event_count}",
+            f"- generated_at: {date.today().isoformat()}",
+        ]
+        if source_tasks:
+            lines.append("- originating tasks:")
+            for t in source_tasks[:5]:
+                clean = str(t).strip().replace("\n", " ")[:200]
+                if clean:
+                    lines.append(f"  - {clean}")
+        block = "\n".join(lines) + "\n"
         # Drop any existing Source section the LLM emitted to avoid dupes.
         cleaned = re.sub(
             r"\n##\s*Source\b.*\Z", "", skill_md.rstrip(), flags=re.DOTALL,

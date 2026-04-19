@@ -16,10 +16,20 @@ from agentica.experience.compiler import CompiledCard
 from agentica.utils.async_file import (
     async_read_text,
     async_write_text,
-    extract_frontmatter_value,
     extract_frontmatter_int,
+    extract_frontmatter_list,
+    extract_frontmatter_value,
+    format_frontmatter_list,
     strip_frontmatter,
 )
+
+
+# Cap on stored source_tasks per card. Different runs can hit the same
+# experience with different originating tasks; we keep a representative
+# sample (most-recent-wins) so the spawn prompt doesn't blow its budget.
+_MAX_SOURCE_TASKS = 5
+# Per-task length cap to keep frontmatter compact.
+_SOURCE_TASK_LEN = 200
 
 
 class CompiledExperienceStore:
@@ -76,6 +86,48 @@ class CompiledExperienceStore:
 
     # ── Write ──────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _merge_source_tasks(existing: List[str], new_task: str) -> List[str]:
+        """Merge a new source task into the existing list.
+
+        Most-recent-wins ordering with dedup and a hard cap of
+        ``_MAX_SOURCE_TASKS``. Empty new_task is a no-op (returns existing).
+        """
+        if not new_task:
+            return existing[:_MAX_SOURCE_TASKS]
+        # Move existing copy to the front (most-recent), preserve order otherwise.
+        deduped = [t for t in existing if t != new_task]
+        merged = [new_task] + deduped
+        return merged[:_MAX_SOURCE_TASKS]
+
+    @staticmethod
+    def _build_frontmatter(
+        card: CompiledCard,
+        repeat_count: int,
+        first_seen: str,
+        last_seen: str,
+        source_tasks: List[str],
+    ) -> str:
+        """Build the canonical frontmatter block for a compiled card.
+
+        ``source_tasks`` is omitted (not written as ``[]``) when empty so
+        legacy cards without the field stay diff-clean on re-write.
+        """
+        lines = [
+            "---",
+            f"title: {card.title}",
+            f"type: {card.experience_type}",
+            f"tool: {card.tool_name}",
+            f"repeat_count: {repeat_count}",
+            f"first_seen: {first_seen}",
+            f"last_seen: {last_seen}",
+            "tier: hot",
+        ]
+        if source_tasks:
+            lines.append(f"source_tasks: {format_frontmatter_list(source_tasks)}")
+        lines.append("---\n\n")
+        return "\n".join(lines)
+
     async def write(self, card: CompiledCard) -> str:
         """Write an experience card. Bumps repeat_count if same title exists.
 
@@ -92,30 +144,31 @@ class CompiledExperienceStore:
         filepath = self._exp_dir / filename
         today = date.today().isoformat()
 
+        new_task = (card.source_task or "").strip()[:_SOURCE_TASK_LEN]
+
         if filepath.exists():
             existing = (await async_read_text(filepath)).strip()
             new_count = extract_frontmatter_int(existing, "repeat_count", 1) + 1
             first_seen = extract_frontmatter_value(existing, "first_seen") or today
-            frontmatter = (
-                f"---\ntitle: {card.title}\n"
-                f"type: {card.experience_type}\n"
-                f"tool: {card.tool_name}\n"
-                f"repeat_count: {new_count}\n"
-                f"first_seen: {first_seen}\n"
-                f"last_seen: {today}\n"
-                f"tier: hot\n---\n\n"
+            existing_tasks = extract_frontmatter_list(existing, "source_tasks")
+            merged_tasks = self._merge_source_tasks(existing_tasks, new_task)
+            frontmatter = self._build_frontmatter(
+                card=card,
+                repeat_count=new_count,
+                first_seen=first_seen,
+                last_seen=today,
+                source_tasks=merged_tasks,
             )
             body = strip_frontmatter(existing) or card.content
             await async_write_text(filepath, frontmatter + body)
         else:
-            frontmatter = (
-                f"---\ntitle: {card.title}\n"
-                f"type: {card.experience_type}\n"
-                f"tool: {card.tool_name}\n"
-                f"repeat_count: 1\n"
-                f"first_seen: {today}\n"
-                f"last_seen: {today}\n"
-                f"tier: hot\n---\n\n"
+            initial_tasks = [new_task] if new_task else []
+            frontmatter = self._build_frontmatter(
+                card=card,
+                repeat_count=1,
+                first_seen=today,
+                last_seen=today,
+                source_tasks=initial_tasks,
             )
             await async_write_text(filepath, frontmatter + card.content)
 
@@ -176,16 +229,20 @@ class CompiledExperienceStore:
                 body = strip_frontmatter(raw)
                 etype = extract_frontmatter_value(raw, "type") or experience_type or "unknown"
                 tool = extract_frontmatter_value(raw, "tool") or ""
+                source_tasks = extract_frontmatter_list(raw, "source_tasks")
                 today = date.today().isoformat()
 
-                frontmatter = (
-                    f"---\ntitle: {title}\n"
-                    f"type: {etype}\n"
-                    f"tool: {tool}\n"
-                    f"repeat_count: {count}\n"
-                    f"first_seen: {first_seen}\n"
-                    f"last_seen: {today}\n"
-                    f"tier: hot\n---\n\n"
+                frontmatter = self._build_frontmatter(
+                    card=CompiledCard(
+                        title=title,
+                        content=body,
+                        experience_type=etype,
+                        tool_name=tool,
+                    ),
+                    repeat_count=count,
+                    first_seen=first_seen,
+                    last_seen=today,
+                    source_tasks=source_tasks,
                 )
                 await async_write_text(filepath, frontmatter + body)
                 return True

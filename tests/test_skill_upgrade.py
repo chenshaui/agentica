@@ -1760,8 +1760,13 @@ class TestOriginalTaskAnchoring(unittest.TestCase):
         tool_errors = [e for e in events if e.get("event_type") == "tool_error"]
         self.assertEqual(tool_errors[0]["original_task"], "summarize today's reports")
 
-    def test_original_task_persists_across_runs_for_same_agent_id(self):
-        """First task wins; later runs on the same agent_id keep the first."""
+    def test_each_run_tags_events_with_its_own_run_input(self):
+        """Per-run capture: events from run N carry run N's run_input.
+
+        Multi-task aggregation across runs is the responsibility of
+        CompiledExperienceStore (it merges into a frontmatter list). At
+        the event layer each run is its own atomic unit.
+        """
         hooks, agent, store, _ = self._make_hooks_with_real_store(
             run_input="find user manual"
         )
@@ -1786,7 +1791,152 @@ class TestOriginalTaskAnchoring(unittest.TestCase):
         events = asyncio.run(_go())
         tool_errors = [e for e in events if e.get("event_type") == "tool_error"]
         self.assertEqual(len(tool_errors), 2, events)
-        self.assertTrue(all(e["original_task"] == "find user manual" for e in tool_errors), events)
+        self.assertEqual(tool_errors[0]["original_task"], "find user manual")
+        self.assertEqual(tool_errors[1]["original_task"], "different follow-up question")
+
+
+class TestSourceTasksPersistence(unittest.TestCase):
+    """Step 2 — compiled_store + skill_upgrade consume source_task end-to-end."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        os.environ.setdefault("OPENAI_API_KEY", "sk-test-mock-key")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make_compiled_store(self):
+        from agentica.experience.compiled_store import CompiledExperienceStore
+        exp_dir = Path(self._tmpdir) / "experiences"
+        exp_dir.mkdir(parents=True, exist_ok=True)
+        index_path = exp_dir / "EXPERIENCE.md"
+        return CompiledExperienceStore(exp_dir=exp_dir, index_path=index_path), exp_dir
+
+    def test_write_emits_source_tasks_in_frontmatter(self):
+        from agentica.experience.compiler import CompiledCard
+        from agentica.utils.async_file import extract_frontmatter_list
+        compiled_store, exp_dir = self._make_compiled_store()
+        card = CompiledCard(
+            title="read_FileNotFoundError",
+            content="ok",
+            experience_type="tool_error",
+            tool_name="read_file",
+            source_task="find the project notes",
+        )
+        path = asyncio.run(compiled_store.write(card))
+        text = Path(path).read_text(encoding="utf-8")
+        self.assertEqual(
+            extract_frontmatter_list(text, "source_tasks"),
+            ["find the project notes"],
+        )
+
+    def test_write_omits_source_tasks_when_empty(self):
+        """Cards without a source_task should NOT add an empty list field."""
+        from agentica.experience.compiler import CompiledCard
+        compiled_store, _ = self._make_compiled_store()
+        card = CompiledCard(
+            title="ls_PermissionError",
+            content="ok",
+            experience_type="tool_error",
+            tool_name="ls",
+            source_task="",
+        )
+        path = asyncio.run(compiled_store.write(card))
+        text = Path(path).read_text(encoding="utf-8")
+        self.assertNotIn("source_tasks:", text)
+
+    def test_write_merges_multiple_tasks_dedup_and_caps(self):
+        """Repeated writes with different source_tasks accumulate, dedup, cap=5."""
+        from agentica.experience.compiler import CompiledCard
+        from agentica.utils.async_file import extract_frontmatter_list
+        compiled_store, _ = self._make_compiled_store()
+
+        async def _go():
+            for i in range(7):
+                await compiled_store.write(CompiledCard(
+                    title="grep_TimeoutError",
+                    content="grep timed out",
+                    experience_type="tool_error",
+                    tool_name="grep",
+                    source_task=f"task-{i}",
+                ))
+            # Replay an existing task — should NOT add a duplicate but should
+            # move the entry to the front (most-recent-first).
+            await compiled_store.write(CompiledCard(
+                title="grep_TimeoutError",
+                content="grep timed out",
+                experience_type="tool_error",
+                tool_name="grep",
+                source_task="task-1",
+            ))
+
+        asyncio.run(_go())
+        files = list((Path(self._tmpdir) / "experiences").glob("tool_error_grep_*.md"))
+        self.assertEqual(len(files), 1)
+        tasks = extract_frontmatter_list(files[0].read_text(encoding="utf-8"), "source_tasks")
+        self.assertLessEqual(len(tasks), 5)
+        self.assertEqual(tasks[0], "task-1", tasks)
+        self.assertEqual(len(tasks), len(set(tasks)), tasks)
+
+    def test_get_candidate_cards_exposes_source_tasks(self):
+        from agentica.experience.compiled_store import CompiledExperienceStore
+        from agentica.experience.compiler import CompiledCard
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+
+        exp_dir = Path(self._tmpdir) / "experiences"
+        exp_dir.mkdir(parents=True, exist_ok=True)
+        store = CompiledExperienceStore(exp_dir=exp_dir, index_path=exp_dir / "EXPERIENCE.md")
+
+        async def _go():
+            for i in range(3):  # trigger repeat_count >= 3
+                await store.write(CompiledCard(
+                    title="read_FileNotFoundError",
+                    content="x",
+                    experience_type="tool_error",
+                    tool_name="read_file",
+                    source_task=f"find the report v{i}",
+                ))
+
+        asyncio.run(_go())
+        candidates = SkillEvolutionManager.get_candidate_cards(
+            exp_dir=exp_dir, min_repeat_count=3, min_tier="hot",
+        )
+        self.assertEqual(len(candidates), 1)
+        self.assertIn("source_tasks", candidates[0])
+        self.assertEqual(
+            sorted(candidates[0]["source_tasks"]),
+            sorted(["find the report v0", "find the report v1", "find the report v2"]),
+        )
+
+    def test_format_card_for_prompt_caps_source_tasks(self):
+        """Spawn-prompt rendering caps tasks at _SOURCE_TASKS_PER_CARD."""
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+        card = {
+            "title": "t",
+            "content": "body",
+            "type": "tool_error",
+            "repeat_count": 5,
+            "source_tasks": [f"task-{i}" for i in range(10)],
+        }
+        rendered = SkillEvolutionManager._format_card_for_prompt(card)
+        self.assertIn("Source tasks (samples):", rendered)
+        for i in range(SkillEvolutionManager._SOURCE_TASKS_PER_CARD):
+            self.assertIn(f"task-{i}", rendered)
+        self.assertNotIn(
+            f"task-{SkillEvolutionManager._SOURCE_TASKS_PER_CARD}", rendered,
+        )
+
+    def test_append_source_section_writes_originating_tasks(self):
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+        skill_md = "---\nname: x\ndescription: y\nwhen-to-use: z\n---\n\n## Body\nhello"
+        out = SkillEvolutionManager._append_source_section(
+            skill_md, source="my_card", event_count=4,
+            source_tasks=["alpha task", "beta task"],
+        )
+        self.assertIn("- originating tasks:", out)
+        self.assertIn("- alpha task", out)
+        self.assertIn("- beta task", out)
 
 
 class TestCrossLayerCleanup(unittest.TestCase):
