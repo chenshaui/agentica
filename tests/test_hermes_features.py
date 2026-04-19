@@ -543,7 +543,8 @@ class TestGatewayModelFactory:
 
     def test_core_providers_not_in_registry_branch(self):
         """openai, claude, kimi, azure have dedicated classes."""
-        from agentica import OpenAIChat, Claude
+        from agentica.model.openai import OpenAIChat
+        from agentica.model.anthropic.claude import Claude
         assert OpenAIChat is not None
         assert Claude is not None
 

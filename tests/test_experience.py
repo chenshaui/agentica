@@ -720,7 +720,8 @@ class TestWorkspaceExperience(unittest.TestCase):
         card = self._card(title="execute_error", content="Error A", etype="tool_error", tool="execute")
         asyncio.run(self.store.write(card))
         path = asyncio.run(self.store.write(card))
-        content = open(path).read()
+        with open(path) as f:
+            content = f.read()
         self.assertIn("repeat_count: 2", content)
 
     def test_get_relevant_experiences_empty(self):
@@ -799,7 +800,8 @@ class TestWorkspaceExperience(unittest.TestCase):
         global_md = self.workspace._get_global_agent_md_path()
         result_path = asyncio.run(self.store.sync_to_global_agent_md(global_md))
         self.assertTrue(os.path.exists(result_path))
-        content = open(result_path).read()
+        with open(result_path) as f:
+            content = f.read()
         self.assertIn("Learned Experiences", content)
         self.assertIn("hot_rule", content)
 
@@ -816,7 +818,8 @@ class TestWorkspaceExperience(unittest.TestCase):
 
         global_md = self.workspace._get_global_agent_md_path()
         result_path = asyncio.run(self.store.sync_to_global_agent_md(global_md))
-        global_content = open(result_path).read()
+        with open(result_path) as f:
+            global_content = f.read()
         self.assertNotIn("warm_rule", global_content)
 
     def test_get_relevant_experiences_filters_cold(self):
@@ -1243,7 +1246,8 @@ class TestCompiledExperienceStore(unittest.TestCase):
         card = CompiledCard(title="dup_error", content="Error A", experience_type="tool_error")
         asyncio.run(store.write(card))
         path = asyncio.run(store.write(card))
-        content = open(path).read()
+        with open(path) as f:
+            content = f.read()
         self.assertIn("repeat_count: 2", content)
 
     def test_get_relevant_empty(self):

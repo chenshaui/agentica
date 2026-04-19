@@ -57,16 +57,16 @@ def create_model(
 
     # Core providers with dedicated classes
     if model_provider == "openai":
-        from agentica import OpenAIChat
+        from agentica.model.openai import OpenAIChat
         return OpenAIChat(**params)
     elif model_provider == "kimi":
-        from agentica import KimiChat
+        from agentica.model.kimi.chat import KimiChat
         return KimiChat(**params)
     elif model_provider in ("anthropic", "claude"):
-        from agentica import Claude
+        from agentica.model.anthropic.claude import Claude
         return Claude(**params)
     elif model_provider == "azure":
-        from agentica import AzureOpenAIChat
+        from agentica.model.azure import AzureOpenAIChat
         return AzureOpenAIChat(**params)
 
     # All other providers: use SDK registry factory
