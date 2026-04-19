@@ -1621,6 +1621,174 @@ class TestAgentSkillUpgradeLifecycle(unittest.TestCase):
 # Cross-layer cleanup tests
 # ===========================================================================
 
+class TestOriginalTaskAnchoring(unittest.TestCase):
+    """The user-facing task is captured at on_agent_start and threaded
+    into every event/card written by ExperienceCaptureHooks.
+
+    Step 1 verifies the events.jsonl + CompiledCard.source_task pipeline
+    only — frontmatter / spawn-prompt consumption is covered by Step 2.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        os.environ.setdefault("OPENAI_API_KEY", "sk-test-mock-key")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make_hooks_with_real_store(self, run_input="search for X"):
+        from agentica.experience.event_store import ExperienceEventStore
+        from agentica.hooks import ExperienceCaptureHooks
+        config = ExperienceConfig(
+            capture_tool_errors=True,
+            capture_user_corrections=False,
+            capture_success_patterns=True,
+        )
+        hooks = ExperienceCaptureHooks(config)
+        exp_dir = Path(self._tmpdir) / "experiences"
+        exp_dir.mkdir(parents=True, exist_ok=True)
+        store = ExperienceEventStore(exp_dir=exp_dir)
+
+        agent = MagicMock()
+        agent.agent_id = "test-agent"
+        agent.run_input = run_input
+        agent.run_id = "run-1"
+        agent.session_id = "sess-1"
+        agent.model = MagicMock()
+        agent.auxiliary_model = None
+        agent.workspace = MagicMock()
+        agent.workspace.get_experience_event_store = MagicMock(return_value=store)
+        compiled_store = MagicMock()
+        compiled_store.write = AsyncMock(return_value="/tmp/exp.md")
+        compiled_store.run_lifecycle = AsyncMock(return_value={"promoted": 0, "demoted": 0, "archived": 0})
+        compiled_store.sync_to_global_agent_md = AsyncMock(return_value="/tmp/AGENTS.md")
+        agent.workspace.get_compiled_experience_store = MagicMock(return_value=compiled_store)
+        agent.workspace._get_global_agent_md_path = MagicMock(return_value="/tmp/AGENTS.md")
+        agent.workspace._get_user_generated_skills_dir = MagicMock(return_value=Path(self._tmpdir) / "gen")
+        agent.workspace._get_user_experience_dir = MagicMock(return_value=Path(self._tmpdir) / "experiences")
+        agent.working_memory = MagicMock()
+        agent.working_memory.messages = []
+        return hooks, agent, store, compiled_store
+
+    def test_tool_error_event_carries_original_task(self):
+        hooks, agent, store, _ = self._make_hooks_with_real_store(
+            run_input="find the project notes"
+        )
+
+        async def _go():
+            await hooks.on_agent_start(agent)
+            await hooks.on_tool_end(
+                agent, tool_name="read_file", tool_args={"path": "/x"},
+                result="FileNotFoundError: nope", is_error=True, elapsed=0.01,
+            )
+            await hooks.on_agent_end(agent, output="failed")
+            return await store.read_all()
+
+        events = asyncio.run(_go())
+        tool_errors = [e for e in events if e.get("event_type") == "tool_error"]
+        self.assertEqual(len(tool_errors), 1, events)
+        self.assertEqual(tool_errors[0]["original_task"], "find the project notes")
+
+    def test_tool_recovery_event_carries_original_task(self):
+        hooks, agent, store, _ = self._make_hooks_with_real_store(
+            run_input="please rewrite the config"
+        )
+
+        async def _go():
+            await hooks.on_agent_start(agent)
+            await hooks.on_tool_end(
+                agent, tool_name="write_file", tool_args={"path": "/x"},
+                result="permission denied", is_error=True, elapsed=0.01,
+            )
+            await hooks.on_agent_end(agent, output="failed")
+
+            agent.run_id = "run-2"
+            agent.run_input = "please rewrite the config"
+            await hooks.on_agent_start(agent)
+            await hooks.on_tool_end(
+                agent, tool_name="write_file", tool_args={"path": "/y"},
+                result="ok", is_error=False, elapsed=0.02,
+            )
+            await hooks.on_agent_end(agent, output="ok")
+            return await store.read_all()
+
+        events = asyncio.run(_go())
+        recoveries = [e for e in events if e.get("event_type") == "tool_recovery"]
+        self.assertEqual(len(recoveries), 1, events)
+        self.assertEqual(recoveries[0]["original_task"], "please rewrite the config")
+
+    def test_compiled_card_inherits_source_task(self):
+        """CompiledCard built during on_agent_end captures source_task."""
+        hooks, agent, _, compiled_store = self._make_hooks_with_real_store(
+            run_input="rebuild the search index"
+        )
+
+        async def _go():
+            await hooks.on_agent_start(agent)
+            await hooks.on_tool_end(
+                agent, tool_name="ls", tool_args={"path": "/missing"},
+                result="FileNotFoundError: /missing", is_error=True, elapsed=0.01,
+            )
+            await hooks.on_agent_end(agent, output="failed")
+
+        asyncio.run(_go())
+        compiled_store.write.assert_called()
+        cards = [c.args[0] for c in compiled_store.write.call_args_list]
+        self.assertTrue(cards)
+        self.assertEqual(cards[0].source_task, "rebuild the search index")
+
+    def test_original_task_falls_back_to_first_user_message(self):
+        """If run_input is empty, use first user-role message in working_memory."""
+        hooks, agent, store, _ = self._make_hooks_with_real_store(run_input="")
+
+        first_user = MagicMock()
+        first_user.role = "user"
+        first_user.content = "summarize today's reports"
+        agent.working_memory.messages = [first_user]
+
+        async def _go():
+            await hooks.on_agent_start(agent)
+            await hooks.on_tool_end(
+                agent, tool_name="read_file", tool_args={"path": "/x"},
+                result="oops: nope", is_error=True, elapsed=0.01,
+            )
+            await hooks.on_agent_end(agent, output="failed")
+            return await store.read_all()
+
+        events = asyncio.run(_go())
+        tool_errors = [e for e in events if e.get("event_type") == "tool_error"]
+        self.assertEqual(tool_errors[0]["original_task"], "summarize today's reports")
+
+    def test_original_task_persists_across_runs_for_same_agent_id(self):
+        """First task wins; later runs on the same agent_id keep the first."""
+        hooks, agent, store, _ = self._make_hooks_with_real_store(
+            run_input="find user manual"
+        )
+
+        async def _go():
+            await hooks.on_agent_start(agent)
+            await hooks.on_tool_end(
+                agent, tool_name="read_file", tool_args={"path": "/x"},
+                result="error: nope", is_error=True, elapsed=0.01,
+            )
+            await hooks.on_agent_end(agent, output="failed")
+
+            agent.run_input = "different follow-up question"
+            await hooks.on_agent_start(agent)
+            await hooks.on_tool_end(
+                agent, tool_name="grep", tool_args={"path": "/y"},
+                result="error: x", is_error=True, elapsed=0.01,
+            )
+            await hooks.on_agent_end(agent, output="failed")
+            return await store.read_all()
+
+        events = asyncio.run(_go())
+        tool_errors = [e for e in events if e.get("event_type") == "tool_error"]
+        self.assertEqual(len(tool_errors), 2, events)
+        self.assertTrue(all(e["original_task"] == "find user manual" for e in tool_errors), events)
+
+
 class TestCrossLayerCleanup(unittest.TestCase):
     """Test that experience→memory cross-layer write has been removed."""
 

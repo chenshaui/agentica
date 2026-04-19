@@ -514,6 +514,15 @@ class ExperienceCaptureHooks(RunHooks):
         # rescanning the entire jsonl on every on_agent_end. Refreshed when
         # the file has grown since last lookup.
         self._failed_tools_cache: Dict[str, Tuple[int, set]] = {}
+        # The "original task" that opened each agent's work. Captured once
+        # at on_agent_start (per agent_id) and threaded into every event /
+        # card we write so downstream skill-spawning can ground gotchas in
+        # the actual task that triggered them. For subagents this is just
+        # the task they were spawned with (= their own run_input); we do
+        # NOT walk up the parent chain because that would require new
+        # cross-agent plumbing and the user-facing task is naturally
+        # reflected in run_input already.
+        self._original_task: Dict[str, str] = {}
 
     async def on_agent_start(self, agent: Any, **kwargs) -> None:
         """Initialize per-agent capture state."""
@@ -523,6 +532,31 @@ class ExperienceCaptureHooks(RunHooks):
         self._last_assistant_output[aid] = None
         self._skills_used[aid] = set()
         self._correction_detected[aid] = False
+        # Cache the original task once; on re-entry (multi-turn loops on
+        # the same agent_id) keep the very first observed task.
+        if aid not in self._original_task:
+            self._original_task[aid] = self._extract_original_task(agent)
+
+    @staticmethod
+    def _extract_original_task(agent: Any) -> str:
+        """Best-effort extraction of the user-facing task for this agent.
+
+        Order of preference:
+            1. ``agent.run_input`` (set by Runner before on_agent_start)
+            2. First user-role message in ``agent.working_memory.messages``
+            3. Empty string (caller treats it as "unknown")
+        """
+        run_input = getattr(agent, "run_input", None)
+        if isinstance(run_input, str) and run_input.strip():
+            return run_input.strip()[:500]
+        wm = getattr(agent, "working_memory", None)
+        messages = getattr(wm, "messages", None) or []
+        for msg in messages:
+            role = getattr(msg, "role", None) or (msg.get("role") if isinstance(msg, dict) else None)
+            content = getattr(msg, "content", None) or (msg.get("content") if isinstance(msg, dict) else None)
+            if role == "user" and isinstance(content, str) and content.strip():
+                return content.strip()[:500]
+        return ""
 
     async def on_user_prompt(self, agent: Any, message: str, **kwargs) -> Optional[str]:
         """No-op: classification uses agent.run_input at on_agent_end time."""
@@ -643,6 +677,17 @@ class ExperienceCaptureHooks(RunHooks):
         event_store = workspace.get_experience_event_store()
         compiled_store = workspace.get_compiled_experience_store()
 
+        # Stamp the run's original_task on every error / success dict so the
+        # downstream pure compilers (compile_tool_errors / _success_pattern)
+        # can read it and embed it into CompiledCard.source_task without
+        # needing extra arguments.
+        original_task = self._original_task.get(aid, "")
+        if original_task:
+            for err in errors:
+                err.setdefault("original_task", original_task)
+            for s in successes:
+                s.setdefault("original_task", original_task)
+
         # ── 1. Write raw events (pure builder + store) ──
         raw_events = ExperienceCompiler.build_raw_events(
             errors=errors,
@@ -652,6 +697,8 @@ class ExperienceCaptureHooks(RunHooks):
             capture_corrections=self._config.capture_user_corrections,
         )
         for event in raw_events:
+            if original_task:
+                event["original_task"] = original_task
             await event_store.append(event)
         if raw_events:
             logger.debug(
@@ -683,11 +730,14 @@ class ExperienceCaptureHooks(RunHooks):
                 if not tool or tool not in failed_tools or tool in emitted_tools:
                     continue
                 emitted_tools.add(tool)
-                await event_store.append({
+                recovery_event: Dict[str, Any] = {
                     "event_type": "tool_recovery",
                     "tool": tool,
                     "elapsed": s.get("elapsed", 0.0),
-                })
+                }
+                if original_task:
+                    recovery_event["original_task"] = original_task
+                await event_store.append(recovery_event)
 
         # ── 2. Compile and persist experience cards ──
 
@@ -720,6 +770,7 @@ class ExperienceCaptureHooks(RunHooks):
                 was_correction = await self._classify_and_persist_feedback(
                     model, event_store, compiled_store,
                     user_msg, previous_assistant_text,
+                    original_task=original_task,
                 )
                 if was_correction:
                     correction_this_run = True
@@ -918,6 +969,7 @@ class ExperienceCaptureHooks(RunHooks):
         compiled_store: Any,
         user_message: str,
         previous_assistant_text: str,
+        original_task: str = "",
     ) -> bool:
         """Classify user feedback with LLM and persist if appropriate.
 
@@ -958,14 +1010,17 @@ class ExperienceCaptureHooks(RunHooks):
             confidence = result.get("confidence", 0.0)
 
             # Write classification result as raw event
-            await event_store.append({
+            classify_event: Dict[str, Any] = {
                 "event_type": "correction_classification",
                 "is_correction": is_correction,
                 "confidence": confidence,
                 "should_persist": result.get("should_persist", False),
                 "persist_target": result.get("persist_target", "none"),
                 "user_message": user_message[:300],
-            })
+            }
+            if original_task:
+                classify_event["original_task"] = original_task
+            await event_store.append(classify_event)
 
             if not is_correction or confidence < threshold:
                 return False
@@ -973,6 +1028,11 @@ class ExperienceCaptureHooks(RunHooks):
                 return False
 
             # All corrections go to experience store (no cross-layer memory writes)
+            # Carry the original task into the classification dict so that
+            # ExperienceCompiler.compile_correction can stamp the resulting
+            # card with the task it came from.
+            if original_task and "original_task" not in result:
+                result["original_task"] = original_task
             card = ExperienceCompiler.compile_correction(result)
             if card:
                 await compiled_store.write(card)

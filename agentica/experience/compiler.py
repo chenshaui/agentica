@@ -100,11 +100,16 @@ class CompiledCard:
         content: Full experience text (what happened + lesson)
         experience_type: One of "tool_error", "correction", "success_pattern"
         tool_name: Tool that triggered this experience (empty if N/A)
+        source_task: User-facing task that triggered this experience (empty
+            if unknown). Carried through events.jsonl into the card's
+            ``source_tasks`` frontmatter list and into the spawn prompt so
+            generated skills can be grounded in the actual originating task.
     """
     title: str
     content: str
     experience_type: str
     tool_name: str = ""
+    source_task: str = ""
 
 
 class ExperienceCompiler:
@@ -153,6 +158,7 @@ class ExperienceCompiler:
                 content=content,
                 experience_type="tool_error",
                 tool_name=tool,
+                source_task=str(err.get("original_task", "") or "")[:500],
             ))
         return cards
 
@@ -178,10 +184,19 @@ class ExperienceCompiler:
             f"Successful tool sequence ({len(successes)} calls, all passed):\n"
             + "\n".join(f"- {t}" for t in tool_names)
         )
+        # All entries in `successes` come from the same run, so any of them
+        # carries the same original_task. Take the first non-empty.
+        source_task = ""
+        for s in successes:
+            t = str(s.get("original_task", "") or "")[:500]
+            if t:
+                source_task = t
+                break
         return CompiledCard(
             title=title,
             content=content,
             experience_type="success_pattern",
+            source_task=source_task,
         )
 
     @staticmethod
@@ -227,6 +242,7 @@ class ExperienceCompiler:
             title=title,
             content=content,
             experience_type="correction",
+            source_task=str(classification.get("original_task", "") or "")[:500],
         )
 
     @staticmethod
