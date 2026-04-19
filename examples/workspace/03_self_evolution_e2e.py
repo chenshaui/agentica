@@ -195,6 +195,7 @@ def build_evo_agent(workspace: Workspace) -> Agent:
             "You are a filesystem helper.",
             "When the user asks to read a file, call the read_file tool.",
             "Report concisely whether the file exists and what it contains.",
+            "When reporting file contents, reproduce them verbatim — do not summarize or paraphrase.",
         ],
         tools=get_builtin_tools(
             include_file_tools=True,
@@ -290,6 +291,7 @@ def build_consumer_agent(workspace: Workspace, generated_skills_dir: Path):
             "You are a filesystem helper.",
             "If a skill matches the task, call get_skill_info(skill_name) "
             "to load its full instructions BEFORE acting.",
+            "When reporting file contents, reproduce them verbatim — do not summarize or paraphrase.",
         ],
         tools=tools,
         workspace=workspace,
