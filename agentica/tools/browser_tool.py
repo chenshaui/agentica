@@ -74,7 +74,7 @@ the browser, and provide the next appropriate action to take.
 Here are the current available browser functions you can use:
 {AVAILABLE_ACTIONS_PROMPT}
 
-Here are the latest {history_window} trajectory (at most) you have taken:
+Here are the latest {num_history_turns} trajectory (at most) you have taken:
 <history>
 {history}
 </history>
@@ -164,7 +164,7 @@ Here are the overall task:
 In order to solve the task, we made a detailed plan previously. Here is the detailed plan:
 <detailed plan>{detailed_plan}</detailed plan>
 
-According to the task above, we have made a series of observations, reasonings, and actions. Here are the latest {history_window} trajectory (at most) we have taken:
+According to the task above, we have made a series of observations, reasonings, and actions. Here are the latest {num_history_turns} trajectory (at most) we have taken:
 <history>{history}</history>
 
 However, the task is not completed yet. As the task is partially observable, we may need to replan the task based on the current state of the browser if necessary.
@@ -1103,7 +1103,7 @@ class Browser:
             headless: bool = False,
             cache_dir: Optional[str] = None,
             channel: Literal["chrome", "msedge", "chromium"] = "chromium",
-            history_window: int = 5,
+            num_history_turns: int = 5,
             web_agent_model: Optional[Model] = None,
             planning_agent_model: Optional[Model] = None,
             output_language: str = "en",
@@ -1117,7 +1117,7 @@ class Browser:
             channel (Literal["chrome", "msedge", "chromium"]): The browser
                 channel to use. Must be one of "chrome", "msedge", or
                 "chromium".
-            history_window (int): The window size for storing the history of
+            num_history_turns (int): The window size for storing the history of
                 actions.
             web_agent_model (Optional[Model]): The model backend
                 for the web agent.
@@ -1140,7 +1140,7 @@ class Browser:
         )
         self.browser.web_agent_model = web_agent_model
 
-        self.history_window = history_window
+        self.num_history_turns = num_history_turns
         self.web_agent_model = web_agent_model
         self.planning_agent_model = planning_agent_model
         self.output_language = output_language
@@ -1203,8 +1203,8 @@ Here is a plan about how to solve the task step-by-step which you must follow:
             task_prompt=task_prompt,
             detailed_plan_prompt=detailed_plan_prompt_str,
             AVAILABLE_ACTIONS_PROMPT=AVAILABLE_ACTIONS_PROMPT,
-            history_window=self.history_window,
-            history=self.history[-self.history_window:],
+            num_history_turns=self.num_history_turns,
+            history=self.history[-self.num_history_turns:],
         )
 
         som_screenshot, _ = await self.browser.get_som_screenshot(save_image=True)
@@ -1331,8 +1331,8 @@ Here is a plan about how to solve the task step-by-step which you must follow:
         replanning_prompt = TASK_REPLANNING_PROMPT_TEMPLATE.format(
             task_prompt=task_prompt,
             detailed_plan=detailed_plan,
-            history_window=self.history_window,
-            history=self.history[-self.history_window:],
+            num_history_turns=self.num_history_turns,
+            history=self.history[-self.num_history_turns:],
         )
         self.planning_agent.reset()
         resp = await self.planning_agent.run(replanning_prompt)
@@ -1407,9 +1407,9 @@ Here is a plan about how to solve the task step-by-step which you must follow:
         if not task_completed:
             simulation_result = f"""
                 The task is not completed within the round limit. Please 
-                check the last round {self.history_window} information to 
+                check the last round {self.num_history_turns} information to
                 see if there is any useful information:
-                <history>{self.history[-self.history_window:]}</history>
+                <history>{self.history[-self.num_history_turns:]}</history>
             """
         else:
             simulation_result = await self._get_final_answer(task_prompt)
@@ -1430,7 +1430,7 @@ class BrowserTool(Tool):
             headless: bool = False,
             cache_dir: Optional[str] = None,
             channel: Literal["chrome", "msedge", "chromium"] = "chromium",
-            history_window: int = 5,
+            num_history_turns: int = 5,
             web_agent_model: Optional[Model] = None,
             planning_agent_model: Optional[Model] = None,
             output_language: str = "en",
@@ -1444,7 +1444,7 @@ class BrowserTool(Tool):
             channel (Literal["chrome", "msedge", "chromium"]): The browser
                 channel to use. Must be one of "chrome", "msedge", or
                 "chromium".
-            history_window (int): The window size for storing the history of
+            num_history_turns (int): The window size for storing the history of
                 actions.
             web_agent_model (Optional[Model]): The model backend
                 for the web agent.
@@ -1464,7 +1464,7 @@ class BrowserTool(Tool):
         self.headless = headless
         self.cache_dir = cache_dir
         self.channel = channel
-        self.history_window = history_window
+        self.num_history_turns = num_history_turns
         self.web_agent_model = web_agent_model
         self.planning_agent_model = planning_agent_model
         self.output_language = output_language
@@ -1479,7 +1479,7 @@ class BrowserTool(Tool):
                 headless=self.headless,
                 cache_dir=self.cache_dir,
                 channel=self.channel,
-                history_window=self.history_window,
+                num_history_turns=self.num_history_turns,
                 web_agent_model=self.web_agent_model,
                 planning_agent_model=self.planning_agent_model,
                 output_language=self.output_language,

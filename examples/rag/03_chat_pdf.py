@@ -51,8 +51,8 @@ agent = Agent(
     knowledge=knowledge_base,
     tool_config=ToolConfig(search_knowledge=True),
     prompt_config=PromptConfig(markdown=True),
-    add_history_to_messages=True,
-    history_window=5,
+    add_history_to_context=True,
+    num_history_turns=5,
 )
 
 print("=" * 60)

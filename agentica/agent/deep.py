@@ -26,7 +26,7 @@ Usage:
     print(response.content)
 
     # Enable memory tool (LLM can save/search memories)
-    agent = DeepAgent(memory=False)  # explicitly disable memory
+    agent = DeepAgent(enable_long_term_memory=False)  # explicitly disable long-term memory
 
     # Enable human-in-the-loop
     agent = DeepAgent(include_user_input=True)
@@ -48,7 +48,7 @@ Usage:
     agent = DeepAgent(sandbox_config=SandboxConfig(enabled=True, writable_dirs=["./output"]))
 
     # Any Agent parameter works via **kwargs
-    agent = DeepAgent(debug=True, tracing=True, response_model=MyModel)
+    agent = DeepAgent(debug=True, enable_tracing=True, response_model=MyModel)
 """
 import os
 from typing import Any, Callable, Dict, List, Optional, Union
@@ -80,6 +80,8 @@ class DeepAgent(Agent):
     - Memory auto-extract after each run (auto_extract_memory=True) —
       falls back to auxiliary_model to extract memories when the LLM did
       not call save_memory during the run.
+    - Workspace memory stays per-workspace by default; syncing memories into
+      the user-global ~/.agentica/AGENTS.md remains opt-in
     - auxiliary_model: defaults to the main model (same instance), so the
       whole stack runs on one API key without DeepAgent picking a hardcoded
       OpenAI sibling. Pass an explicit auxiliary_model (any provider, any
@@ -87,8 +89,9 @@ class DeepAgent(Agent):
       tasks like compression / memory extraction / correction classification
       / experience lifecycle.
     - Agentic prompt with datetime and agent name
-    - Self-evolution: experience=True + ExperienceConfig with all capture_*
-      switches on (tool errors, user corrections, success patterns)
+    - Self-evolution: enable_experience_capture=True + ExperienceConfig with all capture_*
+      switches on (tool errors, user corrections, success patterns), while
+      global AGENTS sync and skill auto-upgrade stay opt-in
 
     All parameters are optional — sensible defaults are applied.
     Any Agent parameter can be overridden via **kwargs.
@@ -104,8 +107,8 @@ class DeepAgent(Agent):
         workspace: Optional[Union[Any, str]] = None,
         work_dir: Optional[str] = None,
         session_id: Optional[str] = None,
-        add_history_to_messages: bool = True,
-        history_window: int = 5,
+        add_history_to_context: bool = True,
+        num_history_turns: int = 5,
         prompt_config: Optional[PromptConfig] = None,
         tool_config: Optional[ToolConfig] = None,
         long_term_memory_config: Optional[WorkspaceMemoryConfig] = None,
@@ -120,7 +123,7 @@ class DeepAgent(Agent):
         include_task: bool = True,
         include_skills: bool = True,
         include_user_input: bool = False,
-        memory: bool = True,
+        enable_long_term_memory: bool = True,
         task_model: Optional[Model] = None,
         custom_skill_dirs: Optional[List[str]] = None,
         user_input_callback: Optional[Callable] = None,
@@ -190,7 +193,7 @@ class DeepAgent(Agent):
                 load_workspace_context=True,
                 load_workspace_memory=True,
                 max_memory_entries=10,
-                sync_memories_to_global_agent_md=True,
+                sync_memories_to_global_agent_md=False,
             )
 
         # DeepAgent is the self-evolving flagship: enable all capture switches.
@@ -200,10 +203,12 @@ class DeepAgent(Agent):
                 capture_tool_errors=True,
                 capture_user_corrections=True,
                 capture_success_patterns=True,
+                sync_to_global_agent_md=False,
+                skill_upgrade=None,
             )
-        # Honor an explicit experience=False override if passed via kwargs;
+        # Honor an explicit enable_experience_capture=False override if passed via kwargs;
         # otherwise DeepAgent enables experience capture by default.
-        kwargs.setdefault("experience", True)
+        kwargs.setdefault("enable_experience_capture", True)
 
         super().__init__(
             model=model,
@@ -212,10 +217,10 @@ class DeepAgent(Agent):
             tools=all_tools,
             workspace=workspace,
             work_dir=work_dir,
-            memory=memory,
+            enable_long_term_memory=enable_long_term_memory,
             session_id=session_id,
-            add_history_to_messages=add_history_to_messages,
-            history_window=history_window,
+            add_history_to_context=add_history_to_context,
+            num_history_turns=num_history_turns,
             prompt_config=prompt_config,
             tool_config=tool_config,
             long_term_memory_config=long_term_memory_config,

@@ -10,8 +10,8 @@ Agentica 提供两层记忆系统：**运行时记忆（WorkingMemory）** 和 *
 from agentica import Agent
 
 agent = Agent(
-    add_history_to_messages=True,   # 将历史加入上下文
-    history_window=5,               # 保留最近 5 轮
+    add_history_to_context=True,   # 将历史加入上下文
+    num_history_turns=5,            # 保留最近 5 轮
 )
 ```
 

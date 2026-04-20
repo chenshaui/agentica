@@ -94,15 +94,15 @@ class TestWorkingMemory(unittest.TestCase):
         self.assertIsInstance(agent.working_memory, WorkingMemory)
         self.assertEqual(len(agent.working_memory.messages), 0)
 
-    def test_add_history_to_messages(self):
-        """Test add_history_to_messages setting."""
-        agent = Agent(add_history_to_messages=True)
-        self.assertTrue(agent.add_history_to_messages)
+    def test_add_history_to_context(self):
+        """Test add_history_to_context setting."""
+        agent = Agent(add_history_to_context=True)
+        self.assertTrue(agent.add_history_to_context)
 
-    def test_history_window(self):
-        """Test history_window setting."""
-        agent = Agent(history_window=5)
-        self.assertEqual(agent.history_window, 5)
+    def test_num_history_turns(self):
+        """Test num_history_turns setting."""
+        agent = Agent(num_history_turns=5)
+        self.assertEqual(agent.num_history_turns, 5)
 
 
 class TestAgentRun(unittest.TestCase):
@@ -164,15 +164,15 @@ class TestAgentRole(unittest.TestCase):
 class TestAgentStructuredOutput(unittest.TestCase):
     """Test cases for Agent structured output settings."""
 
-    def test_structured_outputs_disabled(self):
-        """Test structured_outputs disabled by default."""
+    def test_use_structured_outputs_disabled(self):
+        """Test use_structured_outputs disabled by default."""
         agent = Agent()
-        self.assertFalse(agent.structured_outputs)
+        self.assertFalse(agent.use_structured_outputs)
 
-    def test_structured_outputs_enabled(self):
-        """Test structured_outputs enabled."""
-        agent = Agent(structured_outputs=True)
-        self.assertTrue(agent.structured_outputs)
+    def test_use_structured_outputs_enabled(self):
+        """Test use_structured_outputs enabled."""
+        agent = Agent(use_structured_outputs=True)
+        self.assertTrue(agent.use_structured_outputs)
 
 
 class TestAgentTimeout(unittest.TestCase):

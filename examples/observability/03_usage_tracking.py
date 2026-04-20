@@ -77,7 +77,7 @@ async def multi_turn_usage():
     agent = Agent(
         model=OpenAIChat(id="gpt-4o-mini"),
         name="MultiTurnUsage",
-        add_history_to_messages=True,
+        add_history_to_context=True,
         debug=True,
     )
 

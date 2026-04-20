@@ -92,7 +92,7 @@ class Claude(Model):
     client: Optional[AnthropicClient] = None
 
     # Structured output support
-    structured_outputs: bool = False
+    use_structured_outputs: bool = False
     supports_structured_outputs: bool = True
 
     # Prompt caching: inject cache_control breakpoints into system message
@@ -105,7 +105,7 @@ class Claude(Model):
         """Build a synthetic tool from response_format for structured output via tool_use."""
         if (
             self.response_format is not None
-            and self.structured_outputs
+            and self.use_structured_outputs
             and isinstance(self.response_format, type)
             and issubclass(self.response_format, BaseModel)
         ):
@@ -696,7 +696,7 @@ class Claude(Model):
         # -*- Extract structured output from tool_use block if response_format is set
         if (
             self.response_format is not None
-            and self.structured_outputs
+            and self.use_structured_outputs
             and isinstance(self.response_format, type)
             and issubclass(self.response_format, BaseModel)
             and response.stop_reason == "tool_use"

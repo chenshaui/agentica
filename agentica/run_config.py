@@ -35,7 +35,7 @@ class RunConfig:
         ... ))
     """
     response_model: Optional[Type[Any]] = None
-    structured_outputs: Optional[bool] = None
+    use_structured_outputs: Optional[bool] = None
     tool_choice: Optional[Union[str, Dict[str, Any]]] = None
     run_timeout: Optional[float] = None
     first_token_timeout: Optional[float] = None

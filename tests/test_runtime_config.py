@@ -60,6 +60,10 @@ class TestRunConfigFields:
         cfg = RunConfig(enabled_skills=["paper-digest"])
         assert cfg.enabled_skills == ["paper-digest"]
 
+    def test_run_config_with_use_structured_outputs(self):
+        cfg = RunConfig(use_structured_outputs=True)
+        assert cfg.use_structured_outputs is True
+
 
 class TestAgentEnableDisable:
     """Test Agent.enable_tool/disable_tool/enable_skill/disable_skill."""

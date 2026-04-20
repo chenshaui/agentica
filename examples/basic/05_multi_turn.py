@@ -25,7 +25,7 @@ async def main():
 
     agent_no_history = Agent(
         model=OpenAIChat(id="gpt-4o-mini"),
-        add_history_to_messages=False,
+        add_history_to_context=False,
     )
 
     print(await agent_no_history.run("我叫张三，住在北京"))
@@ -38,7 +38,7 @@ async def main():
 
     agent_with_history = Agent(
         model=OpenAIChat(id="gpt-4o-mini"),
-        add_history_to_messages=True,
+        add_history_to_context=True,
     )
 
     print(await agent_with_history.run("我叫李四，是一名软件工程师"))
@@ -51,7 +51,7 @@ async def main():
 
     agent = Agent(
         model=OpenAIChat(id="gpt-4o-mini"),
-        add_history_to_messages=True,
+        add_history_to_context=True,
         instructions="你是一个友好的助手，请记住用户告诉你的信息。",
     )
 

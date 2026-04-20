@@ -116,7 +116,7 @@ class OpenAIChat(Model):
 
     # Internal parameters. Not used for API requests
     # Whether to use the structured outputs with this Model.
-    structured_outputs: bool = False
+    use_structured_outputs: bool = False
     # Whether the Model supports structured outputs.
     supports_structured_outputs: bool = True
     # Langfuse tags for tracing (additional tags beyond what Agent provides)
@@ -258,7 +258,7 @@ class OpenAIChat(Model):
         """Send a chat completion request to the OpenAI API (async-only)."""
         langfuse_params = self._get_langfuse_extra_params()
 
-        if self.response_format is not None and self.structured_outputs:
+        if self.response_format is not None and self.use_structured_outputs:
             try:
                 if isinstance(self.response_format, type) and issubclass(self.response_format, BaseModel):
                     return await self.get_client().beta.chat.completions.parse(
@@ -268,7 +268,7 @@ class OpenAIChat(Model):
                         **langfuse_params,
                     )
                 else:
-                    raise ValueError("response_format must be a subclass of BaseModel if structured_outputs=True")
+                    raise ValueError("response_format must be a subclass of BaseModel if use_structured_outputs=True")
             except Exception as e:
                 self._learn_context_limit_from_error(str(e))
                 logger.error(f"Error from OpenAI API structured outputs: {e}")
@@ -365,7 +365,7 @@ class OpenAIChat(Model):
         try:
             if (
                     self.response_format is not None
-                    and self.structured_outputs
+                    and self.use_structured_outputs
                     and issubclass(self.response_format, BaseModel)
             ):
                 parsed_object = response_message.parsed  # type: ignore

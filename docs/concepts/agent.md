@@ -69,8 +69,8 @@ async def main():
         ),
 
         # 会话历史
-        add_history_to_messages=True,
-        history_window=5,
+        add_history_to_context=True,
+        num_history_turns=5,
     )
 
     result = await agent.run("2025 年 AI 领域最重要的进展有哪些？")
@@ -99,10 +99,13 @@ asyncio.run(main())
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `add_history_to_messages` | `bool` | `False` | 将历史消息加入上下文 |
-| `history_window` | `int` | `3` | 保留最近 N 轮历史 |
-| `structured_outputs` | `bool` | `False` | 严格 JSON 结构化输出（部分 API 支持） |
+| `enable_long_term_memory` | `bool` | `False` | 启用长期记忆工具、检索和相关 hooks |
+| `enable_experience_capture` | `bool` | `False` | 启用 experience 捕获与自进化 hooks |
+| `add_history_to_context` | `bool` | `False` | 将历史消息加入上下文 |
+| `num_history_turns` | `int` | `3` | 保留最近 N 轮历史 |
+| `use_structured_outputs` | `bool` | `False` | 严格 JSON 结构化输出（部分 API 支持） |
 | `debug` | `bool` | `False` | 启用调试日志 |
+| `enable_tracing` | `bool` | `False` | 启用 Langfuse tracing |
 
 ### 第三层：打包配置
 
@@ -435,8 +438,8 @@ from agentica import Agent, ZhipuAI
 async def main():
     agent = Agent(
         model=ZhipuAI(),
-        add_history_to_messages=True,  # 开启会话历史
-        history_window=10,             # 保留最近 10 轮
+        add_history_to_context=True,  # 开启会话历史
+        num_history_turns=10,          # 保留最近 10 轮
     )
 
     # 第一轮

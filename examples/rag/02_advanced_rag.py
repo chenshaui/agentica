@@ -53,7 +53,7 @@ agent = Agent(
     model=OpenAIChat(),
     knowledge=knowledge,
     tool_config=ToolConfig(search_knowledge=True),
-    add_history_to_messages=True,
+    add_history_to_context=True,
     prompt_config=PromptConfig(markdown=True),
 )
 

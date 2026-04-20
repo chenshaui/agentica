@@ -116,7 +116,7 @@ class LiteLLMChat(Model):
     request_params: Optional[Dict[str, Any]] = None
     
     # Internal state
-    structured_outputs: bool = False
+    use_structured_outputs: bool = False
     supports_structured_outputs: bool = True
     
     def __post_init__(self):
@@ -198,7 +198,7 @@ class LiteLLMChat(Model):
         # Structured output via response_format (json_schema)
         if (
             self.response_format is not None
-            and self.structured_outputs
+            and self.use_structured_outputs
             and isinstance(self.response_format, type)
             and issubclass(self.response_format, BaseModel)
         ):
@@ -372,7 +372,7 @@ class LiteLLMChat(Model):
         # Parse structured output
         if (
             self.response_format is not None
-            and self.structured_outputs
+            and self.use_structured_outputs
             and isinstance(self.response_format, type)
             and issubclass(self.response_format, BaseModel)
             and assistant_message.content

@@ -151,7 +151,7 @@ class WorkingMemory(BaseModel):
 
     Example - Session management only (recommended):
         >>> memory = WorkingMemory(create_session_summary=True)
-        >>> agent = Agent(memory=memory)
+        >>> agent = Agent(working_memory=memory)
 
     Example - With Workspace for persistent memory:
         >>> from agentica.workspace import Workspace

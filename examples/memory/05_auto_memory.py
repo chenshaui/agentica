@@ -49,8 +49,8 @@ def _create_agent(workspace: Workspace, **kwargs) -> Agent:
             auto_archive=True,
             auto_extract_memory=True,
         ),
-        add_history_to_messages=True,
-        history_window=5,
+        add_history_to_context=True,
+        num_history_turns=5,
         **kwargs,
     )
 
@@ -155,7 +155,7 @@ async def demo_session_summary():
     agent = Agent(
         model=OpenAIChat(id="gpt-4o-mini"),
         working_memory=WorkingMemory.with_summary(),
-        add_history_to_messages=True,
+        add_history_to_context=True,
     )
 
     await agent.print_response("Hi, I need help with Python decorators")
@@ -192,7 +192,7 @@ async def demo_combined():
             auto_extract_memory=True,
         ),
         working_memory=WorkingMemory.with_summary(),
-        add_history_to_messages=True,
+        add_history_to_context=True,
     )
 
     print("Config: Workspace (persistent) + SessionSummary + auto memory")

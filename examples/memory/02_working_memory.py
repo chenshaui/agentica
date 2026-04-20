@@ -31,8 +31,8 @@ async def demo1_basic_session():
     # Compare: OpenAI SDK needs Runner.run(agent, input, session=Session())
     agent = Agent(
         model=OpenAIChat(id="gpt-4o-mini"),
-        add_history_to_messages=True,
-        history_window=5,
+        add_history_to_context=True,
+        num_history_turns=5,
         instructions="You are a helpful assistant. Remember what the user tells you.",
     )
 
@@ -75,13 +75,13 @@ async def demo2_session_isolation():
     # Session A: Alice's conversation
     session_a = Agent(
         model=OpenAIChat(id="gpt-4o-mini"),
-        add_history_to_messages=True,
+        add_history_to_context=True,
     )
 
     # Session B: Bob's conversation
     session_b = Agent(
         model=OpenAIChat(id="gpt-4o-mini"),
-        add_history_to_messages=True,
+        add_history_to_context=True,
     )
 
     # Alice talks
@@ -116,8 +116,8 @@ async def demo3_resume_conversation():
 
     agent = Agent(
         model=OpenAIChat(id="gpt-4o-mini"),
-        add_history_to_messages=True,
-        history_window=10,
+        add_history_to_context=True,
+        num_history_turns=10,
         instructions="You are a coding tutor. Track the student's learning progress.",
     )
 
@@ -160,7 +160,7 @@ async def demo4_shared_memory():
     sales_agent = Agent(
         model=OpenAIChat(id="gpt-4o-mini"),
         working_memory=shared_memory,
-        add_history_to_messages=True,
+        add_history_to_context=True,
         instructions="You are a sales agent. Collect customer requirements for a software project.",
     )
 
@@ -175,7 +175,7 @@ async def demo4_shared_memory():
     tech_agent = Agent(
         model=OpenAIChat(id="gpt-4o-mini"),
         working_memory=shared_memory,
-        add_history_to_messages=True,
+        add_history_to_context=True,
         instructions="You are a technical architect. Based on conversation history, propose a technical solution.",
     )
 
@@ -199,8 +199,8 @@ async def demo5_history_control():
 
     agent = Agent(
         model=OpenAIChat(id="gpt-4o-mini"),
-        add_history_to_messages=True,
-        history_window=2,  # only last 2 runs
+        add_history_to_context=True,
+        num_history_turns=2,  # only last 2 runs
         instructions="Answer briefly.",
     )
 
@@ -217,7 +217,7 @@ async def demo5_history_control():
 
     print(f"Total runs recorded: {len(agent.working_memory.runs)}")
 
-    # With history_window=2, only last 2 runs are visible
+    # With num_history_turns=2, only last 2 runs are visible
     print("\n[Query] What capitals have I told you about?")
     r = await agent.run("List ALL the capitals I've told you about")
     print(f"  Agent (window=2): {r.content[:300]}")

@@ -12,7 +12,7 @@ Architecture:
 
 Parameters organized in three layers:
 1. Core definition (~10): model, name, instructions, tools, knowledge, etc.
-2. Common config (~5): add_history_to_messages, debug, tracing, etc.
+2. Common config (~5): add_history_to_context, debug, enable_tracing, etc.
 3. Packed config (3): PromptConfig, ToolConfig, WorkspaceMemoryConfig
 """
 from typing import (
@@ -72,7 +72,7 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
 
     Parameters are organized in three layers:
     1. Core definition (~10): model, name, instructions, tools, etc.
-    2. Common config (~5): add_history_to_messages, debug, etc.
+    2. Common config (~5): add_history_to_context, debug, etc.
     3. Packed config (3): prompt_config, tool_config, long_term_memory_config
 
     For output_language, markdown, search_knowledge etc., set them via
@@ -110,18 +110,18 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
     knowledge: Optional[Any] = None  # Knowledge type
     workspace: Optional[Any] = None  # Workspace type
     work_dir: Optional[str] = None  # Working directory for file operations (used by builtin tools)
-    memory: bool = False  # Whether to enable long-term memory tools and hooks
-    experience: bool = False  # Whether to enable experience capture (self-evolution)
+    enable_long_term_memory: bool = False  # Whether to enable long-term memory tools and hooks
+    enable_experience_capture: bool = False  # Whether to enable experience capture (self-evolution)
     response_model: Optional[Type[Any]] = None
 
     # ============================
     # Layer 2: Common config
     # ============================
-    add_history_to_messages: bool = False
-    history_window: int = 3
-    structured_outputs: bool = False
+    add_history_to_context: bool = False
+    num_history_turns: int = 3
+    use_structured_outputs: bool = False
     debug: bool = False
-    tracing: bool = False
+    enable_tracing: bool = False
 
     # Session persistence (CC-style append-only JSONL):
     # Set session_id to enable. Stored at .sessions/{session_id}.jsonl
@@ -217,15 +217,15 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
             knowledge: Optional[Any] = None,
             workspace: Optional[Union[Any, str]] = None,  # Workspace or str path
             work_dir: Optional[str] = None,  # Working directory for file operations
-            memory: bool = False,  # Enable long-term memory tools and hooks
-            experience: bool = False,  # Enable experience capture (self-evolution)
+            enable_long_term_memory: bool = False,  # Enable long-term memory tools and hooks
+            enable_experience_capture: bool = False,  # Enable experience capture (self-evolution)
             response_model: Optional[Type[Any]] = None,
             # ---- Common config ----
-            add_history_to_messages: bool = False,
-            history_window: int = 3,
-            structured_outputs: bool = False,
+            add_history_to_context: bool = False,
+            num_history_turns: int = 3,
+            use_structured_outputs: bool = False,
             debug: bool = False,
-            tracing: bool = False,
+            enable_tracing: bool = False,
             hooks: Optional[AgentHooks] = None,
             # ---- Session persistence ----
             session_id: Optional[str] = None,
@@ -253,8 +253,8 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
         self.knowledge = knowledge
         self.response_model = response_model
         self.work_dir = work_dir
-        self.memory = memory
-        self.experience = experience
+        self.enable_long_term_memory = enable_long_term_memory
+        self.enable_experience_capture = enable_experience_capture
 
         # Handle workspace: str → Workspace(path=str)
         if isinstance(workspace, str):
@@ -264,11 +264,11 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
             self.workspace = workspace
 
         # Common
-        self.add_history_to_messages = add_history_to_messages
-        self.history_window = history_window
-        self.structured_outputs = structured_outputs
+        self.add_history_to_context = add_history_to_context
+        self.num_history_turns = num_history_turns
+        self.use_structured_outputs = use_structured_outputs
         self.debug = debug
-        self.tracing = tracing
+        self.enable_tracing = enable_tracing
         self.hooks = hooks
 
         # Session persistence
@@ -352,8 +352,8 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
         if self.tools:
             self.tools = [t.clone() if isinstance(t, Tool) else t for t in self.tools]
 
-        # Register BuiltinMemoryTool when memory=True and workspace exists
-        if self.memory and self.workspace is not None:
+        # Register BuiltinMemoryTool when long-term memory is enabled and workspace exists
+        if self.enable_long_term_memory and self.workspace is not None:
             from agentica.tools.buildin_tools import BuiltinMemoryTool
             has_memory_tool = any(isinstance(t, BuiltinMemoryTool) for t in (self.tools or []))
             if not has_memory_tool:
@@ -393,10 +393,10 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
             self.tool_config.compression_manager.model = self.auxiliary_model
 
         # Tracing: check Langfuse config when enabled
-        if self.tracing:
+        if self.enable_tracing:
             if not LANGFUSE_SECRET_KEY or not LANGFUSE_PUBLIC_KEY:
                 logger.warning(
-                    "tracing=True but Langfuse is not configured. "
+                    "enable_tracing=True but Langfuse is not configured. "
                     "Set environment variables to enable:\n"
                     "  LANGFUSE_SECRET_KEY=sk-lf-xxx\n"
                     "  LANGFUSE_PUBLIC_KEY=pk-lf-xxx\n"
@@ -404,11 +404,11 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
                     "Install: pip install langfuse"
                 )
 
-        # Auto-archive: inject ConversationArchiveHooks when memory=True and auto_archive=True (zero cost)
-        # Auto-extract: inject MemoryExtractHooks when memory=True and auto_extract_memory=True (LLM cost)
-        # Auto-experience: inject ExperienceCaptureHooks when experience=True (zero LLM cost)
+        # Auto-archive: inject ConversationArchiveHooks when long-term memory is enabled and auto_archive=True (zero cost)
+        # Auto-extract: inject MemoryExtractHooks when long-term memory is enabled and auto_extract_memory=True (LLM cost)
+        # Auto-experience: inject ExperienceCaptureHooks when experience capture is enabled (zero LLM cost)
         auto_hooks: list = []
-        if self.memory and self.workspace is not None:
+        if self.enable_long_term_memory and self.workspace is not None:
             if self.long_term_memory_config.auto_archive:
                 auto_hooks.append(ConversationArchiveHooks())
             if self.long_term_memory_config.auto_extract_memory:
@@ -419,7 +419,7 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
                         )
                     )
                 )
-        if self.experience and self.workspace is not None:
+        if self.enable_experience_capture and self.workspace is not None:
             auto_hooks.append(ExperienceCaptureHooks(self.experience_config))
         if auto_hooks:
             self._default_run_hooks = _CompositeRunHooks(auto_hooks)
@@ -453,7 +453,7 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
 
     def _inject_generated_skill_dirs(self) -> None:
         """Attach workspace generated skill dirs to any SkillTool before prompt merge."""
-        if not self.experience or self.workspace is None:
+        if not self.enable_experience_capture or self.workspace is None:
             return
         if self.experience_config.skill_upgrade is None:
             return
@@ -498,7 +498,7 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
         Returns:
             Formatted memory string, or None if workspace/memory not configured.
         """
-        if not self.memory:
+        if not self.enable_long_term_memory:
             return None
         if not self.workspace or not self.long_term_memory_config.load_workspace_memory:
             return None
@@ -522,7 +522,7 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
         Returns:
             Formatted experience string, or None if experience not enabled.
         """
-        if not self.experience or not self.workspace:
+        if not self.enable_experience_capture or not self.workspace:
             return None
         experiences = await self.workspace.get_relevant_experiences(
             query=query,
@@ -926,10 +926,10 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
 
         # Set response_format
         if self.response_model is not None and self.model.response_format is None:
-            if self.structured_outputs and self.model.supports_structured_outputs:
+            if self.use_structured_outputs and self.model.supports_structured_outputs:
                 logger.debug("Setting Model.response_format to Agent.response_model")
                 self.model.response_format = self.response_model
-                self.model.structured_outputs = True
+                self.model.use_structured_outputs = True
             else:
                 self.model.response_format = {"type": "json_object"}
 
@@ -939,7 +939,7 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
             for tool in agent_tools:
                 if (
                         self.response_model is not None
-                        and self.structured_outputs
+                        and self.use_structured_outputs
                         and self.model.supports_structured_outputs
                 ):
                     self.model.add_tool(tool=tool, strict=True, agent=self)

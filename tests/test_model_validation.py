@@ -18,6 +18,13 @@ def _make_openai_model():
     return OpenAIChat(id="gpt-4o-mini", api_key="fake_openai_key")
 
 
+class TestModelStructuredOutputsNaming(unittest.TestCase):
+    def test_openai_model_uses_use_structured_outputs_field(self):
+        model = _make_openai_model()
+
+        self.assertFalse(model.use_structured_outputs)
+
+
 class TestOpenAIChatEmptyChoices(unittest.TestCase):
     """OpenAIChat.response() must raise ValueError when choices is empty."""
 
@@ -142,7 +149,7 @@ class TestStructuredOutputFallback(unittest.TestCase):
 
         model = _make_openai_model()
         model.response_format = Report
-        model.structured_outputs = True
+        model.use_structured_outputs = True
 
         mock_message = MagicMock()
         mock_message.content = '{"summary": "fallback text"}'

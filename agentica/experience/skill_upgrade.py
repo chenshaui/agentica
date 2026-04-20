@@ -52,6 +52,7 @@ _FENCE_FRONTMATTER_RE = re.compile(
     re.DOTALL,
 )
 _FRONTMATTER_DASHES_RE = re.compile(r"^---\s*$", re.MULTILINE)
+_SECTION_HEADING_RE = re.compile(r"^##\s+", re.MULTILINE)
 
 
 def _normalize_skill_md(text: str) -> str:
@@ -239,14 +240,16 @@ class SkillEvolutionManager:
         "Decisions:\n"
         "- keep_shadow: not enough data yet, keep running\n"
         "- promote: skill is performing well, promote to full status\n"
-        "- revise: skill idea is good but needs changes — provide revised "
-        "SKILL.md following the same gotcha-first format (no Overview / "
-        "When To Use / Workflow sections)\n"
+        "- revise: skill idea is good but needs changes — prefer returning "
+        "section_updates so the system can patch the current SKILL.md "
+        "instead of rewriting the whole file\n"
         "- rollback: skill is causing problems, disable it\n\n"
         "Return JSON only:\n"
         '{"decision": "keep_shadow|promote|revise|rollback", '
         '"reason": "...", '
-        '"revised_skill_md": "..." (only if decision is revise, otherwise null)}\n\n'
+        '"section_updates": {"summary": "...", "gotchas": ["...", "..."], '
+        '"minimal_example": "..."} (preferred for revise, otherwise null), '
+        '"revised_skill_md": "..." (legacy fallback, only if decision is revise)}\n\n'
     )
 
     # ── Public API ────────────────────────────────────────────────────────
@@ -568,7 +571,13 @@ class SkillEvolutionManager:
             meta["status"] = "rolled_back"
             self._disable_skill_md(skill_dir)
         elif decision == "revise":
-            revised_md = result.get("revised_skill_md")
+            revised_md = None
+            section_updates = result.get("section_updates")
+            if isinstance(section_updates, dict) and skill_md_path.exists():
+                current_skill_md = await async_read_text(skill_md_path)
+                revised_md = self._apply_section_updates(current_skill_md, section_updates)
+            if revised_md is None:
+                revised_md = result.get("revised_skill_md")
             if revised_md:
                 revised_md = _normalize_skill_md(revised_md)
                 revised_md = self._append_source_section(
@@ -596,6 +605,84 @@ class SkillEvolutionManager:
         return decision
 
     # ── Deterministic helpers (no LLM) ────────────────────────────────────
+
+    @staticmethod
+    def _format_gotchas_block(gotchas: Any) -> Optional[str]:
+        """Normalize gotcha updates into markdown bullet lines."""
+        if isinstance(gotchas, str):
+            text = gotchas.strip()
+            return text or None
+        if not isinstance(gotchas, list):
+            return None
+
+        lines: List[str] = []
+        for item in gotchas:
+            text = str(item).strip()
+            if not text:
+                continue
+            if text.startswith("-"):
+                lines.append(text)
+            elif text.startswith("⚠️"):
+                lines.append(f"- {text}")
+            else:
+                lines.append(f"- ⚠️ {text}")
+        return "\n".join(lines) if lines else None
+
+    @staticmethod
+    def _replace_summary_block(skill_md: str, summary: str) -> str:
+        """Replace the one-line summary between frontmatter and the first section."""
+        normalized = _normalize_skill_md(skill_md)
+        matches = list(_FRONTMATTER_DASHES_RE.finditer(normalized))
+        if len(matches) < 2:
+            return normalized
+
+        body_start = matches[1].end()
+        prefix = normalized[:body_start].rstrip() + "\n\n"
+        body = normalized[body_start:].lstrip("\n")
+        heading_match = _SECTION_HEADING_RE.search(body)
+        tail = body[heading_match.start():].lstrip() if heading_match else ""
+        summary_block = summary.strip()
+        if not summary_block:
+            return normalized
+        if tail:
+            return prefix + summary_block + "\n\n" + tail
+        return prefix + summary_block + "\n"
+
+    @staticmethod
+    def _replace_named_section(skill_md: str, heading: str, body: str) -> str:
+        """Replace a markdown H2 section body while keeping other sections intact."""
+        replacement = f"## {heading}\n{body.strip()}\n\n"
+        pattern = re.compile(
+            rf"(?ms)^##\s*{re.escape(heading)}\s*\n.*?(?=^##\s|\Z)"
+        )
+        if pattern.search(skill_md):
+            return pattern.sub(replacement, skill_md, count=1)
+        return skill_md.rstrip() + "\n\n" + replacement
+
+    @classmethod
+    def _apply_section_updates(cls, skill_md: str, section_updates: Dict[str, Any]) -> Optional[str]:
+        """Apply structured section updates to the current SKILL.md content."""
+        updated = _normalize_skill_md(skill_md)
+        changed = False
+
+        summary = section_updates.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            updated = cls._replace_summary_block(updated, summary)
+            changed = True
+
+        gotchas_block = cls._format_gotchas_block(section_updates.get("gotchas"))
+        if gotchas_block:
+            updated = cls._replace_named_section(updated, "Gotchas", gotchas_block)
+            changed = True
+
+        minimal_example = section_updates.get("minimal_example")
+        if isinstance(minimal_example, str) and minimal_example.strip():
+            updated = cls._replace_named_section(
+                updated, "Minimal Example", minimal_example
+            )
+            changed = True
+
+        return updated if changed else None
 
     @staticmethod
     def record_episode(

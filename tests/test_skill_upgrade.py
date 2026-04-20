@@ -506,6 +506,59 @@ class TestSkillEvolutionManager(unittest.TestCase):
         meta = SkillEvolutionManager.read_meta(skill_dir / "meta.json")
         self.assertEqual(meta["version"], 2)
 
+    def test_maybe_update_revise_with_section_updates(self):
+        """Revision should support section-level updates without rewriting the whole file."""
+        from agentica.experience.skill_upgrade import SkillEvolutionManager
+
+        skill_dir = Path(self._tmpdir) / "skill4_sections"
+        skill_dir.mkdir(parents=True)
+        original_md = SkillEvolutionManager._append_source_section(
+            _VALID_SKILL_MD.replace(
+                "name: pandas-preference", "name: test-sections"
+            ),
+            source="seed-card",
+            event_count=2,
+        )
+        (skill_dir / "SKILL.md").write_text(original_md, encoding="utf-8")
+        SkillEvolutionManager.write_meta(skill_dir / "meta.json", {
+            "skill_name": "test-sections", "status": "shadow",
+            "total_episodes": 5, "success_count": 3, "failure_count": 2,
+            "consecutive_failures": 0, "version": 1,
+            "source_experience": "seed-card",
+        })
+        for i in range(5):
+            SkillEvolutionManager.record_episode(
+                skill_dir / "episodes.jsonl", outcome="success" if i < 3 else "failure",
+            )
+
+        model = MagicMock()
+        model.response = AsyncMock(return_value=MagicMock(content=json.dumps({
+            "decision": "revise",
+            "reason": "Tighten the summary and gotchas only",
+            "section_updates": {
+                "summary": "Prefer pandas.read_csv first for tabular CSV workflows.",
+                "gotchas": [
+                    "csv.reader strips dtypes: every cell becomes str. Fix: pd.read_csv(path, dtype=...).",
+                    "csv.Sniffer mis-detects delimiters on sparse samples. Fix: pass sep= explicitly to pd.read_csv.",
+                ],
+            },
+        })))
+
+        manager = SkillEvolutionManager()
+        decision = asyncio.run(manager.maybe_update_skill_state(
+            model=model, skill_dir=skill_dir, checkpoint_interval=5,
+        ))
+        self.assertEqual(decision, "revise")
+
+        skill_content = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("Prefer pandas.read_csv first", skill_content)
+        self.assertIn("csv.Sniffer mis-detects delimiters", skill_content)
+        self.assertIn("df.to_csv('out.csv', index=False)", skill_content)
+        self.assertIn("generated from experience card: `seed-card`", skill_content)
+
+        meta = SkillEvolutionManager.read_meta(skill_dir / "meta.json")
+        self.assertEqual(meta["version"], 2)
+
     def test_list_generated_skills(self):
         from agentica.experience.skill_upgrade import SkillEvolutionManager
         self._gen_dir.mkdir(parents=True)
@@ -1554,7 +1607,7 @@ class TestAgentSkillUpgradeLifecycle(unittest.TestCase):
             model=OpenAIChat(id="gpt-4o-mini", api_key="fake_openai_key"),
             tools=[skill_tool],
             workspace=workspace,
-            experience=True,
+            enable_experience_capture=True,
             experience_config=ExperienceConfig(skill_upgrade=SkillUpgradeConfig(mode="shadow")),
         )
 
@@ -1581,7 +1634,7 @@ class TestAgentSkillUpgradeLifecycle(unittest.TestCase):
             model=OpenAIChat(id="gpt-4o-mini", api_key="fake_openai_key"),
             tools=[skill_tool],
             workspace=workspace,
-            experience=True,
+            enable_experience_capture=True,
             experience_config=config,
         )
         agent.run_input = "test input"

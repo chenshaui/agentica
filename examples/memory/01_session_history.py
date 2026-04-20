@@ -50,7 +50,7 @@ async def main():
     agent = Agent(
         model=OpenAIChat(),
         tools=[get_weather, get_population],
-        add_history_to_messages=False,
+        add_history_to_context=False,
     )
 
     r = await agent.run("帮我查一下北京的天气")
@@ -69,8 +69,8 @@ async def main():
     agent2 = Agent(
         model=OpenAIChat(),
         tools=[get_weather, get_population],
-        add_history_to_messages=True,
-        history_window=5,
+        add_history_to_context=True,
+        num_history_turns=5,
         debug=True,
     )
 
@@ -95,7 +95,7 @@ async def main():
         model=OpenAIChat(),
         tools=[get_weather, get_population],
         working_memory=memory,
-        add_history_to_messages=True,
+        add_history_to_context=True,
     )
 
     print(await agent3.run("查一下深圳的天气和杭州的人口"))

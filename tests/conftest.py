@@ -76,7 +76,7 @@ def mock_model(mock_model_response):
     model.tool_call_limit = None
     model.system_prompt = None
     model.instructions = None
-    model.structured_outputs = None
+    model.use_structured_outputs = None
     model.supports_structured_outputs = False
     model.context_window = 128000
     model.max_output_tokens = None

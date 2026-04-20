@@ -108,8 +108,8 @@ def create_llm_os(
         # 知识库搜索
         tool_config=ToolConfig(search_knowledge=True),
         # 聊天历史
-        add_history_to_messages=True,
-        history_window=6,
+        add_history_to_context=True,
+        num_history_turns=6,
         # 显示配置
         prompt_config=PromptConfig(markdown=True, introduction=INTRODUCTION, enable_agentic_prompt=True),
         debug=debug,

@@ -47,7 +47,7 @@ asyncio.run(Agent().run('一句话介绍北京').then(print))
 | 02 | [custom_prompt.py](basic/02_custom_prompt.py) | 自定义系统提示词、消息列表输入 | `instructions`, `description`, `messages` |
 | 03 | [stream_output.py](basic/03_stream_output.py) | 五种流式输出方式对比 | `run_stream()`, `run_stream_sync()`, `print_response_stream()` |
 | 04 | [structured_output.py](basic/04_structured_output.py) | Pydantic 结构化输出 | `response_model`, `BaseModel` |
-| 05 | [multi_turn.py](basic/05_multi_turn.py) | 多轮对话与历史记忆 | `add_history_to_messages` |
+| 05 | [multi_turn.py](basic/05_multi_turn.py) | 多轮对话与历史记忆 | `add_history_to_context` |
 | 06 | [vision.py](basic/06_vision.py) | 多模态：图片理解（URL / Base64） | `images`, 多模态输入 |
 | 07 | [function_calling_auto_demo.py](basic/07_function_calling_auto_demo.py) | **手动 Loop vs Runner 自动 Agentic Loop**：多轮链式推理对比 | Function Calling, Agentic Loop, `RunEvent` |
 | 08 | [cli_app.py](basic/08_cli_app.py) | 内置交互式 CLI | `agent.cli_app()` |
@@ -106,7 +106,7 @@ asyncio.run(Agent().run('一句话介绍北京').then(print))
 
 | # | 示例 | 描述 | 关键概念 |
 |---|------|------|----------|
-| 01 | [session_history.py](memory/01_session_history.py) | 会话历史：无历史 vs 多轮对话 vs 会话摘要 | `add_history_to_messages`, `AgentMemory.with_summary()` |
+| 01 | [session_history.py](memory/01_session_history.py) | 会话历史：无历史 vs 多轮对话 vs 会话摘要 | `add_history_to_context`, `AgentMemory.with_summary()` |
 | 02 | [working_memory.py](memory/02_working_memory.py) | Agent-as-Session：隔离、共享记忆、窗口控制 | `WorkingMemory`, `num_history_responses`, 共享 memory |
 | 03 | [compression.py](memory/03_compression.py) | Token 压缩（对长对话自动截断） | `CompressionManager`, `ToolConfig` |
 | 04 | [workspace_memory.py](memory/04_workspace_memory.py) | Workspace 文件记忆：存取、多用户隔离、搜索 | `Workspace`, `MEMORY.md`, `save_memory()` |

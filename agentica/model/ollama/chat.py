@@ -66,7 +66,7 @@ class Ollama(Model):
     async_client: Optional[AsyncOllamaClient] = None
 
     # Internal parameters
-    structured_outputs: bool = False
+    use_structured_outputs: bool = False
     supports_structured_outputs: bool = True
 
     def get_client_params(self) -> Dict[str, Any]:
@@ -135,7 +135,7 @@ class Ollama(Model):
     async def invoke(self, messages: List[Message]) -> Mapping[str, Any]:
         """Send an async chat request to the Ollama API."""
         request_kwargs = self.request_kwargs
-        if self.response_format is not None and self.structured_outputs:
+        if self.response_format is not None and self.use_structured_outputs:
             if isinstance(self.response_format, type) and issubclass(self.response_format, BaseModel):
                 logger.debug("Using structured outputs")
                 format_schema = self.response_format.model_json_schema()
@@ -303,7 +303,7 @@ class Ollama(Model):
         try:
             if (
                 self.response_format is not None
-                and self.structured_outputs
+                and self.use_structured_outputs
                 and isinstance(self.response_format, type)
                 and issubclass(self.response_format, BaseModel)
             ):

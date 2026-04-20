@@ -364,7 +364,7 @@ class TestVisionWithLocalImage(unittest.TestCase):
 
 
 class TestAgentWithVisionHistory(unittest.TestCase):
-    """Test Agent with add_history_to_messages=True and vision messages.
+    """Test Agent with add_history_to_context=True and vision messages.
     
     These tests use mocks to avoid actual LLM API calls.
     """
@@ -398,7 +398,7 @@ class TestAgentWithVisionHistory(unittest.TestCase):
 
     @patch('agentica.model.openai.chat.OpenAIChat.response')
     def test_agent_vision_with_history(self, mock_response):
-        """Test Agent with vision and add_history_to_messages=True."""
+        """Test Agent with vision and add_history_to_context=True."""
         if self.base64_image_with_prefix is None:
             self.skipTest("Test image not found")
         
@@ -410,7 +410,7 @@ class TestAgentWithVisionHistory(unittest.TestCase):
         # Create agent with history enabled
         agent = Agent(
             model=OpenAIChat(id="gpt-4o", api_key="fake_openai_key"),
-            add_history_to_messages=True,
+            add_history_to_context=True,
         )
         
         # First turn: send image
@@ -453,7 +453,7 @@ class TestAgentWithVisionHistory(unittest.TestCase):
         # Create agent with history enabled
         agent = Agent(
             model=OpenAIChat(id="gpt-4o", api_key="fake_openai_key"),
-            add_history_to_messages=True,
+            add_history_to_context=True,
         )
         
         # Turn 1: First image
@@ -498,7 +498,7 @@ class TestAgentWithVisionHistory(unittest.TestCase):
         # Create agent with history enabled
         agent = Agent(
             model=OpenAIChat(id="gpt-4o", api_key="fake_openai_key"),
-            add_history_to_messages=True,
+            add_history_to_context=True,
         )
         
         # Turn 1: URL image

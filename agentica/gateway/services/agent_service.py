@@ -232,7 +232,7 @@ class AgentService:
             tools=extra if extra else None,
             workspace=self._workspace,
             work_dir=work_dir,
-            history_window=6,
+            num_history_turns=6,
             instructions=instructions,
             debug=settings.debug,
             # memory, skills, user input, experience capture, workspace memory

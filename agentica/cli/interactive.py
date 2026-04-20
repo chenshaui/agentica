@@ -335,7 +335,7 @@ def _run_btw_concurrent(agent, question: str, tui_state: dict):
                          "Answer concisely based on your knowledge and conversation context.",
             session_id=_generate_session_id(),
             debug=False,
-            add_history_to_messages=True,
+            add_history_to_context=True,
         )
 
         # Inject context snapshot so the BTW agent can see prior conversation

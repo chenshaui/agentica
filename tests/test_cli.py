@@ -497,6 +497,45 @@ class TestCLIConfiguration(unittest.TestCase):
         self.assertEqual(args.skills_command, "install")
         self.assertEqual(args.source, "/tmp/mock-skill-repo")
 
+    def test_parse_experience_flags(self):
+        """CLI exposes explicit DeepAgent self-evolution controls."""
+        from agentica.cli.config import parse_args
+
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "agentica",
+                "--no-experience",
+                "--sync-experience-to-global-agent-md",
+                "--enable-skill-upgrade",
+                "--skill-upgrade-mode",
+                "draft",
+            ],
+        ):
+            args = parse_args()
+
+        self.assertTrue(args.no_experience)
+        self.assertTrue(args.sync_experience_to_global_agent_md)
+        self.assertTrue(args.enable_skill_upgrade)
+        self.assertEqual(args.skill_upgrade_mode, "draft")
+
+    def test_parse_memory_sync_flag(self):
+        """CLI exposes explicit DeepAgent memory global-sync control."""
+        from agentica.cli.config import parse_args
+
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "agentica",
+                "--sync-memories-to-global-agent-md",
+            ],
+        ):
+            args = parse_args()
+
+        self.assertTrue(args.sync_memories_to_global_agent_md)
+
     def test_interactive_extensions_install_reports_replaced_symlinked_skill(self):
         """Interactive install prints when it replaces a symlinked skill."""
         import agentica.cli.commands as commands
@@ -605,6 +644,77 @@ class TestCLIConfiguration(unittest.TestCase):
         self.assertIsNone(agent.instructions)
         self.assertEqual(len(agent.session_guidance), 1)
         self.assertIn("Available Skills", agent.session_guidance[0])
+
+    def test_create_agent_passes_experience_controls_to_deep_agent(self):
+        """CLI flags should map to DeepAgent experience settings deterministically."""
+        from agentica.cli.config import create_agent
+
+        captured = {}
+
+        class FakeDeepAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self.tools = []
+
+        with patch("agentica.cli.config.get_model", return_value=MagicMock()), patch(
+            "agentica.agent.deep.DeepAgent",
+            FakeDeepAgent,
+        ):
+            create_agent(
+                {
+                    "model_provider": "zhipuai",
+                    "model_name": "glm-5",
+                    "debug": False,
+                    "work_dir": None,
+                    "enable_experience_capture": False,
+                    "sync_experience_to_global_agent_md": True,
+                    "enable_skill_upgrade": True,
+                    "skill_upgrade_mode": "draft",
+                },
+                extra_tools=[],
+                workspace=None,
+                skills_registry=None,
+            )
+
+        self.assertFalse(captured["enable_experience_capture"])
+        self.assertTrue(captured["experience_config"].capture_tool_errors)
+        self.assertTrue(captured["experience_config"].capture_user_corrections)
+        self.assertTrue(captured["experience_config"].capture_success_patterns)
+        self.assertTrue(captured["experience_config"].sync_to_global_agent_md)
+        self.assertIsNotNone(captured["experience_config"].skill_upgrade)
+        self.assertEqual(captured["experience_config"].skill_upgrade.mode, "draft")
+
+    def test_create_agent_passes_memory_sync_control_to_deep_agent(self):
+        """CLI memory sync flag should map to DeepAgent long-term memory config."""
+        from agentica.cli.config import create_agent
+
+        captured = {}
+
+        class FakeDeepAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self.tools = []
+
+        with patch("agentica.cli.config.get_model", return_value=MagicMock()), patch(
+            "agentica.agent.deep.DeepAgent",
+            FakeDeepAgent,
+        ):
+            create_agent(
+                {
+                    "model_provider": "zhipuai",
+                    "model_name": "glm-5",
+                    "debug": False,
+                    "work_dir": None,
+                    "sync_memories_to_global_agent_md": True,
+                },
+                extra_tools=[],
+                workspace=None,
+                skills_registry=None,
+            )
+
+        self.assertTrue(
+            captured["long_term_memory_config"].sync_memories_to_global_agent_md
+        )
 
 
 class TestToolRegistryIntegrity(unittest.TestCase):

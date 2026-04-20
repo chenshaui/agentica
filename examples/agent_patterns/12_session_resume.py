@@ -44,7 +44,7 @@ def demo_basic_session():
         name="session-agent",
         model=OpenAIChat(id="gpt-4o-mini"),
         session_id=session_id,
-        add_history_to_messages=True,  # Include history in LLM context
+        add_history_to_context=True,  # Include history in LLM context
     )
 
     # First run
@@ -75,7 +75,7 @@ def demo_resume_across_instances():
         name="agent-v1",
         model=OpenAIChat(id="gpt-4o-mini"),
         session_id=session_id,
-        add_history_to_messages=True,
+        add_history_to_context=True,
     )
     response = agent1.run_sync("Remember this: the secret code is 42.")
     print(f"\n[Instance 1] User: Remember this: the secret code is 42.")
@@ -86,7 +86,7 @@ def demo_resume_across_instances():
         name="agent-v2",
         model=OpenAIChat(id="gpt-4o-mini"),
         session_id=session_id,
-        add_history_to_messages=True,
+        add_history_to_context=True,
     )
     response = agent2.run_sync("What is the secret code?")
     print(f"\n[Instance 2] User: What is the secret code?")

@@ -29,7 +29,7 @@ class MemorySummarizer:
 
         if self.use_structured_outputs:
             self.model.response_format = SessionSummary
-            self.model.structured_outputs = True
+            self.model.use_structured_outputs = True
         else:
             self.model.response_format = {"type": "json_object"}
 

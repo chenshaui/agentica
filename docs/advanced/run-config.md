@@ -19,7 +19,7 @@ result = await agent.run("分析数据", config=RunConfig(
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `response_model` | `Type[BaseModel]` | `None` | Pydantic 模型，启用结构化输出 |
-| `structured_outputs` | `bool` | `None` | 使用 OpenAI 严格结构化输出 |
+| `use_structured_outputs` | `bool` | `None` | 使用 OpenAI 严格结构化输出 |
 | `tool_choice` | `str \| dict` | `None` | 工具选择策略 |
 | `run_timeout` | `float` | `None` | 运行总超时（秒） |
 | `first_token_timeout` | `float` | `None` | 首个 token 超时（秒） |

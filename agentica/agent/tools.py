@@ -130,7 +130,7 @@ class ToolsMixin:
             "metrics": self.run_response.metrics if self.run_response is not None else None,
         }
 
-        if self.tracing:
+        if self.enable_tracing:
             run_data.update(
                 {
                     "run_input": self.run_input,

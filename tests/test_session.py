@@ -5,7 +5,7 @@
 
 V2 architecture:
 - Agent itself IS the session via WorkingMemory
-- Core session capability: memory.runs, add_history_to_messages, history_window
+- Core session capability: memory.runs, add_history_to_context, num_history_turns
 """
 import asyncio
 import sys
@@ -101,23 +101,23 @@ class TestSessionPersistence:
         user_msgs = [m.content for m in msgs if m.role == "user"]
         assert len(user_msgs) == 5
 
-    def test_add_history_to_messages_flag(self):
-        """Agent respects add_history_to_messages configuration."""
+    def test_add_history_to_context_flag(self):
+        """Agent respects add_history_to_context configuration."""
         agent_no_hist = Agent(
             name="A",
             model=OpenAIChat(id="gpt-4o-mini", api_key="fake_openai_key"),
-            add_history_to_messages=False,
+            add_history_to_context=False,
         )
-        assert agent_no_hist.add_history_to_messages is False
+        assert agent_no_hist.add_history_to_context is False
 
         agent_with_hist = Agent(
             name="B",
             model=OpenAIChat(id="gpt-4o-mini", api_key="fake_openai_key"),
-            add_history_to_messages=True,
-            history_window=5,
+            add_history_to_context=True,
+            num_history_turns=5,
         )
-        assert agent_with_hist.add_history_to_messages is True
-        assert agent_with_hist.history_window == 5
+        assert agent_with_hist.add_history_to_context is True
+        assert agent_with_hist.num_history_turns == 5
 
 
 # ===========================================================================

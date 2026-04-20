@@ -281,8 +281,8 @@ agent = Agent(
 
 ```python
 agent = Agent(
-    add_history_to_messages=True,  # 添加历史到上下文
-    history_window=5,              # 最近 5 轮对话
+    add_history_to_context=True,  # 添加历史到上下文
+    num_history_turns=5,           # 最近 5 轮对话
 )
 ```
 

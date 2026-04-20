@@ -72,7 +72,7 @@ class Model(ABC):
     # Agent name for tracing.
     agent_name: Optional[str] = None
     # Whether to use the structured outputs with this Model.
-    structured_outputs: Optional[bool] = None
+    use_structured_outputs: Optional[bool] = None
     # Whether the Model supports structured outputs.
     supports_structured_outputs: bool = False
 
@@ -1061,7 +1061,7 @@ class Model(ABC):
             image_url = f"data:{mime_type};base64,{base64_image}"
             return {"type": "image_url", "image_url": {"url": image_url}}
 
-    def _process_pil_image(self, image: 'PIL.Image.Image') -> Dict[str, Any]:
+    def _process_pil_image(self, image) -> Dict[str, Any]:
         """Process PIL Image data."""
         # Convert image to bytes
         img_byte_arr = io.BytesIO()

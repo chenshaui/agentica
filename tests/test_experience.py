@@ -6,7 +6,7 @@ Covers:
 1. ExperienceConfig defaults and custom values
 2. ExperienceCaptureHooks — LLM-based correction classification, tool error capture, success patterns
 3. Workspace experience storage — write, get, bump, lifecycle, sync
-4. Agent experience wiring — experience=True auto-injects hooks
+4. Agent experience wiring — enable_experience_capture=True auto-injects hooks
 5. Experience prompt injection — experiences appear in system prompt
 6. run_input cross-round fix — hooks read agent.run_input at on_agent_end time
 
@@ -26,14 +26,18 @@ from agentica.hooks import ExperienceCaptureHooks, ConversationArchiveHooks, Mem
 from agentica.workspace import Workspace
 
 
-def _make_agent(name="test-agent", experience=False, workspace_path=None):
+def _make_agent(
+    name="test-agent",
+    enable_experience_capture=False,
+    workspace_path=None,
+):
     """Create a minimal Agent with a fake OpenAI key."""
     from agentica.agent import Agent
     from agentica.model.openai import OpenAIChat
     return Agent(
         name=name,
         model=OpenAIChat(id="gpt-4o-mini", api_key="fake_openai_key"),
-        experience=experience,
+        enable_experience_capture=enable_experience_capture,
         workspace=workspace_path,
     )
 
@@ -242,6 +246,63 @@ class TestExperienceCaptureHooks(unittest.TestCase):
             correction_calls[0][0][0].title,
             "panda_data_process_raw",
         )
+
+    def test_on_agent_end_prefilter_remember_persists_without_llm(self):
+        """Explicit remember/rule phrasing should bypass the LLM classifier."""
+        hooks = self._make_hooks()
+        agent = self._mock_agent()
+        agent.run_input = "Remember: list directory before reading files."
+
+        prev_msg = MagicMock()
+        prev_msg.role = "assistant"
+        prev_msg.content = "I'll guess the filename directly."
+        agent.working_memory.messages = [prev_msg]
+        agent.model.response = AsyncMock()
+
+        asyncio.run(hooks.on_agent_start(agent))
+        asyncio.run(hooks.on_agent_end(agent, output="OK"))
+
+        agent.model.response.assert_not_called()
+        compiled_store = agent.workspace.get_compiled_experience_store()
+        calls = compiled_store.write.call_args_list
+        correction_calls = [c for c in calls if c[0][0].experience_type == "correction"]
+        self.assertEqual(len(correction_calls), 1)
+        self.assertTrue(correction_calls[0][0][0].title)
+        self.assertIn(
+            "list directory before reading files",
+            correction_calls[0][0][0].content.lower(),
+        )
+
+    def test_on_agent_end_prefilter_strong_negative_skips_persist_without_llm(self):
+        """Strong negative feedback without a rule is a correction signal, not a durable rule."""
+        hooks = self._make_hooks()
+        agent = self._mock_agent()
+        agent.run_input = "你犯错了，太蠢了。"
+
+        prev_msg = MagicMock()
+        prev_msg.role = "assistant"
+        prev_msg.content = "I already made the same mistake twice."
+        agent.working_memory.messages = [prev_msg]
+        agent.model.response = AsyncMock()
+
+        asyncio.run(hooks.on_agent_start(agent))
+        asyncio.run(hooks.on_agent_end(agent, output="..."))
+
+        agent.model.response.assert_not_called()
+        compiled_store = agent.workspace.get_compiled_experience_store()
+        calls = compiled_store.write.call_args_list
+        correction_calls = [c for c in calls if c[0][0].experience_type == "correction"]
+        self.assertEqual(len(correction_calls), 0)
+
+        event_store = agent.workspace.get_experience_event_store()
+        classification_events = [
+            c[0][0]
+            for c in event_store.append.call_args_list
+            if c[0][0].get("event_type") == "correction_classification"
+        ]
+        self.assertEqual(len(classification_events), 1)
+        self.assertTrue(classification_events[0]["is_correction"])
+        self.assertFalse(classification_events[0]["should_persist"])
 
     def test_on_agent_end_llm_classification_low_confidence_skips(self):
         """Low confidence classification should not persist."""
@@ -881,16 +942,16 @@ class TestWorkspaceExperience(unittest.TestCase):
 class TestAgentExperienceWiring(unittest.TestCase):
 
     def test_experience_false_no_hooks(self):
-        agent = _make_agent(experience=False)
+        agent = _make_agent(enable_experience_capture=False)
         self.assertIsNone(agent._default_run_hooks)
 
     def test_experience_true_needs_workspace(self):
-        agent = _make_agent(experience=True, workspace_path=None)
+        agent = _make_agent(enable_experience_capture=True, workspace_path=None)
         self.assertIsNone(agent._default_run_hooks)
 
     def test_experience_true_with_workspace(self):
         with tempfile.TemporaryDirectory() as tmp:
-            agent = _make_agent(experience=True, workspace_path=tmp)
+            agent = _make_agent(enable_experience_capture=True, workspace_path=tmp)
             self.assertIsNotNone(agent._default_run_hooks)
             from agentica.hooks import _CompositeRunHooks
             self.assertIsInstance(agent._default_run_hooks, _CompositeRunHooks)
@@ -919,18 +980,18 @@ class TestAgentExperienceWiring(unittest.TestCase):
 class TestExperiencePromptInjection(unittest.TestCase):
 
     def test_get_experience_prompt_disabled(self):
-        agent = _make_agent(experience=False)
+        agent = _make_agent(enable_experience_capture=False)
         result = asyncio.run(agent.get_experience_prompt(query="test"))
         self.assertIsNone(result)
 
     def test_get_experience_prompt_no_workspace(self):
-        agent = _make_agent(experience=True)
+        agent = _make_agent(enable_experience_capture=True)
         result = asyncio.run(agent.get_experience_prompt(query="test"))
         self.assertIsNone(result)
 
     def test_get_experience_prompt_with_data(self):
         with tempfile.TemporaryDirectory() as tmp:
-            agent = _make_agent(experience=True, workspace_path=tmp)
+            agent = _make_agent(enable_experience_capture=True, workspace_path=tmp)
             agent.workspace.initialize()
 
             from agentica.experience.compiler import CompiledCard

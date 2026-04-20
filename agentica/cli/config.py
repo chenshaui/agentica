@@ -12,7 +12,11 @@ from typing import List, Optional, Any
 from rich.console import Console
 
 from agentica import Agent, OpenAIChat, MoonshotChat, AzureOpenAIChat, YiChat, ZhipuAIChat, DeepSeekChat, DoubaoChat
-from agentica.tools.buildin_tools import get_builtin_tools
+from agentica.agent.config import (
+    ExperienceConfig,
+    SkillUpgradeConfig,
+    WorkspaceMemoryConfig,
+)
 from agentica.config import AGENTICA_HOME
 from agentica.workspace import Workspace
 
@@ -244,6 +248,17 @@ def parse_args():
     parser.add_argument('--tools', nargs='*',
                         choices=list(TOOL_REGISTRY.keys()),
                         help='Additional tools to enable (on top of built-in tools)')
+    parser.add_argument('--sync-memories-to-global-agent-md', action='store_true',
+                        help='Sync durable memories into ~/.agentica/AGENTS.md')
+    parser.add_argument('--no-experience', action='store_true',
+                        help='Disable DeepAgent experience capture and self-evolution hooks')
+    parser.add_argument('--sync-experience-to-global-agent-md', action='store_true',
+                        help='Sync confirmed experiences into ~/.agentica/AGENTS.md')
+    parser.add_argument('--enable-skill-upgrade', action='store_true',
+                        help='Enable automatic experience-to-skill upgrade')
+    parser.add_argument('--skill-upgrade-mode', type=str, default='shadow',
+                        choices=['shadow', 'draft'],
+                        help='Skill upgrade mode when --enable-skill-upgrade is set')
     parser.add_argument('--workspace', type=str, default=None,
                         help='Workspace directory path (default: ~/.agentica/workspace)')
     parser.add_argument('--no-workspace', action='store_true',
@@ -336,6 +351,38 @@ def _build_sibling_model(agent_config: dict, prefix: str):
     )
 
 
+def _build_cli_experience_config(agent_config: dict) -> ExperienceConfig:
+    """Build the CLI's opinionated DeepAgent experience configuration."""
+    skill_upgrade = None
+    if agent_config.get("enable_skill_upgrade"):
+        skill_upgrade = SkillUpgradeConfig(
+            mode=agent_config.get("skill_upgrade_mode") or "shadow",
+        )
+    return ExperienceConfig(
+        capture_tool_errors=True,
+        capture_user_corrections=True,
+        capture_success_patterns=True,
+        sync_to_global_agent_md=bool(
+            agent_config.get("sync_experience_to_global_agent_md")
+        ),
+        skill_upgrade=skill_upgrade,
+    )
+
+
+def _build_cli_memory_config(agent_config: dict) -> WorkspaceMemoryConfig:
+    """Build the CLI's opinionated DeepAgent memory configuration."""
+    return WorkspaceMemoryConfig(
+        auto_archive=True,
+        auto_extract_memory=True,
+        load_workspace_context=True,
+        load_workspace_memory=True,
+        max_memory_entries=10,
+        sync_memories_to_global_agent_md=bool(
+            agent_config.get("sync_memories_to_global_agent_md")
+        ),
+    )
+
+
 def create_agent(agent_config: dict, extra_tools: Optional[List] = None,
                  workspace: Optional[Workspace] = None, skills_registry=None):
     """Helper to create or recreate an Agent with built-in tools and current config."""
@@ -353,6 +400,8 @@ def create_agent(agent_config: dict, extra_tools: Optional[List] = None,
     # main model — same API key drives the whole stack.
     auxiliary_model = _build_sibling_model(agent_config, "aux")
     task_model = _build_sibling_model(agent_config, "task")
+    experience_config = _build_cli_experience_config(agent_config)
+    long_term_memory_config = _build_cli_memory_config(agent_config)
 
     # Build extra tools list
     work_dir = agent_config.get("work_dir")
@@ -369,6 +418,9 @@ def create_agent(agent_config: dict, extra_tools: Optional[List] = None,
         workspace=workspace,
         session_id=agent_config.get("session_id") or _generate_session_id(),
         debug=agent_config["debug"],
+        enable_experience_capture=agent_config.get("enable_experience_capture", True),
+        experience_config=experience_config,
+        long_term_memory_config=long_term_memory_config,
         include_user_input=True,      # CLI is interactive, always enable human-in-the-loop
     )
 

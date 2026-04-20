@@ -1032,7 +1032,11 @@ class Runner:
                                 f"Agent '{agent.identifier}': context usage "
                                 f"{_ctx_tokens:,}/{_window:,} tokens ({_pct:.0%})"
                             )
-                    if agent.response_model is not None and agent.structured_outputs and model_response.parsed is not None:
+                    if (
+                        agent.response_model is not None
+                        and agent.use_structured_outputs
+                        and model_response.parsed is not None
+                    ):
                         agent.run_response.content = model_response.parsed
                         agent.run_response.content_type = agent.response_model.__name__
                     else:
@@ -1373,7 +1377,7 @@ class Runner:
             run_response = response
 
         if agent.response_model is not None:
-            if agent.structured_outputs:
+            if agent.use_structured_outputs:
                 if isinstance(run_response.content, agent.response_model):
                     return run_response
 

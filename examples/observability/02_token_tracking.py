@@ -53,7 +53,7 @@ async def multi_turn_token_tracking():
     agent = Agent(
         model=OpenAIChat(id="gpt-4o-mini"),
         name="MultiTurnTracker",
-        add_history_to_messages=True,
+        add_history_to_context=True,
         debug=True,
     )
 

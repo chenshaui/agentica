@@ -11,6 +11,7 @@ Two levels of hooks:
 """
 import asyncio
 import json
+import re
 from typing import Any, Optional, List, Dict, Tuple
 
 from agentica.experience.skill_upgrade import SkillEvolutionManager
@@ -501,6 +502,29 @@ class ExperienceCaptureHooks(RunHooks):
         '"how_to_apply": "when and where to apply this rule"}\n\n'
     )
 
+    _RULE_PREFIX_PATTERNS = (
+        re.compile(
+            r"(?is)(?:^|[。.!?\n]\s*)(?:the\s+rule\s+is|remember(?:\s+this)?|remember|记住|规则(?:是)?)[：:\s]+"
+            r"[\"'“”‘’]?(?P<rule>.+?)[\"'“”‘’]?\s*$"
+        ),
+        re.compile(r"(?is)(?P<rule>(?:下次|以后)请先.+)$"),
+        re.compile(r"(?is)(?P<rule>不要再.+)$"),
+        re.compile(r"(?is)(?P<rule>必须先.+再.+)$"),
+        re.compile(r"(?is)(?P<rule>always\s+.+\s+before\s+.+)$"),
+        re.compile(r"(?is)(?P<rule>never\s+.+)$"),
+    )
+    _STRONG_NEGATIVE_PATTERNS = (
+        re.compile(r"(?i)\byou made a mistake\b"),
+        re.compile(r"(?i)\byou are wrong\b"),
+        re.compile(r"(?i)\bthat(?:'s| is) incorrect\b"),
+        re.compile(r"(?i)\bwrong\b"),
+        re.compile(r"你犯错了"),
+        re.compile(r"你又错了"),
+        re.compile(r"这不对"),
+        re.compile(r"不对"),
+        re.compile(r"太蠢了"),
+    )
+
     def __init__(self, config: Any):
         self._config = config
         # Per-agent state (keyed by agent_id)
@@ -961,6 +985,97 @@ class ExperienceCaptureHooks(RunHooks):
             return model
         return agent.model
 
+    @staticmethod
+    def _clean_prefilter_rule(text: str) -> str:
+        """Trim wrapper punctuation while preserving the user's rule wording."""
+        return text.strip().strip(" \t\r\n\"'“”‘’").rstrip("。.!?")
+
+    @classmethod
+    def _prefilter_feedback_classification(cls, user_message: str) -> Optional[Dict[str, Any]]:
+        """Cheap deterministic prefilter for explicit rules and strong rejection signals."""
+        text = user_message.strip()
+        if not text:
+            return None
+
+        for pattern in cls._RULE_PREFIX_PATTERNS:
+            match = pattern.search(text)
+            if not match:
+                continue
+            rule = cls._clean_prefilter_rule(match.group("rule"))
+            if not rule:
+                continue
+            return {
+                "is_correction": True,
+                "confidence": 1.0,
+                "category": "workflow",
+                "scope": "cross_session",
+                "should_persist": True,
+                "persist_target": "experience",
+                "rule": rule,
+                "why": "User stated an explicit reusable rule.",
+                "how_to_apply": "Apply this rule on future runs when the same behavior is relevant.",
+            }
+
+        if any(pattern.search(text) for pattern in cls._STRONG_NEGATIVE_PATTERNS):
+            return {
+                "is_correction": True,
+                "confidence": 1.0,
+                "category": "rejection",
+                "scope": "turn_only",
+                "should_persist": False,
+                "persist_target": "none",
+                "rule": "",
+                "why": "User explicitly rejected the assistant's behavior.",
+                "how_to_apply": "",
+            }
+
+        return None
+
+    @staticmethod
+    async def _persist_feedback_classification(
+        event_store: Any,
+        compiled_store: Any,
+        result: Dict[str, Any],
+        threshold: float,
+        original_task: str = "",
+    ) -> bool:
+        """Write the classification event and persist a correction card when warranted."""
+        from agentica.experience.compiler import ExperienceCompiler
+
+        is_correction = result.get("is_correction", False)
+        confidence = result.get("confidence", 0.0)
+        rule = (result.get("rule") or "").strip()
+        correction_key = (
+            ExperienceCompiler.correction_key_from_rule(rule) if rule else ""
+        )
+
+        classify_event: Dict[str, Any] = {
+            "event_type": "correction_classification",
+            "is_correction": is_correction,
+            "confidence": confidence,
+            "should_persist": result.get("should_persist", False),
+            "persist_target": result.get("persist_target", "none"),
+            "user_message": result.get("user_message", "")[:300],
+            "rule": rule,
+            "correction_key": correction_key,
+        }
+        if original_task:
+            classify_event["original_task"] = original_task
+        await event_store.append(classify_event)
+
+        if not is_correction or confidence < threshold:
+            return False
+        if not result.get("should_persist", False) or result.get("persist_target") == "none":
+            return False
+
+        if original_task and "original_task" not in result:
+            result["original_task"] = original_task
+        card = ExperienceCompiler.compile_correction(result)
+        if card:
+            await compiled_store.write(card)
+            return True
+        return False
+
     async def _classify_and_persist_feedback(
         self,
         model: Any,
@@ -978,7 +1093,17 @@ class ExperienceCaptureHooks(RunHooks):
         Returns:
             True if a correction was persisted to the experience store.
         """
-        from agentica.experience.compiler import ExperienceCompiler
+        threshold = self._config.feedback_confidence_threshold
+        prefetched = self._prefilter_feedback_classification(user_message)
+        if prefetched is not None:
+            prefetched["user_message"] = user_message
+            return await self._persist_feedback_classification(
+                event_store=event_store,
+                compiled_store=compiled_store,
+                result=prefetched,
+                threshold=threshold,
+                original_task=original_task,
+            )
 
         # Title is derived deterministically from `rule` in compile_correction,
         # so we no longer need to feed existing titles back to the LLM.
@@ -987,8 +1112,6 @@ class ExperienceCaptureHooks(RunHooks):
             + f"Previous assistant message:\n{previous_assistant_text[:1000]}\n\n"
             + f"Current user message:\n{user_message[:1000]}\n"
         )
-
-        threshold = self._config.feedback_confidence_threshold
 
         try:
             response = await model.response([
@@ -1004,54 +1127,14 @@ class ExperienceCaptureHooks(RunHooks):
             result = json.loads(text)
             if not isinstance(result, dict):
                 return False
-
-            is_correction = result.get("is_correction", False)
-            confidence = result.get("confidence", 0.0)
-
-            # Compute correction_key once via the canonical helper. We
-            # stamp it on both the raw classification event AND on the
-            # downstream compile_correction call so the card and its
-            # evidence chain all share the same association key. Empty
-            # rule / all-stop-words rule yields an empty key and
-            # everything downstream treats it as "no key, ignore for
-            # per-key gating".
-            rule = (result.get("rule") or "").strip()
-            correction_key = (
-                ExperienceCompiler.correction_key_from_rule(rule) if rule else ""
+            result["user_message"] = user_message
+            return await self._persist_feedback_classification(
+                event_store=event_store,
+                compiled_store=compiled_store,
+                result=result,
+                threshold=threshold,
+                original_task=original_task,
             )
-
-            # Write classification result as raw event
-            classify_event: Dict[str, Any] = {
-                "event_type": "correction_classification",
-                "is_correction": is_correction,
-                "confidence": confidence,
-                "should_persist": result.get("should_persist", False),
-                "persist_target": result.get("persist_target", "none"),
-                "user_message": user_message[:300],
-                "rule": rule,
-                "correction_key": correction_key,
-            }
-            if original_task:
-                classify_event["original_task"] = original_task
-            await event_store.append(classify_event)
-
-            if not is_correction or confidence < threshold:
-                return False
-            if not result.get("should_persist", False) or result.get("persist_target") == "none":
-                return False
-
-            # All corrections go to experience store (no cross-layer memory writes)
-            # Carry the original task into the classification dict so that
-            # ExperienceCompiler.compile_correction can stamp the resulting
-            # card with the task it came from.
-            if original_task and "original_task" not in result:
-                result["original_task"] = original_task
-            card = ExperienceCompiler.compile_correction(result)
-            if card:
-                await compiled_store.write(card)
-                return True
-
-            return False
 
         except json.JSONDecodeError:
             logger.debug("Feedback classification: LLM returned invalid JSON")

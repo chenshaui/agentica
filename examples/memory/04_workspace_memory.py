@@ -130,7 +130,7 @@ async def demo_agent_with_workspace():
     agent = Agent(
         model=OpenAIChat(id="gpt-4o-mini"),
         workspace=workspace,
-        add_history_to_messages=True,
+        add_history_to_context=True,
     )
 
     print("\n--- Conversation (Agent has workspace memory in context) ---")

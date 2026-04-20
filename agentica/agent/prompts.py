@@ -203,7 +203,7 @@ class PromptsMixin:
             if pc.enable_agentic_prompt:
                 sys_message = self._enhance_with_prompt_builder(sys_message)
 
-            if self.response_model is not None and not self.structured_outputs:
+            if self.response_model is not None and not self.use_structured_outputs:
                 sys_message += f"\n{self.get_json_output_prompt()}"
 
             return Message(role=pc.system_message_role, content=sys_message)
@@ -216,7 +216,7 @@ class PromptsMixin:
             if pc.enable_agentic_prompt:
                 system_prompt_from_template = self._enhance_with_prompt_builder(system_prompt_from_template)
 
-            if self.response_model is not None and self.structured_outputs is False:
+            if self.response_model is not None and self.use_structured_outputs is False:
                 system_prompt_from_template += f"\n{self.get_json_output_prompt()}"
 
             return Message(role=pc.system_message_role, content=system_prompt_from_template)
@@ -370,7 +370,7 @@ class PromptsMixin:
         if pc.add_datetime_to_instructions:
             system_message_lines.append(f"Today's date is {datetime.now().strftime('%Y-%m-%d')}.")
 
-        if self.response_model is not None and not self.structured_outputs:
+        if self.response_model is not None and not self.use_structured_outputs:
             system_message_lines.append(self.get_json_output_prompt() + "\n")
 
         if len(system_message_lines) > 0:
@@ -518,7 +518,7 @@ class PromptsMixin:
             system_message_lines.append("\n## Summary of Previous Interactions")
             system_message_lines.append(self.working_memory.summary.model_dump_json(indent=2))
 
-        if self.response_model is not None and not self.structured_outputs:
+        if self.response_model is not None and not self.use_structured_outputs:
             system_message_lines.append("\n" + self.get_json_output_prompt())
 
         # Datetime at the very end — day precision for prefix-cache friendliness
@@ -681,9 +681,9 @@ class PromptsMixin:
                     else:
                         self.run_response.extra_data.add_messages.extend(_add_messages)
 
-        if self.add_history_to_messages:
+        if self.add_history_to_context:
             history: List[Message] = self.working_memory.get_messages_from_last_n_runs(
-                last_n=self.history_window, skip_role=pc.system_message_role
+                last_n=self.num_history_turns, skip_role=pc.system_message_role
             )
             if len(history) > 0:
                 logger.debug(f"Adding {len(history)} messages from history")
