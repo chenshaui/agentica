@@ -1,9 +1,12 @@
+import pytest
 import os
 import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+pytest.importorskip("PIL", reason="Browser tests require Pillow")
 
 from agentica.tools.browser_tool import Browser
 
