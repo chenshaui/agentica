@@ -269,11 +269,14 @@ class TestGuardrailsCore(unittest.TestCase):
             asyncio.run(run())
         self.assertEqual(ctx.exception.guardrail_name, "bad")
 
-    def test_agent_guardrail_backward_compat(self):
-        """GuardrailFunctionOutput should be alias for GuardrailOutput."""
-        from agentica.guardrails import GuardrailFunctionOutput
+    def test_agent_guardrail_output_export(self):
+        """GuardrailOutput should be exported directly."""
+        import agentica.guardrails as guardrails
+        from agentica.guardrails import GuardrailOutput as GuardrailOutputExport
         from agentica.guardrails.core import GuardrailOutput
-        self.assertIs(GuardrailFunctionOutput, GuardrailOutput)
+
+        self.assertIs(GuardrailOutputExport, GuardrailOutput)
+        self.assertFalse(hasattr(guardrails, "GuardrailFunctionOutput"))
 
     def test_exception_hierarchy(self):
         """InputGuardrailTripwireTriggered should inherit from GuardrailTriggered."""

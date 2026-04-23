@@ -12,7 +12,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agentica.guardrails import (
     # Agent-level guardrails
-    GuardrailFunctionOutput,
+    GuardrailOutput,
     InputGuardrail,
     OutputGuardrail,
     InputGuardrailResult,
@@ -39,24 +39,24 @@ from agentica.guardrails import (
 )
 
 
-class TestGuardrailFunctionOutput(unittest.TestCase):
-    """Test cases for GuardrailFunctionOutput."""
+class TestGuardrailOutput(unittest.TestCase):
+    """Test cases for GuardrailOutput."""
 
     def test_allow(self):
         """Test allow() class method."""
-        output = GuardrailFunctionOutput.allow(output_info={"test": True})
+        output = GuardrailOutput.allow(output_info={"test": True})
         self.assertFalse(output.tripwire_triggered)
         self.assertEqual(output.output_info, {"test": True})
 
     def test_block(self):
         """Test block() class method."""
-        output = GuardrailFunctionOutput.block(output_info={"reason": "blocked"})
+        output = GuardrailOutput.block(output_info={"reason": "blocked"})
         self.assertTrue(output.tripwire_triggered)
         self.assertEqual(output.output_info, {"reason": "blocked"})
 
     def test_default_values(self):
         """Test default values."""
-        output = GuardrailFunctionOutput()
+        output = GuardrailOutput()
         self.assertFalse(output.tripwire_triggered)
         self.assertIsNone(output.output_info)
 
@@ -97,7 +97,7 @@ class TestInputGuardrailDecorator(unittest.TestCase):
 
         @input_guardrail
         def my_guardrail(ctx, agent, input_data):
-            return GuardrailFunctionOutput.allow()
+            return GuardrailOutput.allow()
 
         self.assertIsInstance(my_guardrail, InputGuardrail)
         self.assertEqual(my_guardrail.get_name(), "my_guardrail")
@@ -108,7 +108,7 @@ class TestInputGuardrailDecorator(unittest.TestCase):
 
         @input_guardrail(name="custom_name", run_in_parallel=False)
         def my_guardrail(ctx, agent, input_data):
-            return GuardrailFunctionOutput.allow()
+            return GuardrailOutput.allow()
 
         self.assertIsInstance(my_guardrail, InputGuardrail)
         self.assertEqual(my_guardrail.get_name(), "custom_name")
@@ -119,7 +119,7 @@ class TestInputGuardrailDecorator(unittest.TestCase):
 
         @input_guardrail
         async def async_guardrail(ctx, agent, input_data):
-            return GuardrailFunctionOutput.allow()
+            return GuardrailOutput.allow()
 
         self.assertIsInstance(async_guardrail, InputGuardrail)
 
@@ -132,7 +132,7 @@ class TestOutputGuardrailDecorator(unittest.TestCase):
 
         @output_guardrail
         def my_guardrail(ctx, agent, output):
-            return GuardrailFunctionOutput.allow()
+            return GuardrailOutput.allow()
 
         self.assertIsInstance(my_guardrail, OutputGuardrail)
         self.assertEqual(my_guardrail.get_name(), "my_guardrail")
@@ -142,7 +142,7 @@ class TestOutputGuardrailDecorator(unittest.TestCase):
 
         @output_guardrail(name="custom_output_guardrail")
         def my_guardrail(ctx, agent, output):
-            return GuardrailFunctionOutput.allow()
+            return GuardrailOutput.allow()
 
         self.assertIsInstance(my_guardrail, OutputGuardrail)
         self.assertEqual(my_guardrail.get_name(), "custom_output_guardrail")
@@ -204,7 +204,7 @@ class TestGuardrailExecution(unittest.TestCase):
 
         @input_guardrail
         def allow_guardrail(ctx, agent, input_data):
-            return GuardrailFunctionOutput.allow(output_info="allowed")
+            return GuardrailOutput.allow(output_info="allowed")
 
         async def run_test():
             result = await allow_guardrail.run(None, "test input", None)
@@ -219,7 +219,7 @@ class TestGuardrailExecution(unittest.TestCase):
 
         @input_guardrail
         def block_guardrail(ctx, agent, input_data):
-            return GuardrailFunctionOutput.block(output_info="blocked")
+            return GuardrailOutput.block(output_info="blocked")
 
         async def run_test():
             result = await block_guardrail.run(None, "test input", None)
@@ -233,8 +233,8 @@ class TestGuardrailExecution(unittest.TestCase):
         @output_guardrail
         def check_output(ctx, agent, output):
             if "bad" in str(output):
-                return GuardrailFunctionOutput.block()
-            return GuardrailFunctionOutput.allow()
+                return GuardrailOutput.block()
+            return GuardrailOutput.allow()
 
         async def run_test():
             # Test allow
@@ -301,11 +301,11 @@ class TestRunGuardrails(unittest.TestCase):
 
         @input_guardrail
         def guardrail1(ctx, agent, input_data):
-            return GuardrailFunctionOutput.allow()
+            return GuardrailOutput.allow()
 
         @input_guardrail
         def guardrail2(ctx, agent, input_data):
-            return GuardrailFunctionOutput.allow()
+            return GuardrailOutput.allow()
 
         async def run_test():
             results = await run_input_guardrails(None, "test", [guardrail1, guardrail2])
@@ -320,11 +320,11 @@ class TestRunGuardrails(unittest.TestCase):
 
         @input_guardrail
         def allow_guardrail(ctx, agent, input_data):
-            return GuardrailFunctionOutput.allow()
+            return GuardrailOutput.allow()
 
         @input_guardrail
         def block_guardrail(ctx, agent, input_data):
-            return GuardrailFunctionOutput.block(output_info="blocked")
+            return GuardrailOutput.block(output_info="blocked")
 
         async def run_test():
             with self.assertRaises(InputGuardrailTripwireTriggered) as context:
@@ -338,11 +338,11 @@ class TestRunGuardrails(unittest.TestCase):
 
         @output_guardrail
         def guardrail1(ctx, agent, output):
-            return GuardrailFunctionOutput.allow()
+            return GuardrailOutput.allow()
 
         @output_guardrail
         def guardrail2(ctx, agent, output):
-            return GuardrailFunctionOutput.allow()
+            return GuardrailOutput.allow()
 
         async def run_test():
             results = await run_output_guardrails(None, "test output", [guardrail1, guardrail2])
@@ -391,7 +391,7 @@ class TestAsyncGuardrails(unittest.TestCase):
         @input_guardrail
         async def async_guardrail(ctx, agent, input_data):
             await asyncio.sleep(0.01)  # Simulate async operation
-            return GuardrailFunctionOutput.allow(output_info="async completed")
+            return GuardrailOutput.allow(output_info="async completed")
 
         async def run_test():
             result = await async_guardrail.run(None, "test", None)

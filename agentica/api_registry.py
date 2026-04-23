@@ -91,7 +91,6 @@ LAZY_IMPORTS = {
     "list_skill_files": "agentica.skills",
     "read_skill_file": "agentica.skills",
     # guardrails (agent-level)
-    "GuardrailFunctionOutput": "agentica.guardrails",
     "InputGuardrail": "agentica.guardrails",
     "OutputGuardrail": "agentica.guardrails",
     "InputGuardrailResult": "agentica.guardrails",

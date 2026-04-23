@@ -17,14 +17,12 @@ from agentica.guardrails.core import (
     run_guardrails_seq,
 )
 
-# Agent-level guardrails (from agent.py, backward-compatible with old base.py)
+# Agent-level guardrails
 from agentica.guardrails.agent import (
-    GuardrailTripwireTriggered,
     InputGuardrailTripwireTriggered,
     OutputGuardrailTripwireTriggered,
     InputGuardrail,
     OutputGuardrail,
-    GuardrailFunctionOutput,
     InputGuardrailResult,
     OutputGuardrailResult,
     run_input_guardrails,
@@ -59,12 +57,10 @@ __all__ = [
     "BaseGuardrail",
     "run_guardrails_seq",
     # Agent-level
-    "GuardrailTripwireTriggered",
     "InputGuardrailTripwireTriggered",
     "OutputGuardrailTripwireTriggered",
     "InputGuardrail",
     "OutputGuardrail",
-    "GuardrailFunctionOutput",
     "InputGuardrailResult",
     "OutputGuardrailResult",
     "run_input_guardrails",

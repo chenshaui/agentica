@@ -231,7 +231,7 @@ if TYPE_CHECKING:
     from agentica.rerank.jina import JinaRerank  # noqa: F401
     from agentica.rerank.zhipuai import ZhipuAIRerank  # noqa: F401
     from agentica.guardrails import (  # noqa: F401
-        GuardrailFunctionOutput, InputGuardrail, OutputGuardrail,
+        GuardrailOutput, InputGuardrail, OutputGuardrail,
         InputGuardrailResult, OutputGuardrailResult,
         input_guardrail, output_guardrail,
         InputGuardrailTripwireTriggered, OutputGuardrailTripwireTriggered,

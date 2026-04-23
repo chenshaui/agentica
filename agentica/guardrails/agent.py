@@ -37,10 +37,6 @@ if TYPE_CHECKING:
 
 TContext = TypeVar("TContext", bound=Any, default=Any)
 
-# Backward-compatible alias
-GuardrailFunctionOutput = GuardrailOutput
-GuardrailTripwireTriggered = GuardrailTriggered
-
 
 # =============================================================================
 # Exceptions
@@ -94,8 +90,8 @@ class InputGuardrail(BaseGuardrail, Generic[TContext]):
         @input_guardrail
         def check_topic(ctx, agent, input_data):
             if "off-topic" in str(input_data):
-                return GuardrailFunctionOutput.block()
-            return GuardrailFunctionOutput.allow()
+                return GuardrailOutput.block()
+            return GuardrailOutput.allow()
     """
 
     guardrail_function: InputGuardrailFunc = None  # type: ignore
@@ -132,8 +128,8 @@ class OutputGuardrail(BaseGuardrail, Generic[TContext]):
         @output_guardrail
         def check_sensitive(ctx, agent, output):
             if "password" in str(output).lower():
-                return GuardrailFunctionOutput.block()
-            return GuardrailFunctionOutput.allow()
+                return GuardrailOutput.block()
+            return GuardrailOutput.allow()
     """
 
     guardrail_function: OutputGuardrailFunc = None  # type: ignore
@@ -368,10 +364,8 @@ def normalize_input_for_guardrails(
 
 
 __all__ = [
-    "GuardrailTripwireTriggered",
     "InputGuardrailTripwireTriggered",
     "OutputGuardrailTripwireTriggered",
-    "GuardrailFunctionOutput",
     "InputGuardrailResult",
     "OutputGuardrailResult",
     "InputGuardrail",

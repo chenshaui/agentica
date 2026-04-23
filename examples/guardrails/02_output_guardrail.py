@@ -14,10 +14,7 @@ import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from agentica import (
-    GuardrailFunctionOutput,
-    output_guardrail,
-)
+from agentica.guardrails import GuardrailOutput, output_guardrail
 
 
 # ============================================================================
@@ -25,36 +22,36 @@ from agentica import (
 # ============================================================================
 
 @output_guardrail
-def check_output_length(ctx, agent, output) -> GuardrailFunctionOutput:
+def check_output_length(ctx, agent, output) -> GuardrailOutput:
     """Ensure output is not too long."""
     output_str = str(output)
     max_length = 10000
 
     if len(output_str) > max_length:
-        return GuardrailFunctionOutput.block(
+        return GuardrailOutput.block(
             output_info={"reason": f"Output too long: {len(output_str)} chars"}
         )
 
-    return GuardrailFunctionOutput.allow()
+    return GuardrailOutput.allow()
 
 
 @output_guardrail(name="sensitive_data_filter")
-def filter_sensitive_output(ctx, agent, output) -> GuardrailFunctionOutput:
+def filter_sensitive_output(ctx, agent, output) -> GuardrailOutput:
     """Filter sensitive data from agent output."""
     output_str = str(output).lower()
 
     sensitive_patterns = ["credit card", "social security", "password", "ssn"]
     for pattern in sensitive_patterns:
         if pattern in output_str:
-            return GuardrailFunctionOutput.block(
+            return GuardrailOutput.block(
                 output_info={"reason": f"Sensitive data detected: {pattern}"}
             )
 
-    return GuardrailFunctionOutput.allow()
+    return GuardrailOutput.allow()
 
 
 @output_guardrail(name="pii_filter")
-def filter_pii(ctx, agent, output) -> GuardrailFunctionOutput:
+def filter_pii(ctx, agent, output) -> GuardrailOutput:
     """Filter personally identifiable information (PII) from output."""
     import re
     output_str = str(output)
@@ -62,18 +59,18 @@ def filter_pii(ctx, agent, output) -> GuardrailFunctionOutput:
     # Check for email patterns
     email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
     if re.search(email_pattern, output_str):
-        return GuardrailFunctionOutput.block(
+        return GuardrailOutput.block(
             output_info={"reason": "Email address detected in output"}
         )
 
     # Check for phone number patterns (simplified)
     phone_pattern = r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b'
     if re.search(phone_pattern, output_str):
-        return GuardrailFunctionOutput.block(
+        return GuardrailOutput.block(
             output_info={"reason": "Phone number detected in output"}
         )
 
-    return GuardrailFunctionOutput.allow()
+    return GuardrailOutput.allow()
 
 
 # ============================================================================

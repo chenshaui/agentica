@@ -18,7 +18,7 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
 from agentica.agent import Agent
 from agentica.guardrails import (
-    GuardrailFunctionOutput,
+    GuardrailOutput,
     InputGuardrailTripwireTriggered,
     OutputGuardrailTripwireTriggered,
     input_guardrail,
@@ -49,11 +49,11 @@ def test_agent_exposes_input_and_output_guardrail_fields():
     """Agent must surface input_guardrails / output_guardrails as init params."""
     @input_guardrail
     def block_all(ctx, agent, input_data):
-        return GuardrailFunctionOutput(output_info="blocked", tripwire_triggered=True)
+        return GuardrailOutput(output_info="blocked", tripwire_triggered=True)
 
     @output_guardrail
     def allow_all(ctx, agent, output):
-        return GuardrailFunctionOutput(output_info=None, tripwire_triggered=False)
+        return GuardrailOutput(output_info=None, tripwire_triggered=False)
 
     agent = Agent(
         name="WithGuards",
@@ -75,11 +75,11 @@ async def test_input_guardrail_blocks_run_does_not_call_model():
     @input_guardrail
     def reject_secret(ctx, agent, input_data):
         if "secret" in str(input_data):
-            return GuardrailFunctionOutput(
+            return GuardrailOutput(
                 output_info={"reason": "contains 'secret'"},
                 tripwire_triggered=True,
             )
-        return GuardrailFunctionOutput(output_info=None, tripwire_triggered=False)
+        return GuardrailOutput(output_info=None, tripwire_triggered=False)
 
     fake_response = AsyncMock(return_value=_mock_response("ignored"))
     with patch.object(OpenAIChat, "response", new=fake_response):
@@ -93,7 +93,7 @@ async def test_input_guardrail_blocks_run_does_not_call_model():
 async def test_input_guardrail_passes_normally():
     @input_guardrail
     def always_allow(ctx, agent, input_data):
-        return GuardrailFunctionOutput(output_info=None, tripwire_triggered=False)
+        return GuardrailOutput(output_info=None, tripwire_triggered=False)
 
     with patch.object(OpenAIChat, "response", new_callable=AsyncMock, return_value=_mock_response("hello back")):
         agent = Agent(name="Open", model=_make_model(), input_guardrails=[always_allow])
@@ -110,8 +110,8 @@ async def test_output_guardrail_blocks_response():
     @output_guardrail
     def reject_password(ctx, agent, output):
         if "password" in str(output).lower():
-            return GuardrailFunctionOutput(output_info="leaked", tripwire_triggered=True)
-        return GuardrailFunctionOutput(output_info=None, tripwire_triggered=False)
+            return GuardrailOutput(output_info="leaked", tripwire_triggered=True)
+        return GuardrailOutput(output_info=None, tripwire_triggered=False)
 
     with patch.object(OpenAIChat, "response", new_callable=AsyncMock, return_value=_mock_response("Your password is hunter2")):
         agent = Agent(name="Guarded", model=_make_model(), output_guardrails=[reject_password])
@@ -123,7 +123,7 @@ async def test_output_guardrail_blocks_response():
 async def test_output_guardrail_passes_normally():
     @output_guardrail
     def always_allow(ctx, agent, output):
-        return GuardrailFunctionOutput(output_info=None, tripwire_triggered=False)
+        return GuardrailOutput(output_info=None, tripwire_triggered=False)
 
     with patch.object(OpenAIChat, "response", new_callable=AsyncMock, return_value=_mock_response("safe text")):
         agent = Agent(name="Open", model=_make_model(), output_guardrails=[always_allow])
@@ -145,7 +145,7 @@ async def test_blocked_output_does_not_persist_to_working_memory(tmp_path):
     """
     @output_guardrail
     def reject_all(ctx, agent, output):
-        return GuardrailFunctionOutput(output_info="blocked", tripwire_triggered=True)
+        return GuardrailOutput(output_info="blocked", tripwire_triggered=True)
 
     save_target = tmp_path / "agent_response.txt"
 
@@ -185,7 +185,7 @@ async def test_blocked_output_does_not_trigger_summary_update():
 
     @output_guardrail
     def reject_all(ctx, agent, output):
-        return GuardrailFunctionOutput(output_info="blocked", tripwire_triggered=True)
+        return GuardrailOutput(output_info="blocked", tripwire_triggered=True)
 
     with patch.object(
         OpenAIChat, "response", new_callable=AsyncMock,
@@ -217,8 +217,8 @@ async def test_input_guardrail_inspects_full_messages_list():
     def reject_secret_anywhere(ctx, agent, input_data):
         seen_inputs.append(input_data)
         if "SECRET-PHRASE" in str(input_data):
-            return GuardrailFunctionOutput(output_info="found", tripwire_triggered=True)
-        return GuardrailFunctionOutput(output_info=None, tripwire_triggered=False)
+            return GuardrailOutput(output_info="found", tripwire_triggered=True)
+        return GuardrailOutput(output_info=None, tripwire_triggered=False)
 
     fake_response = AsyncMock(return_value=_mock_response("ignored"))
     with patch.object(OpenAIChat, "response", new=fake_response):
@@ -245,8 +245,8 @@ async def test_input_guardrail_sees_multimodal_payload():
     def block_if_images(ctx, agent, input_data):
         captured["data"] = input_data
         if "images:" in str(input_data):
-            return GuardrailFunctionOutput(output_info="image", tripwire_triggered=True)
-        return GuardrailFunctionOutput(output_info=None, tripwire_triggered=False)
+            return GuardrailOutput(output_info="image", tripwire_triggered=True)
+        return GuardrailOutput(output_info=None, tripwire_triggered=False)
 
     fake_response = AsyncMock(return_value=_mock_response("ignored"))
     with patch.object(OpenAIChat, "response", new=fake_response):
@@ -272,11 +272,11 @@ def test_swarm_clone_preserves_guardrails():
 
     @input_guardrail
     def in_guard(ctx, agent, input_data):
-        return GuardrailFunctionOutput(output_info=None, tripwire_triggered=False)
+        return GuardrailOutput(output_info=None, tripwire_triggered=False)
 
     @output_guardrail
     def out_guard(ctx, agent, output):
-        return GuardrailFunctionOutput(output_info=None, tripwire_triggered=False)
+        return GuardrailOutput(output_info=None, tripwire_triggered=False)
 
     source = Agent(
         name="Protected",

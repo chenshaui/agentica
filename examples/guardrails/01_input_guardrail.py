@@ -14,12 +14,8 @@ import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from agentica import (
-    Agent,
-    GuardrailFunctionOutput,
-    InputGuardrail,
-    input_guardrail,
-)
+from agentica import Agent
+from agentica.guardrails import GuardrailOutput, InputGuardrail, input_guardrail
 
 
 # ============================================================================
@@ -27,7 +23,7 @@ from agentica import (
 # ============================================================================
 
 @input_guardrail
-def check_topic(ctx, agent, input_data) -> GuardrailFunctionOutput:
+def check_topic(ctx, agent, input_data) -> GuardrailOutput:
     """Check if the user is asking about appropriate topics."""
     input_str = str(input_data).lower()
 
@@ -35,15 +31,15 @@ def check_topic(ctx, agent, input_data) -> GuardrailFunctionOutput:
     blocked_topics = ["hack", "cheat", "steal", "illegal", "violence"]
     for topic in blocked_topics:
         if topic in input_str:
-            return GuardrailFunctionOutput.block(
+            return GuardrailOutput.block(
                 output_info={"reason": f"Blocked topic: {topic}"}
             )
 
-    return GuardrailFunctionOutput.allow(output_info="Topic check passed")
+    return GuardrailOutput.allow(output_info="Topic check passed")
 
 
 @input_guardrail(name="profanity_filter", run_in_parallel=False)
-def filter_profanity(ctx, agent, input_data) -> GuardrailFunctionOutput:
+def filter_profanity(ctx, agent, input_data) -> GuardrailOutput:
     """Filter out profanity from user input."""
     input_str = str(input_data).lower()
     
@@ -52,25 +48,25 @@ def filter_profanity(ctx, agent, input_data) -> GuardrailFunctionOutput:
 
     for word in profanity_words:
         if word in input_str:
-            return GuardrailFunctionOutput.block(
+            return GuardrailOutput.block(
                 output_info={"reason": "Profanity detected"}
             )
 
-    return GuardrailFunctionOutput.allow()
+    return GuardrailOutput.allow()
 
 
 @input_guardrail(name="length_check")
-def check_input_length(ctx, agent, input_data) -> GuardrailFunctionOutput:
+def check_input_length(ctx, agent, input_data) -> GuardrailOutput:
     """Check if input is within acceptable length."""
     input_str = str(input_data)
     max_length = 5000
 
     if len(input_str) > max_length:
-        return GuardrailFunctionOutput.block(
+        return GuardrailOutput.block(
             output_info={"reason": f"Input too long: {len(input_str)} chars (max: {max_length})"}
         )
 
-    return GuardrailFunctionOutput.allow()
+    return GuardrailOutput.allow()
 
 
 # ============================================================================
