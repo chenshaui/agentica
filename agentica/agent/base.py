@@ -237,6 +237,9 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
             sandbox_config: Optional[SandboxConfig] = None,
             tool_input_guardrails: Optional[List[Any]] = None,
             tool_output_guardrails: Optional[List[Any]] = None,
+            # ---- Agent-level guardrails (run on user input / agent output) ----
+            input_guardrails: Optional[List[Any]] = None,
+            output_guardrails: Optional[List[Any]] = None,
             # ---- Runtime ----
             working_memory: Optional[WorkingMemory] = None,
             context: Optional[Dict[str, Any]] = None,
@@ -286,6 +289,8 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
         self.sandbox_config = sandbox_config
         self.tool_input_guardrails = tool_input_guardrails or []
         self.tool_output_guardrails = tool_output_guardrails or []
+        self.input_guardrails = input_guardrails or []
+        self.output_guardrails = output_guardrails or []
 
         # Runtime
         self.working_memory = working_memory or WorkingMemory()

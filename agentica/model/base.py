@@ -27,6 +27,23 @@ from agentica.utils.timer import Timer
 from agentica.cost_tracker import CostTracker, get_model_context_window
 
 
+def require_first_choice(response: Any, *, context: str) -> Any:
+    """Return ``response.choices[0]`` or raise a clear ``ValueError``.
+
+    Providers occasionally return ``choices=[]`` (rate limits, content
+    filters, transient API errors). Subclasses MUST funnel every
+    ``response.choices[0]`` access through this helper instead of indexing
+    directly, so failures surface as a single, actionable exception.
+    """
+    choices = response.choices
+    if not choices:
+        raise ValueError(
+            f"{context} returned empty choices. "
+            "This may indicate a content filter, a quota issue, or a transient API error."
+        )
+    return choices[0]
+
+
 @dataclass
 class Model(ABC):
     """Abstract base class for LLM models. Subclasses must implement invoke/invoke_stream/response/response_stream."""

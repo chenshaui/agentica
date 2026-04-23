@@ -17,6 +17,7 @@ from typing import Any, List, Optional, Union
 
 from openai import AsyncOpenAI, OpenAI, _legacy_response
 
+from agentica.model.base import require_first_choice
 from agentica.model.base_audio_model import BaseAudioModel, AudioModelType, VoiceType
 
 
@@ -297,50 +298,41 @@ class OpenAIAudioModel(BaseAudioModel):
         Raises:
             Exception: If there's an error during the API call.
         """
-        try:
-            # Read and encode the audio file
-            with open(audio_file_path, "rb") as audio_file:
-                audio_data = audio_file.read()
+        with open(audio_file_path, "rb") as audio_file:
+            audio_data = audio_file.read()
 
-            encoded_string = base64.b64encode(audio_data).decode('utf-8')
+        encoded_string = base64.b64encode(audio_data).decode('utf-8')
 
-            # Get file format
-            file_suffix = os.path.splitext(audio_file_path)[1]
-            file_format = file_suffix[1:].lower()
+        file_suffix = os.path.splitext(audio_file_path)[1]
+        file_format = file_suffix[1:].lower()
 
-            # Prepare the prompt
-            text_prompt = "Answer the following question based on the "
-            f"given audio information:\n\n{question}"
+        text_prompt = "Answer the following question based on the "
+        f"given audio information:\n\n{question}"
 
-            # Call the OpenAI API
-            completion = self._client.chat.completions.create(
-                model=model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a helpful assistant "
-                                   "specializing in audio analysis.",
-                    },
-                    {  # type: ignore[misc, list-item]
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": text_prompt},
-                            {
-                                "type": "input_audio",
-                                "input_audio": {
-                                    "data": encoded_string,
-                                    "format": file_format,
-                                },
+        completion = self._client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a helpful assistant "
+                               "specializing in audio analysis.",
+                },
+                {  # type: ignore[misc, list-item]
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": text_prompt},
+                        {
+                            "type": "input_audio",
+                            "input_audio": {
+                                "data": encoded_string,
+                                "format": file_format,
                             },
-                        ],
-                    },
-                ],
-                **kwargs,
-            )
+                        },
+                    ],
+                },
+            ],
+            **kwargs,
+        )
 
-            response = str(completion.choices[0].message.content)
-            return response
-        except Exception as e:
-            raise Exception(
-                "Error during audio question answering API call"
-            ) from e
+        first_choice = require_first_choice(completion, context=f"OpenAIAudioModel '{model}'")
+        return str(first_choice.message.content)

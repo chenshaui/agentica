@@ -23,6 +23,7 @@ from agentica.mcp.config import MCPConfig
 from agentica.mcp.server import MCPServerStdio, MCPServerSse, MCPServerStreamableHttp
 from agentica.tools.base import Function
 from agentica.tools.base import Tool
+from agentica.tools.origin import ToolOrigin
 from agentica.utils.log import logger
 
 
@@ -427,7 +428,12 @@ class McpTool(Tool):
                         parameters=tool_params,
                         entrypoint=entrypoint,
                         sanitize_arguments=False,  # We'll handle this in the entrypoint
-                        skip_entrypoint_processing=True  # Skip processing to preserve our custom entrypoint
+                        skip_entrypoint_processing=True,
+                        origin=ToolOrigin(
+                            type="mcp",
+                            provider_name=self.name,
+                            source_tool_name=tool.name,
+                        ),
                     )
                     self.functions[f.name] = f
                     logger.debug(f"Function: {f.name} registered with {self.name}, Function parameters: {tool_params}")

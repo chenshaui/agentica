@@ -127,6 +127,7 @@ crawl   = []
 # 代码 / 数据
 jupyter = ["jupyter>=1.0", "ipykernel>=6.0"]
 sql     = ["sqlalchemy>=2.0"]
+e2b     = ["e2b_code_interpreter>=1.0"]  # 远端代码沙箱（E2BExecuteTool）
 
 # 通信 / 服务
 resend   = ["resend>=0.7"]
@@ -205,6 +206,10 @@ gateway = [
 telegram = ["agentica[gateway]", "python-telegram-bot>=20.0"]
 discord  = ["agentica[gateway]", "discord.py>=2.0"]
 slack    = ["agentica[gateway]", "slack_sdk>=3.40"]
+qq       = ["agentica[gateway]", "qq-botpy>=1.0"]
+wecom    = ["agentica[gateway]", "wecom_aibot_sdk>=0.1"]
+dingtalk = ["agentica[gateway]", "dingtalk-stream>=0.20"]
+wechat   = ["agentica[gateway]", "qrcode>=7.0", "requests>=2.28"]
 
 # ═══════════════════════════════════════════════════════════
 # Tracing / Observability

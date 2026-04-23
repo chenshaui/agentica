@@ -14,7 +14,8 @@ in favor of two clearer composition primitives:
 import json
 from typing import Any, Callable, Optional
 
-from agentica.tools.base import Function
+from agentica.tools.base import Function, normalize_tool_name, validate_tool_name
+from agentica.tools.origin import ToolOrigin
 
 
 def _serialize_content(content: Any) -> str:
@@ -55,9 +56,12 @@ class AsToolMixin:
             A Function instance that wraps this agent.
         """
         if tool_name:
+            # Explicit user input — strict validate so a typo fails fast
+            # instead of silently being mangled.
+            validate_tool_name(tool_name)
             name = tool_name
         elif self.name:
-            name = self.name.lower().replace(' ', '_').replace('-', '_')
+            name = normalize_tool_name(self.name)
         else:
             name = f"agent_{self.agent_id[:8]}"
 
@@ -87,4 +91,9 @@ class AsToolMixin:
             name=name,
             description=description,
             entrypoint=agent_entrypoint,
+            origin=ToolOrigin(
+                type="agent",
+                agent_name=self.name,
+                source_tool_name=name,
+            ),
         )

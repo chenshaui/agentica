@@ -222,6 +222,10 @@ async def _setup_channels() -> None:
     from .channels.feishu import FeishuChannel
     from .channels.telegram import TelegramChannel
     from .channels.discord import DiscordChannel
+    from .channels.qq import QQChannel
+    from .channels.wecom import WeComChannel
+    from .channels.dingtalk import DingTalkChannel
+    from .channels.wechat import WeChatChannel
 
     if settings.feishu_app_id and settings.feishu_app_secret:
         try:
@@ -255,6 +259,52 @@ async def _setup_channels() -> None:
             deps.channel_manager.register(discord)
         except Exception as e:
             logger.error(f"Failed to create Discord channel: {e}")
+
+    if settings.qq_app_id and settings.qq_app_secret:
+        try:
+            qq = QQChannel(
+                app_id=settings.qq_app_id,
+                app_secret=settings.qq_app_secret,
+                allowed_users=settings.qq_allowed_users,
+            )
+            deps.channel_manager.register(qq)
+        except Exception as e:
+            logger.error(f"Failed to create QQ channel: {e}")
+
+    if settings.wecom_bot_id and settings.wecom_secret:
+        try:
+            wecom = WeComChannel(
+                bot_id=settings.wecom_bot_id,
+                secret=settings.wecom_secret,
+                allowed_users=settings.wecom_allowed_users,
+            )
+            deps.channel_manager.register(wecom)
+        except Exception as e:
+            logger.error(f"Failed to create WeCom channel: {e}")
+
+    if settings.dingtalk_client_id and settings.dingtalk_client_secret:
+        try:
+            dingtalk = DingTalkChannel(
+                client_id=settings.dingtalk_client_id,
+                client_secret=settings.dingtalk_client_secret,
+                allowed_users=settings.dingtalk_allowed_users,
+            )
+            deps.channel_manager.register(dingtalk)
+        except Exception as e:
+            logger.error(f"Failed to create DingTalk channel: {e}")
+
+    # Personal WeChat: only enabled when an explicit token file or
+    # allowlist is configured (avoids triggering interactive QR login on
+    # every gateway startup by accident).
+    if settings.wechat_token_file or settings.wechat_allowed_users:
+        try:
+            wechat = WeChatChannel(
+                token_file=settings.wechat_token_file,
+                allowed_users=settings.wechat_allowed_users,
+            )
+            deps.channel_manager.register(wechat)
+        except Exception as e:
+            logger.error(f"Failed to create WeChat channel: {e}")
 
     deps.channel_manager.set_handler(_handle_channel_message)
     await deps.channel_manager.connect_all()

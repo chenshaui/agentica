@@ -16,8 +16,10 @@ class ChannelType(Enum):
     FEISHU = "feishu"
     TELEGRAM = "telegram"
     DISCORD = "discord"
-    WECHAT = "wechat"
+    WECHAT = "wechat"     # personal WeChat (ilinkai)
     DINGTALK = "dingtalk"
+    QQ = "qq"
+    WECOM = "wecom"       # Enterprise WeChat (WeCom)
 
 
 @dataclass

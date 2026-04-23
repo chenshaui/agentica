@@ -11,14 +11,17 @@ from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
     Any,
+    Awaitable,
     Callable,
     Generic,
     List,
     Optional,
+    Sequence,
     Union,
-    Awaitable,
     overload,
 )
+
+from agentica.model.message import Message
 from typing_extensions import TypeVar
 
 from agentica.utils.log import logger
@@ -267,6 +270,103 @@ async def run_output_guardrails(
     return await run_guardrails_seq(guardrails, _run_one, OutputGuardrailTripwireTriggered)
 
 
+# =============================================================================
+# Input normalization
+# =============================================================================
+
+def _media_markers(audio: Any, images: Any, videos: Any) -> List[str]:
+    """Return short string tags describing attached media payloads.
+
+    The actual bytes/URLs are NOT included to keep the guardrail input
+    compact and avoid blowing up large multimodal payloads inside the
+    serialised representation; the marker tells a guardrail "this turn
+    has N images / has audio" so a policy can decide accordingly.
+    """
+    markers: List[str] = []
+    if audio is not None:
+        markers.append("audio:1")
+    if images:
+        try:
+            markers.append(f"images:{len(images)}")
+        except TypeError:
+            markers.append("images:?")
+    if videos:
+        try:
+            markers.append(f"videos:{len(videos)}")
+        except TypeError:
+            markers.append("videos:?")
+    return markers
+
+
+def _coerce_message_to_dict(item: Any) -> Optional[dict]:
+    """Convert a Message / dict / str into a plain dict for guardrail inspection."""
+    if isinstance(item, Message):
+        d: dict = {"role": item.role or "user", "content": item.content}
+        if item.images:
+            d["media"] = (d.get("media") or []) + [f"image:{i}" for i in range(len(item.images))]
+        if item.audio is not None:
+            d["media"] = (d.get("media") or []) + ["audio"]
+        if item.videos:
+            d["media"] = (d.get("media") or []) + [f"video:{i}" for i in range(len(item.videos))]
+        return d
+    if isinstance(item, dict):
+        return dict(item)
+    if isinstance(item, str):
+        return {"role": "user", "content": item}
+    if item is None:
+        return None
+    return {"role": "user", "content": str(item)}
+
+
+def normalize_input_for_guardrails(
+    *,
+    message: Any = None,
+    audio: Any = None,
+    images: Any = None,
+    videos: Any = None,
+    messages: Optional[Sequence[Any]] = None,
+    add_messages: Optional[Sequence[Any]] = None,
+) -> List[dict]:
+    """Build the full inbound payload visible to input guardrails.
+
+    A single ``message`` argument is *not* enough: callers may also pass
+    a prior conversation via ``messages=[...]`` plus ``add_messages=[...]``
+    plus multimodal attachments (``audio``/``images``/``videos``). All of
+    these reach the model, so guardrails MUST be able to inspect all of
+    them — otherwise a malicious image or earlier turn slips past.
+
+    Returns a list of ``{"role", "content", "media"?}`` dicts in the order
+    they will be sent to the model. ``str(result)`` keeps backward-compat
+    with simple ``"<keyword>" in str(input_data)`` guardrail patterns
+    while exposing multimodal markers like ``"images:2"``.
+    """
+    items: List[dict] = []
+    if messages:
+        for m in messages:
+            d = _coerce_message_to_dict(m)
+            if d is not None:
+                items.append(d)
+    if add_messages:
+        for m in add_messages:
+            d = _coerce_message_to_dict(m)
+            if d is not None:
+                items.append(d)
+    if message is not None:
+        d = _coerce_message_to_dict(message)
+        if d is not None:
+            items.append(d)
+    media = _media_markers(audio, images, videos)
+    if media:
+        # Attach media markers to the last user-turn item so a guardrail
+        # iterating a single dict can still see them; if there is no item
+        # (caller only sent multimodal), synthesize an empty user turn.
+        if not items:
+            items.append({"role": "user", "content": ""})
+        last = items[-1]
+        last["media"] = (last.get("media") or []) + media
+    return items
+
+
 __all__ = [
     "GuardrailTripwireTriggered",
     "InputGuardrailTripwireTriggered",
@@ -280,4 +380,5 @@ __all__ = [
     "output_guardrail",
     "run_input_guardrails",
     "run_output_guardrails",
+    "normalize_input_for_guardrails",
 ]

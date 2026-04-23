@@ -60,6 +60,11 @@ from agentica.utils.string import parse_structured_output
 from agentica.utils.tokens import count_tokens
 from agentica.utils.langfuse_integration import langfuse_trace_context
 from agentica.tools.base import FunctionCall
+from agentica.guardrails.agent import (
+    normalize_input_for_guardrails,
+    run_input_guardrails,
+    run_output_guardrails,
+)
 
 if TYPE_CHECKING:
     from agentica.agent import Agent
@@ -810,6 +815,33 @@ class Runner:
                         # request. Early-stage product -- minimize user disruption.
                         logger.warning(f"on_user_prompt hook error: {e}")
 
+                # --- Agent-level input guardrails ---
+                # Run BEFORE message assembly / LLM. A blocked guardrail raises
+                # InputGuardrailTripwireTriggered and aborts the run with no
+                # model call, no token cost.
+                #
+                # Inspect the COMPLETE inbound surface — not just `message`.
+                # Callers can prepend prior context via `messages=[...]` and
+                # `add_messages=[...]`, and attach multimodal payloads via
+                # `audio` / `images` / `videos`. All of these reach the model,
+                # so the guardrail must see all of them; otherwise an earlier
+                # turn or an attached image bypasses the policy.
+                if agent.input_guardrails:
+                    _guard_input = normalize_input_for_guardrails(
+                        message=message,
+                        audio=audio,
+                        images=images,
+                        videos=videos,
+                        messages=messages,
+                        add_messages=add_messages,
+                    )
+                    await run_input_guardrails(
+                        agent=agent,
+                        input_data=_guard_input,
+                        guardrails=agent.input_guardrails,
+                        context=agent.context,
+                    )
+
                 # 3. Prepare messages
                 system_message, user_messages, messages_for_model = await agent.get_messages_for_run(
                     message=message, audio=audio, images=images, videos=videos,
@@ -1085,6 +1117,23 @@ class Runner:
                     if model_response.reasoning_content:
                         agent.run_response.reasoning_content = model_response.reasoning_content
 
+                # --- Agent-level output guardrails ---
+                # MUST run BEFORE memory persistence, summary update, file save,
+                # the run_completed yield, and on_end hooks. A blocked guardrail
+                # raises OutputGuardrailTripwireTriggered; if we ran this after
+                # working_memory.add_run() / update_summary() / save_run_response_to_file()
+                # the rejected content would still leak into persisted state and
+                # poison subsequent turns. Persistence happens only when the
+                # output is allowed.
+                _output = agent.run_response.content
+                if agent.output_guardrails:
+                    await run_output_guardrails(
+                        agent=agent,
+                        agent_output=_output,
+                        guardrails=agent.output_guardrails,
+                        context=agent.context,
+                    )
+
                 # 5. Update Memory
                 if agent.stream_intermediate_steps:
                     yield self.generic_run_response("Updating memory", RunEvent.updating_memory)
@@ -1146,7 +1195,6 @@ class Runner:
                     yield self.generic_run_response(agent.run_response.content, RunEvent.run_completed)
 
                 # --- Lifecycle: agent end ---
-                _output = agent.run_response.content
                 if agent.hooks is not None:
                     await agent.hooks.on_end(agent=agent, output=_output)
                 if agent._run_hooks is not None:
@@ -1174,16 +1222,27 @@ class Runner:
 
                     # 2. Log tool results from this run (if any)
                     if agent.run_response.tools:
+                        _functions = (agent.model.functions or {}) if agent.model else {}
                         for tc in agent.run_response.tools:
                             _tool_content = tc.get("content", "") or ""
-                            # Truncate large tool results in JSONL (full result in tool_result_storage)
                             if len(_tool_content) > 2000:
                                 _tool_content = _tool_content[:2000] + "\n... [truncated]"
+                            _origin_meta: Dict[str, Any] = {}
+                            _fn = _functions.get(tc.get("tool_name", ""))
+                            if _fn is not None and _fn.origin is not None:
+                                _origin_meta["origin_type"] = _fn.origin.type
+                                if _fn.origin.provider_name:
+                                    _origin_meta["origin_provider_name"] = _fn.origin.provider_name
+                                if _fn.origin.agent_name:
+                                    _origin_meta["origin_agent_name"] = _fn.origin.agent_name
+                                if _fn.origin.source_tool_name:
+                                    _origin_meta["origin_source_tool_name"] = _fn.origin.source_tool_name
                             agent._session_log.append(
                                 "tool", _tool_content,
                                 tool_name=tc.get("tool_name", ""),
                                 tool_call_id=tc.get("tool_call_id", ""),
                                 is_error=tc.get("tool_call_error", False),
+                                **_origin_meta,
                             )
 
                     # 3. Log assistant output (with model info + usage, mirrors CC)

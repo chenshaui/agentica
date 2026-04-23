@@ -32,6 +32,7 @@ from typing import (
 )
 from datetime import datetime
 
+from agentica.handoff import default_handoff_mapper
 from agentica.run_response import AgentCancelledError
 from agentica.tools.base import Function, ModelTool, Tool
 from agentica.utils.log import logger
@@ -595,15 +596,24 @@ class SubagentRegistry:
         child_tools = self._select_child_tools(parent_tools, config)
 
         instructions_parts: List[str] = [config.system_prompt]
-        context_parts: List[str] = []
-        if config.inherit_context:
-            inherited_context = self._build_inherited_context(parent_agent)
-            if inherited_context:
-                context_parts.append(inherited_context)
-        if context:
-            context_parts.append(context)
-        if context_parts:
-            instructions_parts.append(f"\n## Context\n{chr(10).join(context_parts)}")
+
+        # Structured handoff: default_handoff_mapper bundles parent identity,
+        # condensed instructions, workspace summary, recent history and the
+        # caller-supplied context string into one Markdown block. When
+        # config.inherit_context is False we still emit the user-supplied
+        # `context` arg via the mapper's extra_context slot, but skip the
+        # parent-derived sections (instructions/workspace/history) so a
+        # non-inheriting subagent stays isolated.
+        handoff_ctx = default_handoff_mapper(
+            parent_agent=parent_agent,
+            task=task,
+            extra_context=context or None,
+        )
+        if not config.inherit_context:
+            handoff_ctx.parent_instructions = None
+            handoff_ctx.parent_workspace_summary = None
+            handoff_ctx.parent_history_excerpt = None
+        instructions_parts.append("\n" + handoff_ctx.render())
         instructions_parts.append("\nBe direct and efficient. Complete the task and stop.")
 
         from agentica.agent import Agent

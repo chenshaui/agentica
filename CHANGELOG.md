@@ -19,7 +19,26 @@ A "public API" is anything importable from `agentica` top-level `__init__.py`.
 
 ## [Unreleased]
 
-<!-- Pending v1.3.6 items below will be released when sdk-dev merges to main -->
+## [1.4.0] - 2026-04-23
+
+### Added — Gateway IM Channels
+- **`agentica.gateway.channels.QQChannel`**: 接入 QQ 开放平台机器人（`qq-botpy` WebSocket，C2C 私聊 + 群 @ 消息），自动缓存最新 `msg_id` 用于回包；新增 extras `agentica[qq]`
+- **`agentica.gateway.channels.WeComChannel`**: 接入企业微信智能机器人（`wecom_aibot_sdk` WSClient），按 `chat_id` 缓存入站 `frame` 用于 `reply_stream`；新增 extras `agentica[wecom]`
+- **`agentica.gateway.channels.DingTalkChannel`**: 接入钉钉机器人（`dingtalk-stream` Stream 长连接 + HTTP 回包），自动管理 `accessToken` 缓存与续期；区分 1-to-1（`channel_id=staffId`）与群（`channel_id="group:<openConversationId>"`）；新增 extras `agentica[dingtalk]`
+- **`agentica.gateway.channels.WeChatChannel`**: 接入个人微信（内联 `WxBotClient` 走 ilinkai 私有 HTTP 长轮询，QR 扫码登录 + token 持久化），后台线程跑阻塞 loop，跨线程 `call_soon_threadsafe` 派发到主事件循环；新增 extras `agentica[wechat]`
+- **`ChannelType`**: 扩展 `QQ` 与 `WECOM` 两个枚举值
+- **`Settings`**: 新增 `qq_*` / `wecom_*` / `dingtalk_*` / `wechat_*` 字段及对应环境变量加载（`QQ_APP_ID` / `WECOM_BOT_ID` / `DINGTALK_CLIENT_ID` / `WECHAT_TOKEN_FILE` …）
+- **`docs/advanced/gateway.md`**: 新增 Gateway 完整文档，覆盖架构图、所有 IM 渠道的环境变量配置、HTTP API、自定义渠道、故障排查
+- **34 个新单测**: `tests/test_gateway_channel_{qq,wecom,dingtalk,wechat}.py`，全部 mock 各家 SDK，无外部依赖
+
+### Changed
+- `agentica/gateway/main.py::_setup_channels()`：按需注册 4 个新渠道，凡是缺关键凭据自动跳过并打日志
+- `agentica/gateway/channels/__init__.py`：re-export 新增的 4 个 Channel 类
+- 版本号：`1.3.6rc1` → `1.4.0`（按 SemVer：新增公共 Channel 类 → minor bump）
+
+### Notes
+- 所有新渠道都遵循"懒加载 SDK + 缺失依赖时抛清晰 `ImportError`"的现有模式
+- WeChat 渠道走的是非公开私有协议（ilinkai），仅推荐个人 / 内部场景使用
 
 ### Added (Stage 2 + Stage 3)
 - **`_DEPRECATED_TOP_LEVEL` mapping** in `agentica/__init__.py`: 35+ symbols flagged for v2.0 migration

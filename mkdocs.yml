@@ -54,6 +54,7 @@ nav:
       - Skills System: advanced/skills.md
       - MCP Integration: advanced/mcp.md
       - ACP Integration: advanced/acp.md
+      - Gateway (IM Bots & HTTP): advanced/gateway.md
   - Model Providers: guides/models.md
   - Best Practices: guides/best_practices.md
   - API Reference:

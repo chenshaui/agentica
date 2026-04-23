@@ -63,6 +63,7 @@ def _make_parent_agent():
     return SimpleNamespace(
         name="parent",
         agent_id="parent-agent-id",
+        instructions=None,
         model=_FakeModel(),
         tools=[
             Function(name="read_file", entrypoint=lambda: None),

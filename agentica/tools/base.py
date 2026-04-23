@@ -9,14 +9,56 @@ It includes an abstract base class for tools and a class for managing tool insta
 import asyncio
 import inspect
 import json
+import re
 import weakref
 from collections import OrderedDict
 from typing import Callable, get_type_hints, Any, Dict, Union, Optional, Type, TypeVar, List
-from pydantic import BaseModel, Field, ValidationError, validate_call
+from pydantic import BaseModel, Field, ValidationError, field_validator, validate_call
 from agentica.model.message import Message
+from agentica.tools.origin import ToolOrigin
 from agentica.utils.log import logger
 
 T = TypeVar("T")
+
+# OpenAI / Anthropic / most providers require tool names to match this pattern.
+# See: https://platform.openai.com/docs/api-reference/chat/create#chat-create-tools
+_TOOL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+_TOOL_NAME_ILLEGAL_CHAR_RE = re.compile(r"[^a-zA-Z0-9_-]+")
+_TOOL_NAME_REPEAT_UNDERSCORE_RE = re.compile(r"_{2,}")
+_TOOL_NAME_REPEAT_DASH_RE = re.compile(r"-{2,}")
+
+
+def validate_tool_name(name: str) -> None:
+    """Raise ``ValueError`` iff ``name`` is not a legal LLM tool-call function name.
+
+    Used for explicit names provided by the user (``Function(name=...)`` and
+    ``Agent.as_tool(tool_name=...)``). Auto-derived names go through
+    :func:`normalize_tool_name` instead.
+    """
+    if not isinstance(name, str) or not _TOOL_NAME_RE.match(name):
+        raise ValueError(
+            f"Invalid tool name {name!r}: must match ^[a-zA-Z0-9_-]{{1,64}}$ "
+            "(letters, digits, '_' or '-', length 1..64)."
+        )
+
+
+def normalize_tool_name(raw: str) -> str:
+    """Coerce ``raw`` into a legal tool-call function name.
+
+    Pipeline: lowercase → replace illegal chars with '_' → collapse repeats
+    → strip leading/trailing '_' or '-' → truncate to 64 → fall back to
+    ``"tool"`` for empty input. Idempotent.
+    """
+    if not isinstance(raw, str) or not raw:
+        return "tool"
+    lowered = raw.lower()
+    cleaned = _TOOL_NAME_ILLEGAL_CHAR_RE.sub("_", lowered)
+    cleaned = _TOOL_NAME_REPEAT_UNDERSCORE_RE.sub("_", cleaned)
+    cleaned = _TOOL_NAME_REPEAT_DASH_RE.sub("-", cleaned)
+    cleaned = cleaned.strip("_-")
+    if not cleaned:
+        return "tool"
+    return cleaned[:64]
 
 
 class ToolCallException(Exception):
@@ -108,8 +150,14 @@ class Function(BaseModel):
     """Model for storing functions that can be called by an agent."""
 
     # The name of the function to be called.
-    # Must be a-z, A-Z, 0-9, or contain underscores and dashes, with a maximum length of 64.
+    # Must match ^[a-zA-Z0-9_-]{1,64}$ (validated below).
     name: str
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, v: str) -> str:
+        validate_tool_name(v)
+        return v
     # A description of what the function does, used by the model to choose when and how to call the function.
     description: Optional[str] = None
     # The parameters the functions accepts, described as a JSON Schema object.
@@ -178,6 +226,10 @@ class Function(BaseModel):
     # Used for tools that require API keys, specific platforms, etc.
     # Pattern borrowed from hermes-agent ToolRegistry.check_fn.
     available_when: Optional[Callable[[], bool]] = None
+    # Where this tool came from. Resolved by Tool.register / Agent.as_tool /
+    # McpTool when the Function is materialized; defaults to None on bare
+    # construction so callers can opt out.
+    origin: Optional[ToolOrigin] = None
 
     # --*-- FOR INTERNAL USE ONLY --*--
     # Weak reference to the agent that the function is associated with.
@@ -258,7 +310,7 @@ class Function(BaseModel):
     def from_callable(cls, c: Callable, strict: bool = False) -> "Function":
         from inspect import getdoc
 
-        function_name = c.__name__
+        function_name = normalize_tool_name(c.__name__)
         try:
             parameters = cls._parse_parameters(c, strict=strict)
         except Exception as e:
@@ -483,13 +535,18 @@ class FunctionCall(BaseModel):
 class ModelTool(BaseModel):
     """Model for Tools"""
 
-    # The type of tool
+    model_config = {"arbitrary_types_allowed": True}
+
     type: str
-    # The function to be called if type = "function"
     function: Optional[Dict[str, Any]] = None
+    # Provider-side / model-hosted tools (web_search, file_search,
+    # code_interpreter) carry origin=ToolOrigin(type="model", ...).
+    origin: Optional[ToolOrigin] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return self.model_dump(exclude_none=True)
+        # Origin is metadata for hooks / session log only — never sent to
+        # the provider. Strip it from the wire payload.
+        return self.model_dump(exclude_none=True, exclude={"origin"})
 
 
 def _coerce_number(value: str, integer_only: bool = False):
@@ -761,8 +818,9 @@ class Tool:
             The registered function
         """
         try:
+            origin_type = "builtin" if (self.name and self.name.startswith("builtin_")) else "function"
             f = Function(
-                name=function.__name__,
+                name=normalize_tool_name(function.__name__),
                 description=function.__doc__ or self.description,
                 entrypoint=function,
                 sanitize_arguments=sanitize_arguments,
@@ -770,6 +828,7 @@ class Tool:
                 is_read_only=is_read_only,
                 is_destructive=is_destructive,
                 available_when=available_when,
+                origin=ToolOrigin(type=origin_type, source_tool_name=function.__name__),
             )
             self.functions[f.name] = f
         except Exception as e:

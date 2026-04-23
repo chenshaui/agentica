@@ -1,6 +1,6 @@
 # Agentica Public API（Tier 稳定度合约）
 
-> **适用版本**：v1.3.6 及之后
+> **适用版本**：v1.4.0 及之后
 > **维护原则**：每次发版前检查本文档与代码的一致性。未列出的符号均视为 Internal，不承诺稳定。
 
 ---
@@ -138,7 +138,17 @@ from agentica.guardrails import (
 
 ```python
 from agentica.gateway.main import app, main  # FastAPI app
+from agentica.gateway.channels import (
+    Channel, ChannelType, Message,
+    FeishuChannel, TelegramChannel, DiscordChannel,
+    QQChannel,        # 需 agentica[qq]
+    WeComChannel,     # 需 agentica[wecom]
+    DingTalkChannel,  # 需 agentica[dingtalk]
+    WeChatChannel,    # 需 agentica[wechat]
+)
 ```
+
+详见 [Gateway 文档](advanced/gateway.md)。
 
 ### ACP（IDE 集成）— `pip install agentica[acp]`
 

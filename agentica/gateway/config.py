@@ -65,6 +65,25 @@ class Settings:
     discord_allowed_users: List[str] = field(default_factory=list)
     discord_allowed_guilds: List[str] = field(default_factory=list)
 
+    # QQ (qq-botpy)
+    qq_app_id: Optional[str] = None
+    qq_app_secret: Optional[str] = None
+    qq_allowed_users: List[str] = field(default_factory=list)
+
+    # WeCom (Enterprise WeChat, wecom_aibot_sdk)
+    wecom_bot_id: Optional[str] = None
+    wecom_secret: Optional[str] = None
+    wecom_allowed_users: List[str] = field(default_factory=list)
+
+    # DingTalk (dingtalk-stream)
+    dingtalk_client_id: Optional[str] = None
+    dingtalk_client_secret: Optional[str] = None
+    dingtalk_allowed_users: List[str] = field(default_factory=list)
+
+    # WeChat (personal, ilinkai inline client)
+    wechat_token_file: Optional[str] = None
+    wechat_allowed_users: List[str] = field(default_factory=list)
+
     # Model / path settings — mutable fields with env-var defaults.
     # Routes update these at runtime (e.g. model switch, base_dir change).
     model_provider: str = ""
@@ -164,6 +183,33 @@ class Settings:
             ],
             discord_allowed_guilds=[
                 g.strip() for g in os.getenv("DISCORD_ALLOWED_GUILDS", "").split(",") if g.strip()
+            ],
+
+            # QQ
+            qq_app_id=os.getenv("QQ_APP_ID"),
+            qq_app_secret=os.getenv("QQ_APP_SECRET"),
+            qq_allowed_users=[
+                u.strip() for u in os.getenv("QQ_ALLOWED_USERS", "").split(",") if u.strip()
+            ],
+
+            # WeCom (Enterprise WeChat)
+            wecom_bot_id=os.getenv("WECOM_BOT_ID"),
+            wecom_secret=os.getenv("WECOM_SECRET"),
+            wecom_allowed_users=[
+                u.strip() for u in os.getenv("WECOM_ALLOWED_USERS", "").split(",") if u.strip()
+            ],
+
+            # DingTalk
+            dingtalk_client_id=os.getenv("DINGTALK_CLIENT_ID"),
+            dingtalk_client_secret=os.getenv("DINGTALK_CLIENT_SECRET"),
+            dingtalk_allowed_users=[
+                u.strip() for u in os.getenv("DINGTALK_ALLOWED_USERS", "").split(",") if u.strip()
+            ],
+
+            # WeChat (personal)
+            wechat_token_file=os.getenv("WECHAT_TOKEN_FILE") or None,
+            wechat_allowed_users=[
+                u.strip() for u in os.getenv("WECHAT_ALLOWED_USERS", "").split(",") if u.strip()
             ],
 
             # Model / path

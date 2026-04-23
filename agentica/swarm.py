@@ -20,6 +20,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from agentica.handoff import default_handoff_mapper
 from agentica.utils.log import logger
 from agentica.run_config import RunConfig
 
@@ -121,6 +122,15 @@ def _clone_agent_for_task(source: Any) -> Any:
         tool_config=source.tool_config,
         long_term_memory_config=source.long_term_memory_config,
         sandbox_config=source.sandbox_config,
+        # Safety: every guardrail family that was configured on the source
+        # MUST also apply to the clone, otherwise an agent that is protected
+        # in normal execution silently loses those protections in autonomous
+        # swarm execution. New list copies so a clone-side mutation does not
+        # leak back into the source.
+        input_guardrails=list(source.input_guardrails) if source.input_guardrails else None,
+        output_guardrails=list(source.output_guardrails) if source.output_guardrails else None,
+        tool_input_guardrails=list(source.tool_input_guardrails) if source.tool_input_guardrails else None,
+        tool_output_guardrails=list(source.tool_output_guardrails) if source.tool_output_guardrails else None,
         working_memory=WorkingMemory(),            # fresh, isolated
         # Context can be a dict, a string, a callable, or any resolved object
         # (see Agent._resolve_context). Only deep-copy dicts so per-task
@@ -296,8 +306,17 @@ class Swarm:
                 # Each clone shares configuration (model id, instructions, tools)
                 # but gets its own agent_id, working_memory, and Runner instance.
                 agent = _clone_agent_for_task(source_agent)
+                # Prepend a structured handoff block so the child sees the
+                # coordinator's identity, condensed instructions, and the
+                # task it was assigned. Replaces the prior bare-string
+                # subtask which dropped all parent context.
+                handoff_ctx = default_handoff_mapper(
+                    parent_agent=coordinator,
+                    task=subtask,
+                )
+                full_subtask = handoff_ctx.render() + "\n\n" + subtask
                 try:
-                    response = await agent.run(subtask, config=config)
+                    response = await agent.run(full_subtask, config=config)
                     content = response.content if response and response.content else ""
                     if not isinstance(content, str):
                         content = json.dumps(content, ensure_ascii=False)

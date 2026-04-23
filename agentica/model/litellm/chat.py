@@ -27,7 +27,7 @@ from typing import Optional, List, AsyncIterator, Dict, Any, Union
 
 from pydantic import BaseModel
 
-from agentica.model.base import Model
+from agentica.model.base import Model, require_first_choice
 from agentica.model.message import Message
 from agentica.model.metrics import Metrics, StreamData
 from agentica.model.response import ModelResponse
@@ -112,8 +112,11 @@ class LiteLLMChat(Model):
     thinking: Optional[Dict[str, Any]] = None
     reasoning_effort: Optional[str] = None
     
-    # Additional request parameters
+    # Additional request parameters (top-level, merged into the LiteLLM call kwargs)
     request_params: Optional[Dict[str, Any]] = None
+    # Vendor-specific passthrough body params (e.g. vLLM top_k_per_token,
+    # Together repetition_penalty). Explicit dataclass fields always win.
+    extra_body: Optional[Dict[str, Any]] = None
     
     # Internal state
     use_structured_outputs: bool = False
@@ -220,10 +223,17 @@ class LiteLLMChat(Model):
                 params["tools"] = tools_for_api
                 params["tool_choice"] = self.tool_choice or "auto"
             
+        # Merge vendor-specific extra_body. Explicit fields already in params
+        # take precedence — extra_body cannot override them.
+        if self.extra_body:
+            for key, value in self.extra_body.items():
+                if key not in params:
+                    params[key] = value
+
         # Merge additional request params
         if self.request_params:
             params.update(self.request_params)
-            
+
         return params
     
     def get_tools_for_api(self) -> Optional[List[Dict[str, Any]]]:
@@ -351,7 +361,8 @@ class LiteLLMChat(Model):
         response = await self.invoke(messages)
         metrics.response_timer.stop()
         
-        response_message = response.choices[0].message
+        first_choice = require_first_choice(response, context=f"LiteLLMChat '{self.id}'")
+        response_message = first_choice.message
         response_usage = getattr(response, 'usage', None)
         
         assistant_message = self._create_assistant_message(
@@ -385,7 +396,7 @@ class LiteLLMChat(Model):
                 logger.warning(f"Error parsing structured output from LiteLLM: {e}")
 
         # Expose finish_reason so Runner's agentic loop can detect truncation
-        finish_reason = response.choices[0].finish_reason if response.choices else None
+        finish_reason = first_choice.finish_reason
         model_response.finish_reason = finish_reason
         self.last_finish_reason = finish_reason
 

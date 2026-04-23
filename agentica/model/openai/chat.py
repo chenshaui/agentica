@@ -23,7 +23,7 @@ from openai.types.chat.chat_completion_chunk import (
 )
 from openai.types.chat.chat_completion_message import ChatCompletionMessage
 
-from agentica.model.base import Model
+from agentica.model.base import Model, require_first_choice
 from agentica.model.message import Message
 from agentica.model.metrics import Metrics, StreamData
 from agentica.model.response import ModelResponse
@@ -350,14 +350,8 @@ class OpenAIChat(Model):
         response: Union[ChatCompletion, ParsedChatCompletion] = await self.invoke(messages=messages)
         metrics.response_timer.stop()
 
-        # Defensive: validate choices is non-empty before indexing
-        if not response.choices:
-            raise ValueError(
-                f"OpenAI API returned empty choices for model '{self.id}'. "
-                "This may indicate a content filter, a quota issue, or a transient API error."
-            )
-
-        response_message: ChatCompletionMessage = response.choices[0].message
+        first_choice = require_first_choice(response, context=f"OpenAIChat '{self.id}'")
+        response_message: ChatCompletionMessage = first_choice.message
         # Defensive: usage may be None when stream_options are not set or API omits it
         response_usage: Optional[CompletionUsage] = getattr(response, "usage", None)
 
@@ -394,7 +388,7 @@ class OpenAIChat(Model):
 
         # Expose finish_reason so Runner's agentic loop can detect
         # truncated output (finish_reason == "length") for max_tokens recovery.
-        model_response.finish_reason = response.choices[0].finish_reason
+        model_response.finish_reason = first_choice.finish_reason
         self.last_finish_reason = model_response.finish_reason
 
         tool_role = "tool"
