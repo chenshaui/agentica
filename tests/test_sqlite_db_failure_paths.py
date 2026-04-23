@@ -13,6 +13,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
+pytest.importorskip("sqlalchemy", reason="SqliteDb tests require agentica[sql]")
+
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
