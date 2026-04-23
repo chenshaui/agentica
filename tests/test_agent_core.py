@@ -14,7 +14,13 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from agentica.agent import Agent
+from agentica.agent import (
+    Agent,
+    AgentDefinition,
+    AgentExecutionConfig,
+    AgentMemoryConfig,
+    AgentSafetyConfig,
+)
 from agentica.model.openai import OpenAIChat
 from agentica.model.message import Message
 from agentica.model.response import ModelResponse, ModelResponseEvent
@@ -287,6 +293,40 @@ class TestAsyncFirstNamingConvention:
     def test_print_response_sync_is_regular(self):
         agent = Agent(name="A")
         assert not asyncio.iscoroutinefunction(agent.print_response_sync)
+
+
+class TestAgentFromParts:
+    def test_from_parts_groups_constructor_surface(self):
+        agent = Agent.from_parts(
+            definition=AgentDefinition(
+                name="Planner",
+                model=_make_model(),
+                instructions="Plan carefully",
+            ),
+            execution=AgentExecutionConfig(
+                add_history_to_context=True,
+                session_id="session-1",
+            ),
+            memory=AgentMemoryConfig(
+                enable_long_term_memory=True,
+                enable_experience_capture=True,
+                context={"mode": "planning"},
+            ),
+            safety=AgentSafetyConfig(
+                input_guardrails=["input-check"],
+                output_guardrails=["output-check"],
+            ),
+        )
+
+        assert agent.name == "Planner"
+        assert agent.instructions == "Plan carefully"
+        assert agent.add_history_to_context is True
+        assert agent.session_id == "session-1"
+        assert agent.enable_long_term_memory is True
+        assert agent.enable_experience_capture is True
+        assert agent.context == {"mode": "planning"}
+        assert agent.input_guardrails == ["input-check"]
+        assert agent.output_guardrails == ["output-check"]
 
 
 if __name__ == "__main__":

@@ -15,7 +15,15 @@ Execution engine lives in agentica/runner.py (Runner class).
 """
 
 from agentica.agent.base import Agent, AgentCancelledError
-from agentica.agent.config import PromptConfig, ToolConfig, WorkspaceMemoryConfig
+from agentica.agent.config import (
+    PromptConfig,
+    ToolConfig,
+    WorkspaceMemoryConfig,
+    AgentDefinition,
+    AgentExecutionConfig,
+    AgentMemoryConfig,
+    AgentSafetyConfig,
+)
 from agentica.hooks import AgentHooks, RunHooks
 
 __all__ = [
@@ -24,6 +32,10 @@ __all__ = [
     "PromptConfig",
     "ToolConfig",
     "WorkspaceMemoryConfig",
+    "AgentDefinition",
+    "AgentExecutionConfig",
+    "AgentMemoryConfig",
+    "AgentSafetyConfig",
     "AgentHooks",
     "RunHooks",
 ]

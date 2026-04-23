@@ -495,8 +495,8 @@ You are a helpful AI assistant.
                     resolved = global_agent_md.resolve()
                     found.append((str(global_agent_md), text))
                     seen_paths.add(resolved)
-            except Exception:
-                pass
+            except (OSError, UnicodeError) as exc:
+                logger.debug("Skipping unreadable global agent file %s: %s", global_agent_md, exc)
 
         project_chain: List[Tuple[str, str]] = []
         visited = set()
@@ -516,8 +516,8 @@ You are a helpful AI assistant.
                         if text and source_path not in seen_paths:
                             project_chain.append((str(candidate), text))
                             seen_paths.add(source_path)
-                    except Exception:
-                        pass
+                    except (OSError, UnicodeError) as exc:
+                        logger.debug("Skipping unreadable project config %s: %s", candidate, exc)
                     break  # first-match-wins: stop searching this directory
 
             if (resolved / ".git").exists():
@@ -533,8 +533,8 @@ You are a helpful AI assistant.
                 workspace_resolved = workspace_agent_md.resolve()
                 if workspace_content and workspace_resolved not in seen_paths:
                     found.append((str(workspace_agent_md), workspace_content))
-            except Exception:
-                pass
+            except (OSError, UnicodeError) as exc:
+                logger.debug("Skipping unreadable workspace agent file %s: %s", workspace_agent_md, exc)
 
         return found
 
@@ -598,8 +598,8 @@ You are a helpful AI assistant.
             ).stdout.strip()
             if branch:
                 parts.append(f"Git branch: {branch}")
-        except Exception:
-            pass
+        except (OSError, UnicodeError, subprocess.SubprocessError) as exc:
+            logger.debug("Failed to read git branch for %s: %s", cwd, exc)
 
         try:
             status = subprocess.run(
@@ -611,8 +611,8 @@ You are a helpful AI assistant.
                 if len(lines) > max_status_lines:
                     lines = lines[:max_status_lines] + [f"... ({len(lines) - max_status_lines} more)"]
                 parts.append(f"Uncommitted changes:\n{chr(10).join(lines)}")
-        except Exception:
-            pass
+        except (OSError, UnicodeError, subprocess.SubprocessError) as exc:
+            logger.debug("Failed to read git status for %s: %s", cwd, exc)
 
         try:
             log = subprocess.run(
@@ -621,8 +621,8 @@ You are a helpful AI assistant.
             ).stdout.strip()
             if log:
                 parts.append(f"Recent commits:\n{log}")
-        except Exception:
-            pass
+        except (OSError, UnicodeError, subprocess.SubprocessError) as exc:
+            logger.debug("Failed to read git log for %s: %s", cwd, exc)
 
         return "\n".join(parts) if parts else None
 

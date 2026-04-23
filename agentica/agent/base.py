@@ -49,6 +49,7 @@ from agentica.config import LANGFUSE_SECRET_KEY, LANGFUSE_PUBLIC_KEY
 from agentica.agent.config import (
     PromptConfig, ToolConfig, WorkspaceMemoryConfig, SandboxConfig,
     ToolRuntimeConfig, SkillRuntimeConfig, ExperienceConfig,
+    AgentDefinition, AgentExecutionConfig, AgentMemoryConfig, AgentSafetyConfig,
 )
 from agentica.hooks import (
     AgentHooks, RunHooks, ConversationArchiveHooks, MemoryExtractHooks,
@@ -244,7 +245,72 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
             working_memory: Optional[WorkingMemory] = None,
             context: Optional[Dict[str, Any]] = None,
     ):
-        # Core
+        self._init_definition(
+            model=model,
+            auxiliary_model=auxiliary_model,
+            name=name,
+            agent_id=agent_id,
+            description=description,
+            when_to_use=when_to_use,
+            instructions=instructions,
+            tools=tools,
+            knowledge=knowledge,
+            workspace=workspace,
+            work_dir=work_dir,
+            enable_long_term_memory=enable_long_term_memory,
+            enable_experience_capture=enable_experience_capture,
+            response_model=response_model,
+        )
+        self._init_execution(
+            add_history_to_context=add_history_to_context,
+            num_history_turns=num_history_turns,
+            use_structured_outputs=use_structured_outputs,
+            debug=debug,
+            enable_tracing=enable_tracing,
+            hooks=hooks,
+            session_id=session_id,
+        )
+        self._init_packed_config(
+            prompt_config=prompt_config,
+            tool_config=tool_config,
+            long_term_memory_config=long_term_memory_config,
+            experience_config=experience_config,
+            sandbox_config=sandbox_config,
+            tool_input_guardrails=tool_input_guardrails,
+            tool_output_guardrails=tool_output_guardrails,
+            input_guardrails=input_guardrails,
+            output_guardrails=output_guardrails,
+        )
+        self._init_runtime(
+            working_memory=working_memory,
+            context=context,
+        )
+
+        # Create Runner instance
+        self._runner = Runner(self)
+
+        # Post-init setup
+        self._post_init()
+
+    def _init_definition(
+        self,
+        *,
+        model: Optional[Model],
+        auxiliary_model: Optional[Model],
+        name: Optional[str],
+        agent_id: Optional[str],
+        description: Optional[str],
+        when_to_use: Optional[str],
+        instructions: Optional[Union[str, List[str], Callable]],
+        tools: Optional[List[Union[ModelTool, Tool, Callable, Dict, Function]]],
+        knowledge: Optional[Any],
+        workspace: Optional[Union[Any, str]],
+        work_dir: Optional[str],
+        enable_long_term_memory: bool,
+        enable_experience_capture: bool,
+        response_model: Optional[Type[Any]],
+    ) -> None:
+        """Initialize identity and capability definition."""
         self.model = model
         self.auxiliary_model = auxiliary_model
         self.name = name
@@ -259,14 +325,24 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
         self.enable_long_term_memory = enable_long_term_memory
         self.enable_experience_capture = enable_experience_capture
 
-        # Handle workspace: str → Workspace(path=str)
         if isinstance(workspace, str):
             from agentica.workspace import Workspace
             self.workspace = Workspace(workspace)
         else:
             self.workspace = workspace
 
-        # Common
+    def _init_execution(
+        self,
+        *,
+        add_history_to_context: bool,
+        num_history_turns: int,
+        use_structured_outputs: bool,
+        debug: bool,
+        enable_tracing: bool,
+        hooks: Optional[AgentHooks],
+        session_id: Optional[str],
+    ) -> None:
+        """Initialize execution behavior and session state."""
         self.add_history_to_context = add_history_to_context
         self.num_history_turns = num_history_turns
         self.use_structured_outputs = use_structured_outputs
@@ -274,14 +350,25 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
         self.enable_tracing = enable_tracing
         self.hooks = hooks
 
-        # Session persistence
         self.session_id = session_id
-        # JSONL session log: auto-created when session_id is set
         self._session_log = None
         if session_id is not None:
             self._session_log = SessionLog(session_id=session_id)
 
-        # Packed config (use defaults if not provided)
+    def _init_packed_config(
+        self,
+        *,
+        prompt_config: Optional[PromptConfig],
+        tool_config: Optional[ToolConfig],
+        long_term_memory_config: Optional[WorkspaceMemoryConfig],
+        experience_config: Optional[ExperienceConfig],
+        sandbox_config: Optional[SandboxConfig],
+        tool_input_guardrails: Optional[List[Any]],
+        tool_output_guardrails: Optional[List[Any]],
+        input_guardrails: Optional[List[Any]],
+        output_guardrails: Optional[List[Any]],
+    ) -> None:
+        """Initialize structured config objects and safety controls."""
         self.prompt_config = prompt_config or PromptConfig()
         self.tool_config = tool_config or ToolConfig()
         self.long_term_memory_config = long_term_memory_config or WorkspaceMemoryConfig()
@@ -292,7 +379,13 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
         self.input_guardrails = input_guardrails or []
         self.output_guardrails = output_guardrails or []
 
-        # Runtime
+    def _init_runtime(
+        self,
+        *,
+        working_memory: Optional[WorkingMemory],
+        context: Optional[Dict[str, Any]],
+    ) -> None:
+        """Initialize mutable per-agent runtime state."""
         self.working_memory = working_memory or WorkingMemory()
         self.context = context
         self.run_id = None
@@ -326,12 +419,6 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
         # Context-overflow protection dedup state. Guards prevent the same
         # overflow warning from being emitted on every loop iteration.
         self._overflow_warning_emitted: bool = False
-
-        # Create Runner instance
-        self._runner = Runner(self)
-
-        # Post-init setup
-        self._post_init()
 
     def _post_init(self):
         """Post-initialization setup."""
@@ -648,6 +735,56 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
         return self.name or self.agent_id
 
     @classmethod
+    def from_parts(
+        cls,
+        definition: Optional[AgentDefinition] = None,
+        execution: Optional[AgentExecutionConfig] = None,
+        memory: Optional[AgentMemoryConfig] = None,
+        safety: Optional[AgentSafetyConfig] = None,
+    ) -> "Agent":
+        """Create an Agent from grouped config parts.
+
+        This provides a compact alternative to the flat 40+ parameter
+        constructor without breaking the existing `Agent(...)` call style.
+        """
+        definition = definition or AgentDefinition()
+        execution = execution or AgentExecutionConfig()
+        memory = memory or AgentMemoryConfig()
+        safety = safety or AgentSafetyConfig()
+        return cls(
+            model=definition.model,
+            auxiliary_model=definition.auxiliary_model,
+            name=definition.name,
+            agent_id=definition.agent_id,
+            description=definition.description,
+            when_to_use=definition.when_to_use,
+            instructions=definition.instructions,
+            tools=definition.tools,
+            knowledge=definition.knowledge,
+            workspace=definition.workspace,
+            work_dir=definition.work_dir,
+            response_model=definition.response_model,
+            add_history_to_context=execution.add_history_to_context,
+            num_history_turns=execution.num_history_turns,
+            use_structured_outputs=execution.use_structured_outputs,
+            debug=execution.debug,
+            enable_tracing=execution.enable_tracing,
+            hooks=execution.hooks,
+            session_id=execution.session_id,
+            enable_long_term_memory=memory.enable_long_term_memory,
+            enable_experience_capture=memory.enable_experience_capture,
+            long_term_memory_config=memory.long_term_memory_config,
+            experience_config=memory.experience_config,
+            working_memory=memory.working_memory,
+            context=memory.context,
+            sandbox_config=safety.sandbox_config,
+            tool_input_guardrails=safety.tool_input_guardrails,
+            tool_output_guardrails=safety.tool_output_guardrails,
+            input_guardrails=safety.input_guardrails,
+            output_guardrails=safety.output_guardrails,
+        )
+
+    @classmethod
     def from_workspace(
         cls,
         workspace_path: str,
@@ -810,26 +947,11 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
         if self.model is not None:
             from agentica.subagent import SubagentRegistry
             clone.model = SubagentRegistry._clone_parent_model(self.model)
-        # Reset mutable runtime state
         clone.agent_id = str(uuid4())
-        clone.run_id = None
-        clone.run_input = None
-        clone.run_context = None
-        clone.task_anchor = None
-        clone._anchor_session_id = None
-        clone._parent_run_id = None
-        clone.run_response = RunResponse()
-        clone.stream = None
-        clone.stream_intermediate_steps = False
-        clone._cancelled = False
-        clone._running = False
-        clone._run_loop = None
-        clone._run_task = None
-        clone._event_callback = None
-        clone._run_hooks = None
-        clone._default_run_hooks = None
-        clone._enabled_tools = None
-        clone._enabled_skills = None
+        clone._init_runtime(
+            working_memory=WorkingMemory(),
+            context=dict(self.context) if isinstance(self.context, dict) else self.context,
+        )
         clone._session_log = None
         # Per-agent enable/disable runtime configs are mutable dicts. Without
         # explicit re-init, ``copy.copy`` aliases them, so ``clone.enable_tool``
@@ -840,20 +962,6 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
         # Inherit hook dedup state from source so cloned sub-agents do not
         # re-emit the same overflow warning that the parent already handled.
         clone._overflow_warning_emitted = self._overflow_warning_emitted
-        # Fresh working memory (don't share session state)
-        clone.working_memory = WorkingMemory()
-        # Fresh session-level memory dedup set
-        clone._surfaced_memories = set()
-        # Reset per-agent runtime containers. ``copy.copy`` is shallow, so
-        # without explicit reassignment these would alias the source's lists
-        # and leak state through ``BuiltinTodoTool.set_agent`` (which writes
-        # through to ``self._agent.todos``) and through composition primitives
-        # like ``Agent.as_tool()``.
-        clone.todos = []
-        # Fresh ``context`` dict so per-run mutations (e.g. ``_subagent_depth``
-        # in ``SubagentRegistry.spawn``) do not propagate back to the source.
-        if isinstance(self.context, dict):
-            clone.context = dict(self.context)
         # Fresh Runner bound to the clone
         clone._runner = Runner(clone)
         # Tool isolation: stateful tools (todos, parent_agent, workspace, skill

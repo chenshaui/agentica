@@ -40,6 +40,11 @@ import threading
 import warnings
 from typing import TYPE_CHECKING
 
+from . import api_registry
+
+_api_registry = api_registry
+del api_registry
+
 # ── Version ──
 from agentica.version import __version__  # noqa: F401
 
@@ -66,42 +71,42 @@ from agentica.model.providers import create_provider, list_providers
 
 # ── Backward-compatible provider aliases ──
 def DeepSeekChat(**kwargs):
-    return create_provider("deepseek", **kwargs)
+    return create_provider(_api_registry.PROVIDER_ALIAS_TO_SLUG["DeepSeekChat"], **kwargs)
 
 DeepSeek = DeepSeekChat
 
 def MoonshotChat(**kwargs):
-    return create_provider("moonshot", **kwargs)
+    return create_provider(_api_registry.PROVIDER_ALIAS_TO_SLUG["MoonshotChat"], **kwargs)
 
 Moonshot = MoonshotChat
 
 def DoubaoChat(**kwargs):
-    return create_provider("doubao", **kwargs)
+    return create_provider(_api_registry.PROVIDER_ALIAS_TO_SLUG["DoubaoChat"], **kwargs)
 
 Doubao = DoubaoChat
 
 def TogetherChat(**kwargs):
-    return create_provider("together", **kwargs)
+    return create_provider(_api_registry.PROVIDER_ALIAS_TO_SLUG["TogetherChat"], **kwargs)
 
 Together = TogetherChat
 
 def GrokChat(**kwargs):
-    return create_provider("xai", **kwargs)
+    return create_provider(_api_registry.PROVIDER_ALIAS_TO_SLUG["GrokChat"], **kwargs)
 
 Grok = GrokChat
 
 def YiChat(**kwargs):
-    return create_provider("yi", **kwargs)
+    return create_provider(_api_registry.PROVIDER_ALIAS_TO_SLUG["YiChat"], **kwargs)
 
 Yi = YiChat
 
 def QwenChat(**kwargs):
-    return create_provider("qwen", **kwargs)
+    return create_provider(_api_registry.PROVIDER_ALIAS_TO_SLUG["QwenChat"], **kwargs)
 
 Qwen = QwenChat
 
 def ZhipuAIChat(**kwargs):
-    return create_provider("zhipuai", **kwargs)
+    return create_provider(_api_registry.PROVIDER_ALIAS_TO_SLUG["ZhipuAIChat"], **kwargs)
 
 ZhipuAI = ZhipuAIChat
 
@@ -148,250 +153,8 @@ from agentica.experience import ExperienceEventStore, ExperienceCompiler, Compil
 # ── Workspace ──
 from agentica.workspace import Workspace, WorkspaceConfig
 
-# ============================================================================
-# Lazy imports - loaded on demand to improve startup time
-# ============================================================================
-
-_LAZY_IMPORTS = {
-    # database implementations
-    "SqliteDb": "agentica.db.sqlite",
-    "PostgresDb": "agentica.db.postgres",
-    "InMemoryDb": "agentica.db.memory",
-    "JsonDb": "agentica.db.json",
-    "MysqlDb": "agentica.db.mysql",
-    "RedisDb": "agentica.db.redis",
-
-    # model core (pulls in openai SDK)
-    "Model": "agentica.model.base",
-    "ModelResponse": "agentica.model.response",
-    "FileType": "agentica.model.response",
-    "OpenAIChat": "agentica.model.openai.chat",
-    "OpenAILike": "agentica.model.openai.like",
-    "AzureOpenAIChat": "agentica.model.azure.openai_chat",
-
-    # model providers (heavy dependencies)
-    "LiteLLMChat": "agentica.model.litellm.chat",
-    "LiteLLM": "agentica.model.litellm.chat",
-    "KimiChat": "agentica.model.kimi.chat",
-    "Claude": "agentica.model.anthropic.claude",
-    "Ollama": "agentica.model.ollama.chat",
-
-    # knowledge
-    "Knowledge": "agentica.knowledge.base",
-    "LlamaIndexKnowledge": "agentica.knowledge.llamaindex_knowledge",
-    "LangChainKnowledge": "agentica.knowledge.langchain_knowledge",
-
-    # vectordb
-    "SearchType": "agentica.vectordb.base",
-    "Distance": "agentica.vectordb.base",
-    "VectorDb": "agentica.vectordb.base",
-    "InMemoryVectorDb": "agentica.vectordb.memory_vectordb",
-
-    # embeddings
-    "Embedding": "agentica.embedding.base",
-    "OpenAIEmbedding": "agentica.embedding.openai",
-    "AzureOpenAIEmbedding": "agentica.embedding.azure_openai",
-    "HashEmbedding": "agentica.embedding.hash",
-    "OllamaEmbedding": "agentica.embedding.ollama",
-    "TogetherEmbedding": "agentica.embedding.together",
-    "FireworksEmbedding": "agentica.embedding.fireworks",
-    "ZhipuAIEmbedding": "agentica.embedding.zhipuai",
-    "HttpEmbedding": "agentica.embedding.http",
-    "JinaEmbedding": "agentica.embedding.jina",
-    "GeminiEmbedding": "agentica.embedding.gemini",
-    "HuggingfaceEmbedding": "agentica.embedding.huggingface",
-    "MulanAIEmbedding": "agentica.embedding.mulanai",
-
-    # rerank
-    "Rerank": "agentica.rerank.base",
-    "JinaRerank": "agentica.rerank.jina",
-    "ZhipuAIRerank": "agentica.rerank.zhipuai",
-
-    # skills
-    "Skill": "agentica.skills",
-    "SkillRegistry": "agentica.skills",
-    "SkillLoader": "agentica.skills",
-    "get_skill_registry": "agentica.skills",
-    "reset_skill_registry": "agentica.skills",
-    "load_skills": "agentica.skills",
-    "get_available_skills": "agentica.skills",
-    "register_skill": "agentica.skills",
-    "register_skills": "agentica.skills",
-    "list_skill_files": "agentica.skills",
-    "read_skill_file": "agentica.skills",
-
-    # guardrails (agent-level)
-    "GuardrailFunctionOutput": "agentica.guardrails",
-    "InputGuardrail": "agentica.guardrails",
-    "OutputGuardrail": "agentica.guardrails",
-    "InputGuardrailResult": "agentica.guardrails",
-    "OutputGuardrailResult": "agentica.guardrails",
-    "input_guardrail": "agentica.guardrails",
-    "output_guardrail": "agentica.guardrails",
-    "InputGuardrailTripwireTriggered": "agentica.guardrails",
-    "OutputGuardrailTripwireTriggered": "agentica.guardrails",
-
-    # guardrails (tool-level)
-    "ToolGuardrailFunctionOutput": "agentica.guardrails",
-    "ToolInputGuardrail": "agentica.guardrails",
-    "ToolOutputGuardrail": "agentica.guardrails",
-    "ToolInputGuardrailData": "agentica.guardrails",
-    "ToolOutputGuardrailData": "agentica.guardrails",
-    "ToolContext": "agentica.guardrails",
-    "tool_input_guardrail": "agentica.guardrails",
-    "tool_output_guardrail": "agentica.guardrails",
-    "ToolInputGuardrailTripwireTriggered": "agentica.guardrails",
-    "ToolOutputGuardrailTripwireTriggered": "agentica.guardrails",
-    "ToolGuardrailTripwireTriggered": "agentica.guardrails",
-    "run_input_guardrails": "agentica.guardrails",
-    "run_output_guardrails": "agentica.guardrails",
-    "run_tool_input_guardrails": "agentica.guardrails",
-    "run_tool_output_guardrails": "agentica.guardrails",
-
-    # tools (external dependencies)
-    "CronTool": "agentica.tools.cron_tool",
-    "check_command_safety": "agentica.tools.safety",
-    "redact_sensitive_text": "agentica.tools.safety",
-    "set_interrupt": "agentica.tools.interrupt",
-    "is_interrupted": "agentica.tools.interrupt",
-    "tool_error": "agentica.tools.helpers",
-    "tool_result": "agentica.tools.helpers",
-    "SearchSerperTool": "agentica.tools.search_serper_tool",
-    "BaiduSearchTool": "agentica.tools.baidu_search_tool",
-    "ImageAnalysisTool": "agentica.tools.image_analysis_tool",
-    "DalleTool": "agentica.tools.dalle_tool",
-    "HackerNewsTool": "agentica.tools.hackernews_tool",
-    "JinaTool": "agentica.tools.jina_tool",
-    "ShellTool": "agentica.tools.shell_tool",
-    "SkillTool": "agentica.tools.skill_tool",
-    "WeatherTool": "agentica.tools.weather_tool",
-    "CodeTool": "agentica.tools.code_tool",
-    "PatchTool": "agentica.tools.patch_tool",
-
-    # built-in tools
-    "BuiltinFileTool": "agentica.tools.buildin_tools",
-    "BuiltinExecuteTool": "agentica.tools.buildin_tools",
-    "BuiltinWebSearchTool": "agentica.tools.buildin_tools",
-    "BuiltinFetchUrlTool": "agentica.tools.buildin_tools",
-    "BuiltinTodoTool": "agentica.tools.buildin_tools",
-    "BuiltinTaskTool": "agentica.tools.builtin_task_tool",
-    "BuiltinMemoryTool": "agentica.tools.buildin_tools",
-    "get_builtin_tools": "agentica.tools.buildin_tools",
-
-    # subagent system
-    "SubagentType": "agentica.subagent",
-
-    # swarm system
-    "Swarm": "agentica.swarm",
-    "SwarmResult": "agentica.swarm",
-    "SubagentConfig": "agentica.subagent",
-    "SubagentRun": "agentica.subagent",
-    "SubagentRegistry": "agentica.subagent",
-    "get_subagent_config": "agentica.subagent",
-    "get_available_subagent_types": "agentica.subagent",
-    "register_custom_subagent": "agentica.subagent",
-    "unregister_custom_subagent": "agentica.subagent",
-    "get_custom_subagent_configs": "agentica.subagent",
-
-    # acp system
-    "ACPServer": "agentica.acp",
-    "ACPTool": "agentica.acp",
-    "ACPToolCall": "agentica.acp",
-    "ACPToolResult": "agentica.acp",
-    "ACPRequest": "agentica.acp",
-    "ACPResponse": "agentica.acp",
-    "ACPErrorCode": "agentica.acp",
-    "ACPMethod": "agentica.acp",
-    "SessionManager": "agentica.acp",
-    "ACPSession": "agentica.acp",
-    "SessionStatus": "agentica.acp",
-
-    # human-in-the-loop tool
-    "UserInputTool": "agentica.tools.user_input_tool",
-    "UserInputRequired": "agentica.tools.user_input_tool",
-
-    # mcp
-    "MCPConfig": "agentica.mcp.config",
-    "McpTool": "agentica.tools.mcp_tool",
-    "CompositeMultiMcpTool": "agentica.tools.mcp_tool",
-
-}
-
 _LAZY_CACHE = {}
 _LAZY_LOCK = threading.Lock()
-
-
-# Attribute name overrides: when the lazy-loaded symbol name differs from
-# the actual attribute in the target module (e.g. LiteLLM is an alias for LiteLLMChat).
-_LAZY_ATTR_OVERRIDES = {
-    "LiteLLM": "LiteLLMChat",
-    "DeepSeek": "DeepSeekChat",  # see provider aliases above
-    "Moonshot": "MoonshotChat",
-    "Doubao": "DoubaoChat",
-    "Yi": "YiChat",
-    "Together": "TogetherChat",
-    "Xai": "XaiChat",
-    "Nvidia": "NvidiaChat",
-    "Sambanova": "SambanovaChat",
-    "Groq": "GroqChat",
-    "Cerebras": "CerebrasChat",
-    "Mistral": "MistralChat",
-}
-
-# Symbols that emit DeprecationWarning when accessed via top-level `from agentica import X`.
-# These are valid in v1.x for backward compat, but in v2.0 users should import from sub-modules.
-# Format: {top_level_name: recommended_full_path}
-_DEPRECATED_TOP_LEVEL = {
-    # Knowledge / RAG
-    "Knowledge": "agentica.knowledge.Knowledge",
-    "LangChainKnowledge": "agentica.knowledge.LangChainKnowledge",
-    "LlamaIndexKnowledge": "agentica.knowledge.LlamaIndexKnowledge",
-    # Vector DB
-    "VectorDb": "agentica.vectordb.VectorDb",
-    "Distance": "agentica.vectordb.Distance",
-    "SearchType": "agentica.vectordb.SearchType",
-    "InMemoryVectorDb": "agentica.vectordb.InMemoryVectorDb",
-    # Embedding
-    "Embedding": "agentica.embedding.Embedding",
-    "OpenAIEmbedding": "agentica.embedding.openai.OpenAIEmbedding",
-    "AzureOpenAIEmbedding": "agentica.embedding.azure_openai.AzureOpenAIEmbedding",
-    "OllamaEmbedding": "agentica.embedding.ollama.OllamaEmbedding",
-    "TogetherEmbedding": "agentica.embedding.together.TogetherEmbedding",
-    "FireworksEmbedding": "agentica.embedding.fireworks.FireworksEmbedding",
-    "ZhipuAIEmbedding": "agentica.embedding.zhipuai.ZhipuAIEmbedding",
-    "JinaEmbedding": "agentica.embedding.jina.JinaEmbedding",
-    "GeminiEmbedding": "agentica.embedding.gemini.GeminiEmbedding",
-    "HuggingfaceEmbedding": "agentica.embedding.huggingface.HuggingfaceEmbedding",
-    "MulanAIEmbedding": "agentica.embedding.mulanai.MulanAIEmbedding",
-    "HashEmbedding": "agentica.embedding.hash.HashEmbedding",
-    "HttpEmbedding": "agentica.embedding.http.HttpEmbedding",
-    # Rerank
-    "Rerank": "agentica.rerank.Rerank",
-    "JinaRerank": "agentica.rerank.jina.JinaRerank",
-    "ZhipuAIRerank": "agentica.rerank.zhipuai.ZhipuAIRerank",
-    # Database
-    "SqliteDb": "agentica.db.SqliteDb",
-    "PostgresDb": "agentica.db.PostgresDb",
-    "MysqlDb": "agentica.db.MysqlDb",
-    "RedisDb": "agentica.db.RedisDb",
-    "InMemoryDb": "agentica.db.InMemoryDb",
-    "JsonDb": "agentica.db.JsonDb",
-    # Non-OpenAI/Anthropic providers
-    "Claude": "agentica.model.anthropic.claude.Claude",
-    "Ollama": "agentica.model.ollama.chat.Ollama",
-    "LiteLLM": "agentica.model.litellm.chat.LiteLLMChat",
-    "LiteLLMChat": "agentica.model.litellm.chat.LiteLLMChat",
-    "KimiChat": "agentica.model.kimi.chat.KimiChat",
-    # MCP
-    "MCPConfig": "agentica.mcp.MCPConfig",
-    # Subagent / Swarm / Workflow (Tier 3 experimental)
-    "Swarm": "agentica.swarm.Swarm",
-    "SwarmResult": "agentica.swarm.SwarmResult",
-    "SubagentType": "agentica.subagent.SubagentType",
-    "SubagentConfig": "agentica.subagent.SubagentConfig",
-    "SubagentRun": "agentica.subagent.SubagentRun",
-    "SubagentRegistry": "agentica.subagent.SubagentRegistry",
-}
 
 
 def _emit_deprecation_warning(name: str, new_path: str) -> None:
@@ -408,17 +171,17 @@ def __getattr__(name: str):
     """Lazy import handler for optional modules.
 
     Emits DeprecationWarning when top-level import path is deprecated (see
-    `_DEPRECATED_TOP_LEVEL`). Always still returns the symbol (backward compat).
+    `DEPRECATED_TOP_LEVEL`). Always still returns the symbol (backward compat).
     """
-    if name in _LAZY_IMPORTS:
-        if name in _DEPRECATED_TOP_LEVEL:
-            _emit_deprecation_warning(name, _DEPRECATED_TOP_LEVEL[name])
+    if name in _api_registry.LAZY_IMPORTS:
+        if name in _api_registry.DEPRECATED_TOP_LEVEL:
+            _emit_deprecation_warning(name, _api_registry.DEPRECATED_TOP_LEVEL[name])
         if name not in _LAZY_CACHE:
             with _LAZY_LOCK:
                 if name not in _LAZY_CACHE:
-                    module_path = _LAZY_IMPORTS[name]
+                    module_path = _api_registry.LAZY_IMPORTS[name]
                     module = importlib.import_module(module_path)
-                    attr_name = _LAZY_ATTR_OVERRIDES.get(name, name)
+                    attr_name = _api_registry.LAZY_ATTR_OVERRIDES.get(name, name)
                     try:
                         _LAZY_CACHE[name] = getattr(module, attr_name)
                     except AttributeError:
@@ -431,7 +194,7 @@ def __getattr__(name: str):
 def __dir__():
     """List all available names including lazy imports."""
     eager_names = [name for name in globals() if not name.startswith('_')]
-    return sorted(set(eager_names) | set(_LAZY_IMPORTS.keys()))
+    return sorted(set(eager_names) | set(_api_registry.LAZY_IMPORTS.keys()))
 
 
 if TYPE_CHECKING:
@@ -487,57 +250,4 @@ if TYPE_CHECKING:
     from agentica.mcp.config import MCPConfig  # noqa: F401
 
 
-__all__ = [
-    "__version__",
-    # config
-    "AGENTICA_HOME", "AGENTICA_DOTENV_PATH", "AGENTICA_LOG_LEVEL",
-    "AGENTICA_LOG_FILE", "AGENTICA_WORKSPACE_DIR", "AGENTICA_PROJECTS_DIR",
-    "AGENTICA_CRON_DIR",
-    # logging
-    "set_log_level_to_debug", "set_log_level_to_info", "logger",
-    # utils
-    "write_audio_to_file",
-    # models (eager)
-    "Model", "Message", "MessageReferences", "UserMessage", "AssistantMessage",
-    "SystemMessage", "ToolMessage", "Media", "Video", "Audio", "Image",
-    "ModelResponse", "FileType", "Usage", "RequestUsage", "TokenDetails",
-    "OpenAIChat", "OpenAILike", "AzureOpenAIChat",
-    "create_provider", "list_providers",
-    # provider aliases
-    "DeepSeekChat", "DeepSeek", "MoonshotChat", "Moonshot",
-    "DoubaoChat", "Doubao", "TogetherChat", "Together",
-    "GrokChat", "Grok", "YiChat", "Yi", "QwenChat", "Qwen",
-    "ZhipuAIChat", "ZhipuAI",
-    # memory
-    "AgentRun", "SessionSummary", "MemorySummarizer", "WorkingMemory",
-    "MemoryType", "MemoryEntry",
-    "WorkflowRun", "WorkflowMemory",
-    # database
-    "BaseDb", "SessionRow", "MemoryRow", "MetricsRow",
-    # run response
-    "RunResponse", "RunEvent", "RunResponseExtraData", "ToolCallInfo", "pprint_run_response",
-    "RunContext", "RunSource", "RunStatus", "TaskAnchor",
-    "RunEventRecord", "RunEventType",
-    "LearningReport", "LearningStatus", "write_learning_report",
-    # document
-    "Document",
-    # tools
-    "Tool", "ModelTool", "Function", "FunctionCall", "tool",
-    # compression
-    "CompressionManager",
-    # token counting
-    "count_tokens", "count_text_tokens", "count_image_tokens",
-    "count_message_tokens", "count_tool_tokens",
-    # agent
-    "Agent", "AgentCancelledError",
-    "PromptConfig", "ToolConfig", "WorkspaceMemoryConfig", "SandboxConfig",
-    "ToolRuntimeConfig", "SkillRuntimeConfig", "ExperienceConfig", "SkillUpgradeConfig",
-    "RunConfig", "Workflow", "WorkflowSession", "AgentHooks", "RunHooks",
-    "ConversationArchiveHooks", "MemoryExtractHooks", "ExperienceCaptureHooks",
-    # experience system
-    "ExperienceEventStore", "ExperienceCompiler", "CompiledExperienceStore", "SkillEvolutionManager",
-    # workspace
-    "Workspace", "WorkspaceConfig",
-    # lazy imports
-    *_LAZY_IMPORTS.keys(),
-]
+__all__ = _api_registry.PUBLIC_API_ALL

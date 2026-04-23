@@ -10,15 +10,14 @@ Available tools:
 - Tool Registry: Global tool name -> callable registry
 """
 from agentica.tools.base import Tool, Function, FunctionCall
+from agentica.tools.builtin.task_state_tools import BuiltinTodoTool
+from agentica.tools.builtin.web_tools import BuiltinFetchUrlTool, BuiltinWebSearchTool
+from agentica.tools.builtin_task_tool import BuiltinTaskTool
 from agentica.tools.decorators import tool
 from agentica.tools.registry import register_tool, get_tool, list_tools, unregister_tool, clear_registry
 from agentica.tools.buildin_tools import (
     BuiltinFileTool,
     BuiltinExecuteTool,
-    BuiltinWebSearchTool,
-    BuiltinFetchUrlTool,
-    BuiltinTodoTool,
-    BuiltinTaskTool,
 )
 from agentica.tools.code_tool import CodeTool
 from agentica.tools.e2b_tool import E2BExecuteTool

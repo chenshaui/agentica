@@ -34,6 +34,13 @@ from agentica.tools.buildin_tools import (
     BuiltinTaskTool,
     get_builtin_tools,
 )
+from agentica.tools.builtin.web_tools import (
+    BuiltinFetchUrlTool as CanonicalBuiltinFetchUrlTool,
+    BuiltinWebSearchTool as CanonicalBuiltinWebSearchTool,
+)
+from agentica.tools.builtin.task_state_tools import (
+    BuiltinTodoTool as CanonicalBuiltinTodoTool,
+)
 from agentica.model.message import Message
 
 
@@ -344,6 +351,26 @@ print(f(21))"'''
 # ===========================================================================
 # BuiltinWebSearchTool tests
 # ===========================================================================
+
+
+def test_web_tool_legacy_exports_point_to_canonical_classes():
+    assert BuiltinWebSearchTool is CanonicalBuiltinWebSearchTool
+    assert BuiltinFetchUrlTool is CanonicalBuiltinFetchUrlTool
+
+
+def test_task_state_tool_legacy_exports_point_to_canonical_classes():
+    assert BuiltinTodoTool is CanonicalBuiltinTodoTool
+
+
+def test_get_builtin_tools_still_returns_expected_tool_types():
+    tools = get_builtin_tools(work_dir="/tmp")
+    tool_names = {tool.__class__.__name__ for tool in tools}
+    assert "BuiltinFileTool" in tool_names
+    assert "BuiltinExecuteTool" in tool_names
+    assert "BuiltinWebSearchTool" in tool_names
+    assert "BuiltinFetchUrlTool" in tool_names
+    assert "BuiltinTodoTool" in tool_names
+    assert "BuiltinTaskTool" in tool_names
 
 class TestBuiltinWebSearchTool:
     def test_web_search_delegates_to_baidu(self):

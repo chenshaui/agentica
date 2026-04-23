@@ -1,4 +1,7 @@
-"""Default tools for Agent.
+# -*- coding: utf-8 -*-
+"""
+@author:XuMing(xuming624@qq.com)
+@description: Default tools for Agent.
 
 This module contains the default tool implementations that can be
 enabled on the Agent (knowledge base search, memory, etc.)

@@ -231,6 +231,18 @@ class TestAgentCloneRuntimeIsolation(unittest.TestCase):
         self.assertEqual(a.context["shared_key"], "v0")
         self.assertNotIn("new_key", a.context)
 
+    def test_clone_does_not_share_prompt_runtime_lists(self):
+        a = Agent(name="a", model=_model())
+        a._tool_policy_prompts.append("parent tool policy")
+        a._session_guidance_prompts.append("parent session guidance")
+
+        b = a.clone()
+
+        self.assertIsNot(a._tool_policy_prompts, b._tool_policy_prompts)
+        self.assertIsNot(a._session_guidance_prompts, b._session_guidance_prompts)
+        self.assertEqual(b._tool_policy_prompts, [])
+        self.assertEqual(b._session_guidance_prompts, [])
+
 
 class TestSwarmCloneModelUsageIsolation(unittest.TestCase):
     """Bug 4 regression: ``_clone_agent_for_task`` must give each clone its own
