@@ -376,7 +376,7 @@ class TestCompressionReport(unittest.TestCase):
         self.assertEqual(report["messages_after"], len(messages))
         self.assertGreaterEqual(report["tool_results_pruned"], 1)
         self.assertFalse(report["llm_summary_used"])
-        self.assertTrue(report["task_anchor_preserved"])
+        self.assertIsNone(report["task_anchor_preserved"])
 
     def test_runner_attaches_compression_report_to_run_metrics(self):
         from agentica.compression.manager import CompressionManager
@@ -397,6 +397,7 @@ class TestCompressionReport(unittest.TestCase):
             run_id="run_1",
             run_response=RunResponse(metrics={}),
             tool_config=SimpleNamespace(compress_tool_results=True, compression_manager=cm),
+            task_anchor=None,
         )
         model = SimpleNamespace(id="gpt-4o", tools=[], context_window=None)
 

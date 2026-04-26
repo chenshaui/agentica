@@ -45,6 +45,53 @@ def require_first_choice(response: Any, *, context: str) -> Any:
     return choices[0]
 
 
+_STREAM_REDACTION_MAX_BUFFER_CHARS = 4096
+_STREAM_REDACTION_TAIL_CHARS = 512
+_STREAM_PRIVATE_KEY_BEGIN_RE = re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----")
+_STREAM_PRIVATE_KEY_END_RE = re.compile(r"-----END[A-Z ]*PRIVATE KEY-----")
+
+
+def _redact_unterminated_private_key_block(text: str) -> str:
+    key_begin = _STREAM_PRIVATE_KEY_BEGIN_RE.search(text)
+    if key_begin and not _STREAM_PRIVATE_KEY_END_RE.search(text, key_begin.end()):
+        prefix = redact_sensitive_text(text[:key_begin.start()]) or ""
+        return prefix + "***REDACTED_PRIVATE_KEY***"
+    return redact_sensitive_text(text) or ""
+
+
+def _take_redactable_stream_text(buffer: str, final: bool = False) -> tuple[str, str]:
+    """Return text that can be redacted and streamed without splitting secrets."""
+    if not buffer:
+        return "", ""
+    if final:
+        return _redact_unterminated_private_key_block(buffer), ""
+
+    key_begin = _STREAM_PRIVATE_KEY_BEGIN_RE.search(buffer)
+    if key_begin and not _STREAM_PRIVATE_KEY_END_RE.search(buffer, key_begin.end()):
+        prefix = buffer[:key_begin.start()]
+        if prefix:
+            return redact_sensitive_text(prefix) or "", buffer[key_begin.start():]
+        return "", buffer
+
+    newline_idx = max(buffer.rfind("\n"), buffer.rfind("\r"))
+    if newline_idx >= 0:
+        split_at = newline_idx + 1
+        return redact_sensitive_text(buffer[:split_at]) or "", buffer[split_at:]
+
+    if len(buffer) <= _STREAM_REDACTION_MAX_BUFFER_CHARS:
+        return "", buffer
+
+    split_limit = max(0, len(buffer) - _STREAM_REDACTION_TAIL_CHARS)
+    split_at = -1
+    for idx in range(split_limit - 1, -1, -1):
+        if buffer[idx].isspace():
+            split_at = idx + 1
+            break
+    if split_at <= 0:
+        split_at = split_limit
+    return redact_sensitive_text(buffer[:split_at]) or "", buffer[split_at:]
+
+
 @dataclass
 class Model(ABC):
     """Abstract base class for LLM models. Subclasses must implement invoke/invoke_stream/response/response_stream."""
@@ -659,8 +706,24 @@ class Model(ABC):
 
             function_call_output: Optional[Union[List[Any], str]] = ""
             if isinstance(function_call.result, (GeneratorType, collections.abc.Iterator)):
+                stream_redaction_buffer = ""
                 for item in function_call.result:
-                    function_call_output += str(item)
+                    item_text = str(item)
+                    function_call_output += item_text
+                    if function_call.function.show_result:
+                        stream_redaction_buffer += item_text
+                        redacted_chunk, stream_redaction_buffer = _take_redactable_stream_text(
+                            stream_redaction_buffer
+                        )
+                        if redacted_chunk:
+                            yield ModelResponse(content=redacted_chunk)
+                if function_call.function.show_result and stream_redaction_buffer:
+                    redacted_chunk, stream_redaction_buffer = _take_redactable_stream_text(
+                        stream_redaction_buffer,
+                        final=True,
+                    )
+                    if redacted_chunk:
+                        yield ModelResponse(content=redacted_chunk)
             else:
                 function_call_output = function_call.result
                 # Ensure output is always str for tool Message.content — some
@@ -669,8 +732,8 @@ class Model(ABC):
                     function_call_output = str(function_call_output)
 
             if isinstance(function_call_output, str):
-                function_call_output = redact_sensitive_text(function_call_output)
-            if function_call.function.show_result:
+                function_call_output = _redact_unterminated_private_key_block(function_call_output)
+            if function_call.function.show_result and not isinstance(function_call.result, (GeneratorType, collections.abc.Iterator)):
                 yield ModelResponse(content=function_call_output)
 
             # --- Layer 1: per-tool large result persistence ---

@@ -451,7 +451,13 @@ class Runner:
             logger.debug("Stage 3 (rule-based compress): truncating + dropping old messages")
             before = len(messages)
             t0 = time.monotonic()
-            await cm.compress(messages, tools=model.tools, model=model, trigger="threshold")
+            await cm.compress(
+                messages,
+                tools=model.tools,
+                model=model,
+                trigger="threshold",
+                task_anchor=agent.task_anchor,
+            )
             compression_report = cm.get_stats().get("last_report")
             if compression_report and agent.run_response is not None:
                 agent.run_response.metrics = agent.run_response.metrics or {}
@@ -460,7 +466,7 @@ class Runner:
             if cb is not None:
                 cb({
                     "type": "compact.rule_based",
-                    "agent_name": agent_name,
+                    "agent_name": agent_name, 
                     "before": before,
                     "after": len(messages),
                     "elapsed": time.monotonic() - t0,
@@ -987,6 +993,21 @@ class Runner:
                                         yield self.generic_run_response(
                                             f"Tool completed: {tool_call_dict.get('tool_name') if tool_call_dict else 'Unknown'}",
                                             RunEvent.tool_call_completed,
+                                        )
+                                elif tool_resp.event == ModelResponseEvent.assistant_response.value:
+                                    if tool_resp.content is not None:
+                                        yield RunResponse(
+                                            event=RunEvent.run_response,
+                                            content=tool_resp.content,
+                                            run_id=agent.run_id,
+                                            agent_id=agent.agent_id,
+                                        )
+                                    if tool_resp.reasoning_content is not None:
+                                        yield RunResponse(
+                                            event=RunEvent.run_response,
+                                            reasoning_content=tool_resp.reasoning_content,
+                                            run_id=agent.run_id,
+                                            agent_id=agent.agent_id,
                                         )
 
                         # Post-tool hook (todo reminder injection)

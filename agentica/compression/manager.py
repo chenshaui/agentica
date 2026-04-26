@@ -549,6 +549,7 @@ class CompressionManager:
         model: Optional[Any] = None,
         response_format: Optional[Union[Dict, Type[BaseModel]]] = None,
         trigger: str = "manual",
+        task_anchor: Optional[Any] = None,
     ) -> None:
         """
         Run compression pipeline on messages (in-place).
@@ -595,6 +596,12 @@ class CompressionManager:
 
         # Log compression result
         _after_tokens = count_tokens(messages, tools, _model_id, response_format)
+        task_anchor_preserved: Optional[bool] = None
+        if task_anchor is not None and task_anchor.source_query:
+            task_anchor_preserved = any(
+                task_anchor.source_query in str(msg.content or "")
+                for msg in messages
+            )
         report = {
             "trigger": trigger,
             "messages_before": _messages_before,
@@ -604,7 +611,7 @@ class CompressionManager:
             "tool_results_pruned": truncated,
             "messages_dropped": self.stats.get("messages_dropped", 0) - _stats_before.get("messages_dropped", 0),
             "llm_summary_used": self.stats.get("llm_compressed", 0) > _stats_before.get("llm_compressed", 0),
-            "task_anchor_preserved": True,
+            "task_anchor_preserved": task_anchor_preserved,
             "tool_call_args_shrunk": tool_call_args_shrunk,
         }
         self.stats["last_report"] = report
