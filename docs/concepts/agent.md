@@ -372,7 +372,7 @@ async for chunk in agent.run_stream("帮我写一个排序算法"):
 
 ## DeepAgent
 
-`DeepAgent` 是预配置的高级 Agent，专为复杂的代码和研究任务设计，内置 20+ 工具并开启 `enable_agentic_prompt=True`：
+`DeepAgent` 是 batteries-included product preset，专为 CLI、Gateway、日常 dogfood、复杂代码和研究任务设计。它继承自 `Agent`，但默认开启更多产品能力；库集成和最小 SDK 用法仍建议从普通 `Agent` 开始，再显式打开需要的能力。
 
 ```python
 from agentica import DeepAgent, OpenAIChat
@@ -381,7 +381,7 @@ agent = DeepAgent(
     model=OpenAIChat(id="gpt-4o"),
     name="My AI Assistant",
     work_dir="./my-project",        # 文件操作基准目录
-    workspace_path="./workspace",   # 持久化记忆目录
+    workspace="./workspace",        # 持久化记忆目录
 )
 
 result = await agent.run("""
@@ -398,6 +398,9 @@ result = await agent.run("""
 - `context_overflow_threshold=0.8`（上下文 80% 触发压缩）
 - Workspace 长期记忆
 - Session Log 会话持久化
+
+!!! tip "SDK Core vs Product Preset"
+    如果你在应用里嵌入 Agentica，默认选 `Agent`。如果你在做 CLI/Gateway/无人值守任务，想要一键获得工具、记忆、压缩和经验捕获，再选 `DeepAgent`。
 
 ## 结构化输出
 

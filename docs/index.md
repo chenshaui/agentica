@@ -44,6 +44,7 @@
 | [Memory & Workspace](concepts/memory.md) | 记忆系统与工作空间 |
 | [Knowledge (RAG)](concepts/rag.md) | 知识库、向量检索 |
 | **多智能体** | |
+| [选择编排模式](multi-agent/choosing.md) | as_tool、Workflow、Subagent、Swarm 决策树 |
 | [Workflow](multi-agent/workflow.md) | 确定性工作流编排 |
 | [Swarm](multi-agent/swarm.md) | 自主多智能体协作 |
 | [Subagent](multi-agent/subagent.md) | 子任务委派 |
@@ -53,12 +54,14 @@
 | [Guardrails](advanced/guardrails.md) | 4 层安全守卫 |
 | [Context Compression](advanced/compression.md) | 上下文压缩 |
 | [Skills](advanced/skills.md) | Markdown Skill 系统 |
+| [Daily Tasks](advanced/daily-tasks.md) | 定时任务、失败可见性与运行历史 |
 | [MCP](advanced/mcp.md) | Model Context Protocol |
 | [ACP](advanced/acp.md) | Agent Client Protocol |
 | **参考** | |
 | [模型提供商](guides/models.md) | 全部模型配置指南 |
 | [最佳实践](guides/best_practices.md) | 设计原则与生产部署 |
 | [Agent API](api/agent.md) | 完整 API 参考 |
+| [依赖分层 RFC](rfcs/dependency-layering.md) | `agentica-core` / extras 的延后方案 |
 
 ## 30 秒上手
 

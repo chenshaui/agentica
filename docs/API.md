@@ -14,6 +14,32 @@
 | **Tier 3** | 实验 / 过渡 | 可能随时演进；文档需明确标注 |
 | Internal | 内部实现 | 不承诺稳定；不建议外部直接 import |
 
+## 产品分层
+
+稳定度 Tier 只说明“破坏性变更风险”，不等于“默认应该使用”。Agentica 的公开能力按产品层分为四类：
+
+```text
++--------------------------------------------------------------+
+| Product Surface                                              |
+| CLI / Gateway / ACP / scheduled daily tasks / channels       |
++--------------------------------------------------------------+
+| Product Presets                                              |
+| DeepAgent / future daily_preset() / coding_preset()          |
++--------------------------------------------------------------+
+| Stable SDK Core                                              |
+| Agent / Runner behavior via Agent.run() / RunConfig / Tool   |
+| Model / RunResponse / RunContext / hooks interfaces          |
++--------------------------------------------------------------+
+| Optional Capabilities                                        |
+| Workspace / Skills / Experience / Workflow / Subagent / Swarm|
++--------------------------------------------------------------+
+```
+
+- **Stable SDK Core** 是新代码的默认起点：用 `Agent` 组合模型、工具、`RunConfig` 和 hooks。
+- **Product Presets** 是有观点的开箱组合：`DeepAgent` 默认启用文件、网页、任务、记忆、压缩和经验捕获，更适合 CLI/Gateway/dogfood，不代表最小 SDK 面。
+- **Product Surface** 是最终用户入口：CLI、Gateway、ACP、渠道和定时任务可以使用 presets，但不应反向决定 SDK Core 的签名。
+- **Optional Capabilities** 可与 Core 组合；只有业务确实需要持久资产、技能、自进化或多 Agent 编排时再启用。
+
 ---
 
 ## Tier 1：核心最小稳定面
@@ -84,12 +110,19 @@ from agentica.hooks import RunHooks, AgentHooks
 from agentica.workspace import Workspace
 ```
 
-### CLI（默认装）
+---
 
-```bash
-agentica             # 交互式模式
-agentica --query "..."
+## Product Presets（默认装，但有产品观点）
+
+### DeepAgent
+
+```python
+from agentica import DeepAgent
+
+agent = DeepAgent()
 ```
+
+`DeepAgent` 是 batteries-included preset：默认启用 builtin tools、Workspace memory、conversation archive、memory extraction、context overflow handling、tool-result compression 和 experience capture。它是 CLI/Gateway 的推荐底座，但不是最小 SDK Core；库集成默认应从 `Agent` 开始，再显式打开需要的能力。
 
 ---
 
@@ -149,6 +182,15 @@ from agentica.gateway.channels import (
 ```
 
 详见 [Gateway 文档](advanced/gateway.md)。
+
+### CLI（默认装的 Product Surface）
+
+```bash
+agentica             # 交互式模式
+agentica --query "..."
+```
+
+CLI 是面向最终用户的产品入口，默认使用 `DeepAgent` 体验。CLI 参数、权限模式、技能安装、日常任务命令和 TUI 行为属于 Product Surface，不应作为嵌入式 SDK 的最小依赖假设。
 
 ### ACP（IDE 集成）— `pip install agentica[acp]`
 

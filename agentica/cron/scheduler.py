@@ -8,6 +8,7 @@ The gateway calls this periodically (e.g. every 60 seconds).
 
 Uses a file-based lock so only one tick runs at a time.
 """
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any, Protocol
@@ -27,6 +28,7 @@ from agentica.cron.jobs import (
     CronJob,
     get_due_jobs,
     mark_job_run,
+    now_ms,
 )
 from agentica.cron.types import RunStatus
 
@@ -137,21 +139,47 @@ async def _execute_job(
 ) -> dict[str, Any]:
     """Execute a single cron job."""
     logger.info(f"Executing job {job.id}: {job.name}")
+    started_at_ms = now_ms()
+    attempt = job.retry_count + 1
     if verbose:
         print(f"  Running: {job.name} ({job.id})")
 
     if not agent_runner:
-        mark_job_run(job.id, RunStatus.FAILED, error="No agent runner configured")
+        ended_at_ms = now_ms()
+        mark_job_run(
+            job.id,
+            RunStatus.FAILED,
+            error="No agent runner configured",
+            error_type="ConfigurationError",
+            started_at_ms=started_at_ms,
+            ended_at_ms=ended_at_ms,
+            attempt=attempt,
+        )
         return {"job_id": job.id, "status": "failed", "error": "No agent runner configured"}
 
     try:
         context = {
             "job_id": job.id,
+            "task_id": job.id,
             "user_id": job.user_id,
             "scheduled": True,
+            "attempt": attempt,
+            "workspace": job.workspace,
+            "permissions": job.permissions,
         }
-        result_text = await agent_runner.run(prompt=job.prompt, context=context)
-        mark_job_run(job.id, RunStatus.OK, result=result_text)
+        run_coro = agent_runner.run(prompt=job.prompt, context=context)
+        if job.timeout_seconds > 0:
+            result_text = await asyncio.wait_for(run_coro, timeout=job.timeout_seconds)
+        else:
+            result_text = await run_coro
+        mark_job_run(
+            job.id,
+            RunStatus.OK,
+            result=result_text,
+            started_at_ms=started_at_ms,
+            ended_at_ms=now_ms(),
+            attempt=attempt,
+        )
 
         if verbose:
             preview = result_text[:100] + "..." if len(result_text) > 100 else result_text
@@ -159,10 +187,36 @@ async def _execute_job(
 
         return {"job_id": job.id, "status": "ok", "result": result_text}
 
+    except asyncio.TimeoutError:
+        ended_at_ms = now_ms()
+        error_msg = f"Job timed out after {job.timeout_seconds:g}s"
+        mark_job_run(
+            job.id,
+            RunStatus.TIMEOUT,
+            error=error_msg,
+            error_type="TimeoutError",
+            started_at_ms=started_at_ms,
+            ended_at_ms=ended_at_ms,
+            attempt=attempt,
+        )
+        logger.error(f"Job {job.id} timed out after {job.timeout_seconds:g}s", exc_info=True)
+        if verbose:
+            print(f"  TIMEOUT: {error_msg}")
+        return {"job_id": job.id, "status": "timeout", "error": error_msg}
+
     except Exception as e:
+        ended_at_ms = now_ms()
         error_msg = str(e)
-        mark_job_run(job.id, RunStatus.FAILED, error=error_msg)
-        logger.error(f"Job {job.id} failed: {error_msg}")
+        mark_job_run(
+            job.id,
+            RunStatus.FAILED,
+            error=error_msg,
+            error_type=type(e).__name__,
+            started_at_ms=started_at_ms,
+            ended_at_ms=ended_at_ms,
+            attempt=attempt,
+        )
+        logger.error(f"Job {job.id} failed: {error_msg}", exc_info=True)
         if verbose:
             print(f"  FAILED: {error_msg}")
         return {"job_id": job.id, "status": "failed", "error": error_msg}

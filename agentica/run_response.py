@@ -195,13 +195,6 @@ class RunResponse(BaseModel):
         return f"RunResponse(run_id={self.run_id!r}, event={self.event!r}, reasoning_content={self.reasoning_content!r}, content={self.content!r})"
 
     @property
-    def cost_summary(self) -> Optional[str]:
-        """Human-readable cost summary string, or None if no tracker available."""
-        if self.cost_tracker is None:
-            return None
-        return self.cost_tracker.summary()
-
-    @property
     def tool_calls(self) -> List["ToolCallInfo"]:
         """Flat, typed list of tool call results.
 

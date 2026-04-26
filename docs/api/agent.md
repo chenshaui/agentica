@@ -268,7 +268,7 @@ from agentica.agent.config import WorkspaceMemoryConfig
 from agentica import DeepAgent
 ```
 
-预配置的 Agent，继承自 `Agent`，内置文件操作、命令执行、网页搜索等工具。
+`DeepAgent` 是预配置的 product preset，继承自 `Agent`，内置文件操作、命令执行、网页搜索、Workspace memory、压缩和经验捕获等产品默认能力。它适合 CLI、Gateway 和无人值守任务；嵌入式 SDK 集成默认仍应使用 `Agent`。
 
 ### 构造参数
 
@@ -276,11 +276,14 @@ from agentica import DeepAgent
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `enable_file_tools` | `bool` | `True` | 启用文件操作工具 |
-| `enable_execute_tools` | `bool` | `True` | 启用命令执行工具 |
-| `enable_web_tools` | `bool` | `True` | 启用网页搜索工具 |
-| `enable_todo_tools` | `bool` | `True` | 启用 TODO 管理 |
-| `enable_task_tools` | `bool` | `True` | 启用子任务委派 |
+| `include_file_tools` | `bool` | `True` | 启用文件操作工具 |
+| `include_execute` | `bool` | `True` | 启用命令执行工具 |
+| `include_web_search` | `bool` | `True` | 启用网页搜索工具 |
+| `include_fetch_url` | `bool` | `True` | 启用网页抓取工具 |
+| `include_todos` | `bool` | `True` | 启用 TODO 管理 |
+| `include_task` | `bool` | `True` | 启用子任务委派 |
+| `include_skills` | `bool` | `True` | 启用 Skill 查询工具 |
+| `include_user_input` | `bool` | `False` | 启用 Human-in-the-loop 工具 |
 
 ### 内置工具
 

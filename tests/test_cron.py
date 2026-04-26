@@ -31,10 +31,12 @@ def tmp_cron_dir(tmp_path):
     output_dir = cron_dir / "output"
     output_dir.mkdir()
     jobs_file = cron_dir / "jobs.json"
+    runs_file = cron_dir / "runs.jsonl"
 
     with patch("agentica.cron.jobs.CRON_DIR", cron_dir), \
          patch("agentica.cron.jobs.JOBS_FILE", jobs_file), \
-         patch("agentica.cron.jobs.OUTPUT_DIR", output_dir):
+         patch("agentica.cron.jobs.OUTPUT_DIR", output_dir), \
+         patch("agentica.cron.jobs.RUNS_FILE", runs_file, create=True):
         yield cron_dir
 
 
@@ -105,6 +107,25 @@ class TestCronTypes:
         assert RunStatus.OK.value == "ok"
         assert RunStatus.FAILED.value == "failed"
         assert RunStatus.TIMEOUT.value == "timeout"
+
+    def test_daily_task_spec_roundtrip(self):
+        from agentica.cron.types import DailyTaskSpec, CronSchedule
+        spec = DailyTaskSpec(
+            name="Morning Brief",
+            prompt="Summarize overnight incidents",
+            schedule=CronSchedule.at_time(8, 30),
+            user_id="alice",
+            workspace="/tmp/agentica",
+            permissions={"execute": False, "web_search": True},
+            timeout_seconds=30,
+            max_retries=2,
+        )
+        restored = DailyTaskSpec.from_dict(spec.to_dict())
+        assert restored.name == "Morning Brief"
+        assert restored.schedule.expression == "30 8 * * *"
+        assert restored.permissions["execute"] is False
+        assert restored.timeout_seconds == 30
+        assert restored.max_retries == 2
 
 
 # ============== TestScheduleCalculation ==============
@@ -304,6 +325,26 @@ class TestCronJobs:
         assert updated.run_count == 1
         assert updated.last_status == "ok"
 
+    def test_task_run_history_persisted(self, tmp_cron_dir):
+        from agentica.cron.jobs import create_job, mark_job_run, list_task_runs
+        from agentica.cron.types import RunStatus
+        job = create_job(prompt="record me", schedule="1h", max_retries=1)
+        mark_job_run(
+            job.id,
+            RunStatus.FAILED,
+            error="upstream unavailable",
+            error_type="RuntimeError",
+            started_at_ms=1000,
+            ended_at_ms=1250,
+            attempt=1,
+        )
+        runs = list_task_runs(job_id=job.id)
+        assert len(runs) == 1
+        assert runs[0].task_id == job.id
+        assert runs[0].status == RunStatus.FAILED
+        assert runs[0].error_type == "RuntimeError"
+        assert runs[0].duration_ms == 250
+
     def test_create_job_cron_expression(self, tmp_cron_dir):
         from agentica.cron.jobs import create_job
         from agentica.cron.types import CronSchedule
@@ -341,6 +382,38 @@ class TestCronTool:
             data = json.loads(result)
             assert data["success"] is True
             assert data["job"]["job_id"] == "abc123"
+
+    def test_create_via_tool_passes_run_limits(self, tmp_cron_dir):
+        from agentica.tools.cron_tool import cronjob
+        with patch("agentica.tools.cron_tool.create_job") as mock_create, \
+             patch("agentica.tools.cron_tool.schedule_to_human", return_value="Every 30 minutes"):
+            from agentica.cron.jobs import CronJob
+            from agentica.cron.types import EverySchedule
+            mock_create.return_value = CronJob(
+                id="limited",
+                name="Limited",
+                prompt="hello",
+                schedule=EverySchedule(interval_ms=1800000),
+                timeout_seconds=15,
+                max_retries=2,
+                permissions={"execute": False},
+            )
+            result = cronjob(
+                action="create",
+                prompt="hello",
+                schedule="30m",
+                name="Limited",
+                timeout_seconds=15,
+                max_retries=2,
+                retry_delay_ms=1000,
+                permissions={"execute": False},
+            )
+            data = json.loads(result)
+            assert data["success"] is True
+            assert data["job"]["timeout_seconds"] == 15
+            assert data["job"]["max_retries"] == 2
+            mock_create.assert_called_once()
+            assert mock_create.call_args.kwargs["permissions"] == {"execute": False}
 
     def test_list_via_tool(self, tmp_cron_dir):
         from agentica.tools.cron_tool import cronjob
@@ -495,6 +568,41 @@ class TestScheduler:
         assert results[0]["status"] == "failed"
         updated = get_job(job.id)
         assert updated.last_status == "failed"
+
+    def test_tick_timeout_records_visible_failure(self, tmp_cron_dir):
+        from agentica.cron.jobs import create_job, update_job, get_job, list_task_runs
+        from agentica.cron.scheduler import tick
+        from agentica.cron.types import RunStatus
+
+        job = create_job(
+            prompt="Too slow",
+            schedule="1h",
+            timeout_seconds=0.01,
+            max_retries=1,
+            retry_delay_ms=500,
+        )
+        update_job(job.id, {"next_run_at_ms": 1})
+
+        mock_runner = AsyncMock()
+
+        async def slow_run(prompt, context=None):
+            await asyncio.sleep(0.1)
+            return "late"
+
+        mock_runner.run = slow_run
+
+        with patch("agentica.cron.scheduler.LOCK_FILE", tmp_cron_dir / ".tick.lock"):
+            results = asyncio.run(tick(agent_runner=mock_runner))
+
+        assert results[0]["status"] == "timeout"
+        assert "timed out" in results[0]["error"]
+        updated = get_job(job.id)
+        assert updated.last_status == RunStatus.TIMEOUT.value
+        assert updated.retry_count == 1
+        assert updated.next_run_at_ms > updated.last_run_at_ms
+        runs = list_task_runs(job_id=job.id)
+        assert runs[0].status == RunStatus.TIMEOUT
+        assert runs[0].error_type == "TimeoutError"
 
 
 # ============== TestCronToolClass ==============

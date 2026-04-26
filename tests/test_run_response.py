@@ -73,6 +73,10 @@ class TestRunResponse:
         resp = RunResponse(model="gpt-4o")
         assert resp.model == "gpt-4o"
 
+    def test_cost_summary_without_tracker_is_printable(self):
+        resp = RunResponse()
+        assert resp.cost_summary == "No cost data available (cost_tracker not set)"
+
 
 # ===========================================================================
 # TestRunEvent

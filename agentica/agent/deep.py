@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 @author:XuMing(xuming624@qq.com)
-@description: DeepAgent — Full-featured Agent with all capabilities enabled.
+@description: DeepAgent — batteries-included product preset.
 
-A pre-configured Agent that enables every Runner agentic-loop feature:
+A pre-configured Agent preset for CLI, Gateway, and daily dogfood workflows.
+Use plain Agent for SDK integrations that need the smallest stable surface.
+
+DeepAgent enables the product defaults users expect from an unattended assistant:
 - 40+ built-in tools (file ops, web search, execute, subagent task, todos)
 - Runner agentic loop: LLM ↔ tool-call auto-loop with multi-turn reasoning
 - 5-stage compression pipeline (tool-result budget → micro-compact →
@@ -67,9 +70,11 @@ from agentica.workspace import Workspace
 
 
 class DeepAgent(Agent):
-    """Full-featured Agent — batteries included.
+    """Batteries-included product preset.
 
-    DeepAgent = Agent + builtin tools + Runner agentic loop features + self-evolution.
+    DeepAgent = Agent + builtin tools + workspace memory + compression +
+    self-evolution defaults. It is intended for CLI/Gateway/product surfaces,
+    not as the minimal SDK core contract.
 
     Enabled by default:
     - 5-stage compression pipeline (compress_tool_results=True)
@@ -196,7 +201,7 @@ class DeepAgent(Agent):
                 sync_memories_to_global_agent_md=False,
             )
 
-        # DeepAgent is the self-evolving flagship: enable all capture switches.
+        # DeepAgent is the product preset: enable all capture switches.
         # Users can pass their own experience_config to override.
         if experience_config is None:
             experience_config = ExperienceConfig(

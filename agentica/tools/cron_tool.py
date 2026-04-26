@@ -9,7 +9,7 @@ Agents call cronjob(action="create|list|update|pause|resume|remove|run", ...).
 Security: cron prompts are scanned for injection patterns before storage.
 """
 import re
-from typing import Optional
+from typing import Any, Optional
 
 from agentica.tools.decorators import tool
 from agentica.tools.helpers import tool_result
@@ -81,6 +81,11 @@ def _format_job(job: CronJob) -> dict:
         "last_run_at_ms": job.last_run_at_ms,
         "last_status": job.last_status,
         "run_count": job.run_count,
+        "timeout_seconds": job.timeout_seconds,
+        "max_retries": job.max_retries,
+        "retry_count": job.retry_count,
+        "retry_delay_ms": job.retry_delay_ms,
+        "permissions": job.permissions,
     }
 
 
@@ -110,6 +115,10 @@ def cronjob(
     deliver: Optional[str] = None,
     user_id: Optional[str] = None,
     timezone: Optional[str] = None,
+    timeout_seconds: Optional[float] = None,
+    max_retries: Optional[int] = None,
+    retry_delay_ms: Optional[int] = None,
+    permissions: Optional[dict[str, Any]] = None,
 ) -> str:
     """Unified cron job management tool.
 
@@ -122,6 +131,10 @@ def cronjob(
         deliver: Delivery target: local, origin, telegram, discord, etc.
         user_id: User ID for filtering (defaults to 'default').
         timezone: Timezone for cron expressions (defaults to Asia/Shanghai).
+        timeout_seconds: Optional per-run timeout. 0 or None disables timeout.
+        max_retries: Optional immediate retry count after failure or timeout.
+        retry_delay_ms: Delay between retry attempts.
+        permissions: Product-layer permission profile, e.g. {"execute": false}.
 
     Returns:
         JSON string with operation result.
@@ -130,7 +143,18 @@ def cronjob(
         normalized = (action or "").strip().lower()
 
         if normalized == "create":
-            return _action_create(prompt, schedule, name, deliver, user_id, timezone)
+            return _action_create(
+                prompt,
+                schedule,
+                name,
+                deliver,
+                user_id,
+                timezone,
+                timeout_seconds,
+                max_retries,
+                retry_delay_ms,
+                permissions,
+            )
         if normalized == "list":
             return _action_list(user_id)
         if not job_id:
@@ -149,7 +173,17 @@ def cronjob(
         if normalized in {"run", "run_now", "trigger"}:
             return _action_trigger(job_id)
         if normalized == "update":
-            return _action_update(job_id, prompt, schedule, name, deliver)
+            return _action_update(
+                job_id,
+                prompt,
+                schedule,
+                name,
+                deliver,
+                timeout_seconds,
+                max_retries,
+                retry_delay_ms,
+                permissions,
+            )
 
         return _to_json({"success": False, "error": f"Unknown action '{action}'"})
 
@@ -164,6 +198,10 @@ def _action_create(
     deliver: Optional[str],
     user_id: Optional[str],
     timezone: Optional[str],
+    timeout_seconds: Optional[float],
+    max_retries: Optional[int],
+    retry_delay_ms: Optional[int],
+    permissions: Optional[dict[str, Any]],
 ) -> str:
     if not prompt:
         return _to_json({"success": False, "error": "prompt is required for create"})
@@ -182,6 +220,10 @@ def _action_create(
         user_id=user_id or "default",
         deliver=deliver or "local",
         timezone=timezone or "Asia/Shanghai",
+        timeout_seconds=timeout_seconds or 0.0,
+        max_retries=max_retries or 0,
+        retry_delay_ms=retry_delay_ms or 60000,
+        permissions=permissions,
     )
     return _to_json({
         "success": True,
@@ -241,6 +283,10 @@ def _action_update(
     schedule: Optional[str],
     name: Optional[str],
     deliver: Optional[str],
+    timeout_seconds: Optional[float],
+    max_retries: Optional[int],
+    retry_delay_ms: Optional[int],
+    permissions: Optional[dict[str, Any]],
 ) -> str:
     updates: dict = {}
     if prompt is not None:
@@ -252,6 +298,14 @@ def _action_update(
         updates["name"] = name
     if deliver is not None:
         updates["deliver"] = deliver
+    if timeout_seconds is not None:
+        updates["timeout_seconds"] = timeout_seconds
+    if max_retries is not None:
+        updates["max_retries"] = max_retries
+    if retry_delay_ms is not None:
+        updates["retry_delay_ms"] = retry_delay_ms
+    if permissions is not None:
+        updates["permissions"] = permissions
     if schedule is not None:
         parsed = parse_schedule(schedule)
         updates["schedule"] = parsed.to_dict()

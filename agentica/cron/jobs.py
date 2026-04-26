@@ -11,7 +11,7 @@ import logging
 import re
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -23,8 +23,10 @@ from agentica.cron.types import (
     AtSchedule,
     EverySchedule,
     CronSchedule,
+    DailyTaskSpec,
     JobStatus,
     RunStatus,
+    TaskRun,
     schedule_from_dict,
 )
 
@@ -34,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 CRON_DIR = Path(AGENTICA_CRON_DIR)
 JOBS_FILE = CRON_DIR / "jobs.json"
+RUNS_FILE = CRON_DIR / "runs.jsonl"
 OUTPUT_DIR = CRON_DIR / "output"
 
 
@@ -62,6 +65,12 @@ class CronJob:
     last_status: str = ""
     run_count: int = 0
     enabled: bool = True
+    workspace: str | None = None
+    permissions: dict[str, Any] = field(default_factory=dict)
+    timeout_seconds: float = 0.0
+    max_retries: int = 0
+    retry_count: int = 0
+    retry_delay_ms: int = 60000
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -79,6 +88,12 @@ class CronJob:
             "last_status": self.last_status,
             "run_count": self.run_count,
             "enabled": self.enabled,
+            "workspace": self.workspace,
+            "permissions": self.permissions,
+            "timeout_seconds": self.timeout_seconds,
+            "max_retries": self.max_retries,
+            "retry_count": self.retry_count,
+            "retry_delay_ms": self.retry_delay_ms,
         }
 
     @classmethod
@@ -100,6 +115,12 @@ class CronJob:
             last_status=data.get("last_status", ""),
             run_count=data.get("run_count", 0),
             enabled=data.get("enabled", True),
+            workspace=data.get("workspace"),
+            permissions=data.get("permissions") or {},
+            timeout_seconds=data.get("timeout_seconds", 0.0),
+            max_retries=data.get("max_retries", 0),
+            retry_count=data.get("retry_count", 0),
+            retry_delay_ms=data.get("retry_delay_ms", 60000),
         )
 
 
@@ -412,6 +433,11 @@ def create_job(
     user_id: str = "default",
     deliver: str = "local",
     timezone: str = "Asia/Shanghai",
+    workspace: str | None = None,
+    permissions: dict[str, Any] | None = None,
+    timeout_seconds: float = 0.0,
+    max_retries: int = 0,
+    retry_delay_ms: int = 60000,
 ) -> CronJob:
     """Create a new cron job and persist it.
 
@@ -422,6 +448,11 @@ def create_job(
         user_id: Owner user ID.
         deliver: Delivery target (local, origin, telegram, etc.).
         timezone: Timezone for cron expressions.
+        workspace: Optional workspace path for product surfaces.
+        permissions: Product-layer permission profile for the run.
+        timeout_seconds: Per-run timeout. 0 disables timeout.
+        max_retries: Number of immediate retries before waiting for the next schedule.
+        retry_delay_ms: Delay before a retry run.
 
     Returns:
         The created CronJob.
@@ -449,6 +480,11 @@ def create_job(
         deliver=deliver,
         created_at_ms=current,
         next_run_at_ms=next_run or 0,
+        workspace=workspace,
+        permissions=permissions or {},
+        timeout_seconds=timeout_seconds,
+        max_retries=max_retries,
+        retry_delay_ms=retry_delay_ms,
     )
 
     jobs = _load_jobs()
@@ -456,6 +492,37 @@ def create_job(
     _save_jobs(jobs)
     logger.info(f"Created cron job {job_id}: {job.name}")
     return job
+
+
+def create_daily_task(spec: DailyTaskSpec) -> CronJob:
+    """Create a cron-backed job from a product-layer daily task spec."""
+    schedule = spec.schedule.to_dict()
+    if isinstance(spec.schedule, CronSchedule):
+        schedule_str = spec.schedule.expression
+        timezone = spec.schedule.timezone
+    elif isinstance(spec.schedule, EverySchedule):
+        schedule_str = f"{spec.schedule.interval_ms // 1000}s"
+        timezone = spec.timezone
+    elif isinstance(spec.schedule, AtSchedule):
+        dt = datetime.fromtimestamp(spec.schedule.at_ms / 1000)
+        schedule_str = dt.isoformat()
+        timezone = spec.timezone
+    else:
+        raise ValueError(f"Unsupported schedule: {schedule}")
+
+    return create_job(
+        prompt=spec.prompt,
+        schedule=schedule_str,
+        name=spec.name,
+        user_id=spec.user_id,
+        deliver=spec.deliver,
+        timezone=timezone,
+        workspace=spec.workspace,
+        permissions=spec.permissions,
+        timeout_seconds=spec.timeout_seconds,
+        max_retries=spec.max_retries,
+        retry_delay_ms=spec.retry_delay_ms,
+    )
 
 
 def get_job(job_id: str) -> CronJob | None:
@@ -558,32 +625,92 @@ def mark_job_run(
     status: RunStatus,
     result: str = "",
     error: str = "",
+    error_type: str = "",
+    started_at_ms: int | None = None,
+    ended_at_ms: int | None = None,
+    attempt: int | None = None,
 ) -> CronJob | None:
     """Mark a job as having been run, update next_run_at."""
-    current = now_ms()
+    current = ended_at_ms or now_ms()
     job = get_job(job_id)
     if not job:
         return None
 
     # Compute next run
     next_run = compute_next_run_at_ms(job.schedule, current, current)
+    should_retry = status != RunStatus.OK and job.retry_count < job.max_retries
+    retry_count = job.retry_count + 1 if should_retry else 0
+    if should_retry:
+        next_run = current + max(0, job.retry_delay_ms)
 
     updates: dict[str, Any] = {
         "last_run_at_ms": current,
         "last_status": status.value,
         "run_count": job.run_count + 1,
         "next_run_at_ms": next_run or 0,
+        "retry_count": retry_count,
     }
 
     # One-shot jobs: mark completed
-    if isinstance(job.schedule, AtSchedule) or next_run is None:
+    if not should_retry and (isinstance(job.schedule, AtSchedule) or next_run is None):
         updates["status"] = JobStatus.COMPLETED.value
         updates["enabled"] = False
 
     # Save output
     _save_output(job_id, current, result or error)
+    _append_task_run(
+        TaskRun(
+            run_id=uuid.uuid4().hex,
+            task_id=job_id,
+            status=status,
+            started_at_ms=started_at_ms or current,
+            ended_at_ms=current,
+            attempt=attempt or job.retry_count + 1,
+            result=result,
+            error=error,
+            error_type=error_type,
+        )
+    )
 
     return update_job(job_id, updates)
+
+
+def list_task_runs(job_id: str | None = None, limit: int = 100) -> list[TaskRun]:
+    """List structured run records, newest first."""
+    if not RUNS_FILE.exists():
+        return []
+
+    runs: list[TaskRun] = []
+    try:
+        lines = RUNS_FILE.read_text(encoding="utf-8").splitlines()
+    except OSError as e:
+        logger.warning(f"Failed to read task runs file: {e}")
+        return []
+
+    for line in reversed(lines):
+        if not line.strip():
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            logger.warning("Skipping malformed task run record")
+            continue
+        if job_id and data.get("task_id") != job_id:
+            continue
+        runs.append(TaskRun.from_dict(data))
+        if len(runs) >= limit:
+            break
+    return runs
+
+
+def _append_task_run(run: TaskRun) -> None:
+    """Append one structured run record to JSONL history."""
+    _ensure_dirs()
+    try:
+        with RUNS_FILE.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(run.to_dict(), ensure_ascii=False) + "\n")
+    except OSError as e:
+        logger.warning(f"Failed to save task run {run.run_id}: {e}")
 
 
 def _save_output(job_id: str, timestamp_ms: int, content: str) -> None:

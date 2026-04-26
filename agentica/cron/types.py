@@ -5,7 +5,7 @@
 
 Schedule types (at/every/cron), job status, and run status enums.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
@@ -114,6 +114,60 @@ def schedule_from_dict(data: dict[str, Any]) -> Schedule:
     raise ValueError(f"Unknown schedule kind: {kind}")
 
 
+# ============== Daily Task Protocol ==============
+
+@dataclass
+class DailyTaskSpec:
+    """Product-layer task spec for scheduled agent work.
+
+    Cron remains the execution backend; this spec gives CLI/Gateway/product
+    surfaces a stable shape for user intent, permissions, and runtime limits.
+    """
+
+    name: str
+    prompt: str
+    schedule: Schedule
+    user_id: str = "default"
+    workspace: str | None = None
+    permissions: dict[str, Any] = field(default_factory=dict)
+    deliver: str = "local"
+    timezone: str = "Asia/Shanghai"
+    timeout_seconds: float = 0.0
+    max_retries: int = 0
+    retry_delay_ms: int = 60000
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "prompt": self.prompt,
+            "schedule": self.schedule.to_dict(),
+            "user_id": self.user_id,
+            "workspace": self.workspace,
+            "permissions": self.permissions,
+            "deliver": self.deliver,
+            "timezone": self.timezone,
+            "timeout_seconds": self.timeout_seconds,
+            "max_retries": self.max_retries,
+            "retry_delay_ms": self.retry_delay_ms,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DailyTaskSpec":
+        return cls(
+            name=data.get("name", ""),
+            prompt=data.get("prompt", ""),
+            schedule=schedule_from_dict(data.get("schedule", {"kind": "at"})),
+            user_id=data.get("user_id", "default"),
+            workspace=data.get("workspace"),
+            permissions=data.get("permissions") or {},
+            deliver=data.get("deliver", "local"),
+            timezone=data.get("timezone", "Asia/Shanghai"),
+            timeout_seconds=data.get("timeout_seconds", 0.0),
+            max_retries=data.get("max_retries", 0),
+            retry_delay_ms=data.get("retry_delay_ms", 60000),
+        )
+
+
 # ============== Job Status ==============
 
 class JobStatus(str, Enum):
@@ -128,3 +182,52 @@ class RunStatus(str, Enum):
     OK = "ok"
     FAILED = "failed"
     TIMEOUT = "timeout"
+
+
+@dataclass
+class TaskRun:
+    """Structured history record for one scheduled task execution."""
+
+    run_id: str
+    task_id: str
+    status: RunStatus
+    started_at_ms: int
+    ended_at_ms: int
+    attempt: int = 1
+    result: str = ""
+    error: str = ""
+    error_type: str = ""
+
+    @property
+    def duration_ms(self) -> int:
+        if not self.started_at_ms or not self.ended_at_ms:
+            return 0
+        return max(0, self.ended_at_ms - self.started_at_ms)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "run_id": self.run_id,
+            "task_id": self.task_id,
+            "status": self.status.value,
+            "started_at_ms": self.started_at_ms,
+            "ended_at_ms": self.ended_at_ms,
+            "duration_ms": self.duration_ms,
+            "attempt": self.attempt,
+            "result": self.result,
+            "error": self.error,
+            "error_type": self.error_type,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TaskRun":
+        return cls(
+            run_id=data.get("run_id", ""),
+            task_id=data.get("task_id", ""),
+            status=RunStatus(data.get("status", RunStatus.FAILED.value)),
+            started_at_ms=data.get("started_at_ms", 0),
+            ended_at_ms=data.get("ended_at_ms", 0),
+            attempt=data.get("attempt", 1),
+            result=data.get("result", ""),
+            error=data.get("error", ""),
+            error_type=data.get("error_type", ""),
+        )

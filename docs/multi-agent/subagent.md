@@ -2,6 +2,8 @@
 
 Subagent 系统允许主 Agent 生成隔离的临时子任务 Agent，用于处理复杂的分步骤任务。
 
+如果只是固定步骤流水线，优先使用 [Workflow](workflow.md)。如果只是让父 Agent 调用一个专门助手，优先使用 `Agent.as_tool()`。只有当子任务需要独立运行时状态、工具权限、嵌套深度限制或超时控制时，再使用 Subagent；完整取舍见 [编排模式决策树](choosing.md)。
+
 ## SubagentType
 
 ```python

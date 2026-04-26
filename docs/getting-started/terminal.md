@@ -1,13 +1,13 @@
 # CLI 终端指南
 
-Agentica CLI 是一个功能完整的 AI 编程助手终端，基于 `DeepAgent` 构建。它内置了文件读写、代码执行、网页搜索、子任务委派等 20+ 工具，支持多轮对话、会话持久化、技能系统和 IDE 集成。
+Agentica CLI 是一个功能完整的 AI 编程助手终端，基于 `DeepAgent` product preset 构建。它内置了文件读写、代码执行、网页搜索、子任务委派等 20+ 工具，支持多轮对话、会话持久化、技能系统和 IDE 集成。
 
 <img src="https://github.com/shibing624/agentica/blob/main/docs/assets/cli_snap.png" width="700" alt="CLI Screenshot" />
 
 ## 快速启动
 
 ```bash
-# 交互模式（默认，开启全功能 DeepAgent）
+# 交互模式（默认，开启 DeepAgent 产品预设）
 agentica
 
 # 单次查询，执行完直接退出
