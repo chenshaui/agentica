@@ -53,15 +53,16 @@ class RunStatus(str, Enum):
 class RunSource(str, Enum):
     """Where a run originates. Used for provenance + report grouping.
 
-    Same YAGNI rule as `RunEventType`: only add a member when there is a
-    real call site that sets `RunContext.source` to it. Today the Runner
-    sets `subagent` when `agent._parent_run_id` is populated and `sdk`
-    otherwise; gateway/cron/workflow will land here when those entry points
-    are implemented (and will set the source themselves).
+    Entry points set this explicitly through RunConfig.source. The Runner only
+    overrides it for subagent children because parent_run_id is authoritative.
     """
 
-    sdk = "sdk"            # Direct agent.run() / runner.run()
-    subagent = "subagent"  # Spawned via subagent.spawn() (parent_run_id is set)
+    sdk = "sdk"              # Direct agent.run() / runner.run()
+    cli = "cli"              # Agentica interactive CLI
+    gateway = "gateway"      # Gateway HTTP/SSE entry points
+    cron = "cron"            # Scheduled cron task execution
+    workflow = "workflow"    # Deterministic workflow execution
+    subagent = "subagent"    # Spawned via subagent.spawn() (parent_run_id is set)
 
 
 @dataclass

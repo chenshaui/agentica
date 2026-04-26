@@ -55,6 +55,7 @@ from agentica.cli.display import (
     get_file_completions,
 )
 from agentica.cli.permissions import PermissionManager
+from agentica.run_display import RunDisplayEventKind, classify_run_response
 from agentica.run_response import AgentCancelledError
 from agentica.utils.log import suppress_console_logging
 from agentica.workspace import Workspace
@@ -437,7 +438,8 @@ def _process_stream_response(
 
     try:
         from agentica.run_config import RunConfig
-        run_config = RunConfig(stream_intermediate_steps=True)
+        from agentica.run_context import RunSource
+        run_config = RunConfig(stream_intermediate_steps=True, source=RunSource.cli)
 
         # Permission integration: restrict tools based on permission mode
         if permission_manager and permission_manager.mode == "strict":
@@ -532,10 +534,14 @@ def _process_stream_response(
             if chunk is None:
                 continue
 
-            if chunk.event in ("RunStarted", "RunCompleted", "UpdatingMemory"):
+            display_event = classify_run_response(chunk)
+
+            if display_event.kind == RunDisplayEventKind.METADATA_SKIP:
+                continue
+            if display_event.kind == RunDisplayEventKind.TELEMETRY_ONLY:
                 continue
 
-            if chunk.event == "ToolCallStarted":
+            if display_event.kind == RunDisplayEventKind.TOOL_STARTED:
                 if chunk.tools and len(chunk.tools) > shown_tool_count:
                     for tool_info in chunk.tools[shown_tool_count:]:
                         tool_name = tool_info.get("tool_name") or tool_info.get("name", "unknown")
@@ -543,7 +549,7 @@ def _process_stream_response(
                         if isinstance(tool_args, str):
                             try:
                                 tool_args = json.loads(tool_args)
-                            except Exception:
+                            except ValueError:
                                 tool_args = {"args": tool_args}
 
                         # Permission info display
@@ -558,7 +564,7 @@ def _process_stream_response(
                     shown_tool_count = len(chunk.tools)
                 continue
 
-            elif chunk.event == "ToolCallCompleted":
+            if display_event.kind == RunDisplayEventKind.TOOL_COMPLETED:
                 _set_spinner("")
                 tui_state["_thinking"] = True
                 if chunk.tools:
@@ -576,7 +582,7 @@ def _process_stream_response(
                 continue
 
             has_content = chunk.content and isinstance(chunk.content, str)
-            has_reasoning = hasattr(chunk, 'reasoning_content') and chunk.reasoning_content
+            has_reasoning = chunk.reasoning_content
 
             if not has_content and not has_reasoning:
                 continue

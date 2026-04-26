@@ -451,7 +451,11 @@ class Runner:
             logger.debug("Stage 3 (rule-based compress): truncating + dropping old messages")
             before = len(messages)
             t0 = time.monotonic()
-            await cm.compress(messages, tools=model.tools, model=model)
+            await cm.compress(messages, tools=model.tools, model=model, trigger="threshold")
+            compression_report = cm.get_stats().get("last_report")
+            if compression_report and agent.run_response is not None:
+                agent.run_response.metrics = agent.run_response.metrics or {}
+                agent.run_response.metrics["compression"] = {"last_report": compression_report}
             await _fire_compact_hooks('on_post_compact')
             if cb is not None:
                 cb({
@@ -460,6 +464,7 @@ class Runner:
                     "before": before,
                     "after": len(messages),
                     "elapsed": time.monotonic() - t0,
+                    "report": compression_report,
                 })
 
         # Stage 4: auto-compact via LLM summarisation.
@@ -629,6 +634,7 @@ class Runner:
         hooks: Optional[RunHooks] = None,
         enabled_tools: Optional[List[str]] = None,
         enabled_skills: Optional[List[str]] = None,
+        source: RunSource = RunSource.sdk,
         **kwargs: Any,
     ) -> AsyncIterator[RunResponse]:
         """Unified execution engine.
@@ -699,7 +705,7 @@ class Runner:
                 agent._anchor_session_id = agent.session_id
             _anchor = agent.task_anchor
 
-            _run_source = RunSource.subagent if agent._parent_run_id else RunSource.sdk
+            _run_source = RunSource.subagent if agent._parent_run_id else source
             _run_ctx = RunContext(
                 session_id=agent.session_id,
                 parent_run_id=agent._parent_run_id,
@@ -1105,7 +1111,11 @@ class Runner:
                 if system_message is not None:
                     run_messages.insert(0, system_message)
                 agent.run_response.messages = run_messages
-                agent.run_response.metrics = self._aggregate_metrics_from_run_messages(run_messages)
+                existing_metrics = agent.run_response.metrics or {}
+                aggregated_metrics = self._aggregate_metrics_from_run_messages(run_messages)
+                if existing_metrics:
+                    aggregated_metrics.update(existing_metrics)
+                agent.run_response.metrics = aggregated_metrics
                 agent.run_response.usage = agent.model.usage if agent.model else None
 
                 # v3: attach CostTracker to RunResponse
@@ -1490,6 +1500,7 @@ class Runner:
         enabled_tools = config.enabled_tools
         enabled_skills = config.enabled_skills
         max_cost_usd = config.max_cost_usd
+        source = config.source
 
         # Stash cost budget on agent for _run_impl to pick up
         self.agent._run_max_cost_usd = max_cost_usd
@@ -1507,6 +1518,7 @@ class Runner:
                 hooks=hooks,
                 enabled_tools=enabled_tools,
                 enabled_skills=enabled_skills,
+                source=source,
                 **kwargs,
             )
 
@@ -1523,6 +1535,7 @@ class Runner:
                 hooks=hooks,
                 enabled_tools=enabled_tools,
                 enabled_skills=enabled_skills,
+                source=source,
                 **kwargs,
             )
 
@@ -1540,6 +1553,7 @@ class Runner:
                 hooks=hooks,
                 enabled_tools=enabled_tools,
                 enabled_skills=enabled_skills,
+                source=source,
                 **kwargs,
             ):
                 final_response = response
@@ -1575,6 +1589,7 @@ class Runner:
         hooks = config.hooks
         enabled_tools = config.enabled_tools
         enabled_skills = config.enabled_skills
+        source = config.source
 
         # Stash cost budget on agent for _run_impl to pick up
         self.agent._run_max_cost_usd = config.max_cost_usd
@@ -1595,6 +1610,7 @@ class Runner:
             hooks=hooks,
             enabled_tools=enabled_tools,
             enabled_skills=enabled_skills,
+            source=source,
             **kwargs,
         )
         if run_timeout is not None or first_token_timeout is not None or idle_timeout is not None:

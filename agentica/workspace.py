@@ -21,6 +21,7 @@ from agentica.config import (
     AGENTICA_HOME,
     AGENTICA_MAX_MEMORY_CHARACTER_COUNT,
 )
+from agentica.security.redact import redact_sensitive_text
 from agentica.utils.async_file import (
     async_read_text,
     async_write_text,
@@ -1361,6 +1362,7 @@ You are a helpful AI assistant.
             content = msg.get("content", "")
             if not content or not isinstance(content, str):
                 continue
+            content = redact_sensitive_text(content)
             # Truncate very long messages in archive
             if len(content) > 2000:
                 content = content[:2000] + "\n...[truncated]"

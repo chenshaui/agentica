@@ -21,6 +21,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from agentica.run_context import RunSource
 from agentica.utils.log import logger
 from . import deps
 from agentica.version import __version__
@@ -365,7 +366,6 @@ class _GatewayAgentRunner:
         self._svc = agent_svc
 
     async def run(self, prompt: str, context: Optional[dict] = None) -> str:
-        from uuid import uuid4
         ctx = context or {}
         job_id = ctx.get("job_id", str(uuid4()))
         user_id = ctx.get("user_id", settings.default_user_id)
@@ -375,6 +375,7 @@ class _GatewayAgentRunner:
             message=prompt,
             session_id=session_id,
             user_id=user_id,
+            source=RunSource.cron,
         )
         return result.content
 

@@ -553,6 +553,8 @@ class TestScheduler:
         assert results[0]["status"] == "ok"
         assert results[0]["result"] == "Done!"
         mock_runner.run.assert_called_once()
+        context = mock_runner.run.call_args.kwargs["context"]
+        assert context["run_source"] == "cron"
 
     def test_tick_no_runner_marks_failed(self, tmp_cron_dir):
         from agentica.cron.jobs import create_job, update_job, get_job

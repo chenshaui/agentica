@@ -10,6 +10,8 @@ import logging
 import re
 from typing import List, Tuple
 
+from agentica.security.redact import redact_sensitive_text
+
 logger = logging.getLogger(__name__)
 
 # ============== Dangerous Command Patterns ==============
@@ -101,52 +103,3 @@ def check_command_safety(command: str) -> dict:
                 "pattern": description,
             }
     return {"action": "allow", "reason": "", "pattern": ""}
-
-
-# ============== Secret Redaction ==============
-
-SECRET_PATTERNS: List[Tuple[re.Pattern, str]] = [
-    # OpenAI API keys
-    (re.compile(r"sk-[a-zA-Z0-9]{20,}"), "***REDACTED_KEY***"),
-    # OpenAI project keys
-    (re.compile(r"sk-proj-[a-zA-Z0-9_-]{20,}"), "***REDACTED_KEY***"),
-    # GitHub PAT
-    (re.compile(r"ghp_[a-zA-Z0-9]{36}"), "***REDACTED_TOKEN***"),
-    # GitHub fine-grained PAT
-    (re.compile(r"github_pat_[a-zA-Z0-9_]{22,}"), "***REDACTED_TOKEN***"),
-    # AWS access key
-    (re.compile(r"AKIA[0-9A-Z]{16}"), "***REDACTED_AWS_KEY***"),
-    # Generic bearer token (long hex/base64 strings after "Bearer ")
-    (re.compile(r"(Bearer\s+)[a-zA-Z0-9_\-./+]{40,}"), r"\1***REDACTED***"),
-    # URL query parameters with secret names
-    (re.compile(
-        r"([?&](?:access_token|api[_-]?key|auth[_-]?token|token|secret|password|signature|sig)=)"
-        r"([^&#\s]+)",
-        re.IGNORECASE,
-    ), r"\1***"),
-    # Generic key=value assignment patterns
-    (re.compile(
-        r"\b(api[_-]?key|auth[_-]?token|access[_-]?token|secret[_-]?key|password)\s*[=:]\s*"
-        r"(['\"]?)([a-zA-Z0-9_\-./+]{16,})\2",
-        re.IGNORECASE,
-    ), r"\1=***REDACTED***"),
-]
-
-
-def redact_sensitive_text(text: str) -> str:
-    """Remove sensitive information from text.
-
-    Applies pattern-based redaction for API keys, tokens, passwords,
-    and URL query parameters containing secrets.
-
-    Args:
-        text: The text to redact.
-
-    Returns:
-        Text with sensitive values replaced by placeholders.
-    """
-    if not text:
-        return text
-    for pattern, replacement in SECRET_PATTERNS:
-        text = pattern.sub(replacement, text)
-    return text

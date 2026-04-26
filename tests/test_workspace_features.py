@@ -89,6 +89,25 @@ class TestWorkspaceArchiveLocks(unittest.TestCase):
             self.assertIs(ws._archive_locks[key], ws._archive_locks[key])
 
 
+class TestWorkspaceArchiveRedaction(unittest.TestCase):
+    """Conversation archive redacts secrets before writing markdown."""
+
+    def test_archive_conversation_redacts_secrets(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ws = Workspace(path=tmpdir)
+            secret = "sk-abcdefghijklmnopqrstuvwxyz1234567890"
+            path = asyncio.run(ws.archive_conversation([
+                {"role": "user", "content": f"my key is {secret}"},
+                {"role": "assistant", "content": "noted"},
+            ], session_id="secret-session"))
+
+            content = Path(path).read_text(encoding="utf-8")
+
+        self.assertNotIn(secret, content)
+        self.assertIn("REDACTED", content)
+        self.assertIn("secret-session", content)
+
+
 class TestWorkspaceInitialize(unittest.TestCase):
     """Workspace.initialize creates the directory structure."""
 

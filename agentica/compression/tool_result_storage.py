@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import List, Optional, TYPE_CHECKING
 
 from agentica.config import AGENTICA_PROJECTS_DIR
+from agentica.security.redact import redact_sensitive_text
 from agentica.utils.log import logger
 
 if TYPE_CHECKING:
@@ -169,15 +170,16 @@ def maybe_persist_result(
     if len(content) <= max_result_size_chars:
         return content
 
+    redacted_content = redact_sensitive_text(content)
     file_path = get_tool_result_path(tool_use_id, cwd=cwd, session_id=session_id)
-    if not _persist_to_disk(file_path, content):
+    if not _persist_to_disk(file_path, redacted_content):
         # Fallback: truncate in-place
-        return content[:max_result_size_chars] + "\n... (output truncated)"
+        return redacted_content[:max_result_size_chars] + "\n... (output truncated)"
 
     logger.debug(
         f"Persisted {tool_name} result ({len(content):,} chars) to {file_path}"
     )
-    return _build_persisted_message(file_path, content)
+    return _build_persisted_message(file_path, redacted_content)
 
 
 # ---------------------------------------------------------------------------
@@ -237,8 +239,9 @@ def enforce_tool_result_budget(
         tool_use_id = msg.tool_call_id or f"budget_{idx}"
         file_path = get_tool_result_path(tool_use_id, cwd=cwd, session_id=session_id)
 
-        if _persist_to_disk(file_path, content):
-            new_content = _build_persisted_message(file_path, content)
+        redacted_content = redact_sensitive_text(content)
+        if _persist_to_disk(file_path, redacted_content):
+            new_content = _build_persisted_message(file_path, redacted_content)
             msg.content = new_content
             saved = size - len(new_content)
             total -= saved

@@ -10,6 +10,7 @@ Covers:
 - RunEventRecord.to_dict shape
 """
 import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from agentica.run_context import RunContext, RunSource, RunStatus, TaskAnchor
 from agentica.run_events import RunEventRecord, RunEventType
@@ -67,6 +68,17 @@ class TestRunContext:
         assert a.status == RunStatus.created
         assert a.source == RunSource.sdk
 
+    def test_run_source_has_product_entrypoints(self):
+        assert RunSource.cli.value == "cli"
+        assert RunSource.gateway.value == "gateway"
+        assert RunSource.cron.value == "cron"
+        assert RunSource.workflow.value == "workflow"
+
+    def test_run_config_source_defaults_to_sdk(self):
+        from agentica.run_config import RunConfig
+
+        assert RunConfig().source == RunSource.sdk
+
     def test_lifecycle_transitions(self):
         ctx = RunContext()
         ctx.mark_running()
@@ -103,6 +115,45 @@ class TestRunContext:
         assert d["task_anchor"]["goal"] == "g"
         assert d["task_anchor"]["source_query"] == "g"
         assert d["metadata"] == {"foo": "bar"}
+
+    @pytest.mark.asyncio
+    async def test_agent_run_respects_explicit_run_config_source(self):
+        from agentica.agent import Agent
+        from agentica.model.openai import OpenAIChat
+        from agentica.run_config import RunConfig
+
+        response = MagicMock()
+        response.content = "ok"
+        response.parsed = None
+        response.audio = None
+        response.reasoning_content = None
+        response.created_at = None
+
+        with patch.object(OpenAIChat, "response", new_callable=AsyncMock, return_value=response):
+            agent = Agent(name="A", model=OpenAIChat(id="gpt-4o-mini", api_key="fake_openai_key"))
+            await agent.run("Hi", config=RunConfig(source=RunSource.cli))
+
+        assert agent.run_context.source == RunSource.cli
+
+    @pytest.mark.asyncio
+    async def test_subagent_source_overrides_explicit_run_config_source(self):
+        from agentica.agent import Agent
+        from agentica.model.openai import OpenAIChat
+        from agentica.run_config import RunConfig
+
+        response = MagicMock()
+        response.content = "ok"
+        response.parsed = None
+        response.audio = None
+        response.reasoning_content = None
+        response.created_at = None
+
+        with patch.object(OpenAIChat, "response", new_callable=AsyncMock, return_value=response):
+            agent = Agent(name="A", model=OpenAIChat(id="gpt-4o-mini", api_key="fake_openai_key"))
+            agent._parent_run_id = "parent-run"
+            await agent.run("Hi", config=RunConfig(source=RunSource.cli))
+
+        assert agent.run_context.source == RunSource.subagent
 
 
 class TestRunEventRecord:

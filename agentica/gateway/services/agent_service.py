@@ -21,8 +21,10 @@ from typing import Optional, Callable, List, Any, Dict
 
 from agentica.utils.log import logger
 from agentica import DeepAgent
+from agentica.run_display import RunDisplayEventKind, classify_run_response
 from agentica.run_response import AgentCancelledError
 from agentica.run_config import RunConfig
+from agentica.run_context import RunSource
 from agentica.workspace import Workspace
 
 from ..config import settings
@@ -297,6 +299,7 @@ class AgentService:
         message: str,
         session_id: str,
         user_id: str = "default",
+        source: RunSource = RunSource.gateway,
     ) -> ChatResult:
         """Send a message and return the full response (non-streaming).
 
@@ -330,7 +333,7 @@ class AgentService:
                 if self._workspace:
                     await asyncio.to_thread(self._workspace.set_user, user_id)
 
-                response = await agent.run(message)
+                response = await agent.run(message, config=RunConfig(source=source))
 
                 content = (response.content or "").strip()
                 tools_used: List[str] = []
@@ -367,6 +370,7 @@ class AgentService:
         message: str,
         session_id: str,
         user_id: str = "default",
+        source: RunSource = RunSource.gateway,
         on_content: Optional[Callable[[str], Any]] = None,
         on_tool_call: Optional[Callable[[str, dict], Any]] = None,
         on_tool_result: Optional[Callable[[str, str], Any]] = None,
@@ -402,7 +406,7 @@ class AgentService:
         async with lock:
             return await self._chat_stream_impl(
                 message, session_id, user_id,
-                on_content, on_tool_call, on_tool_result, on_thinking,
+                source, on_content, on_tool_call, on_tool_result, on_thinking,
             )
 
     async def _chat_stream_impl(
@@ -410,6 +414,7 @@ class AgentService:
         message: str,
         session_id: str,
         user_id: str,
+        source: RunSource,
         on_content: Optional[Callable[[str], Any]],
         on_tool_call: Optional[Callable[[str, dict], Any]],
         on_tool_result: Optional[Callable[[str, str], Any]],
@@ -428,11 +433,16 @@ class AgentService:
             tools_used: List[str] = []
             tool_calls = 0
 
-            async for chunk in agent.run_stream(message, config=RunConfig(stream_intermediate_steps=True)):
+            async for chunk in agent.run_stream(
+                message,
+                config=RunConfig(stream_intermediate_steps=True, source=source),
+            ):
                 if chunk is None:
                     continue
 
-                if chunk.event == "ToolCallStarted":
+                display_event = classify_run_response(chunk)
+
+                if display_event.kind == RunDisplayEventKind.TOOL_STARTED:
                     tool_info = chunk.tools[-1] if chunk.tools else None
                     if tool_info:
                         tool_name = tool_info.get("tool_name") or tool_info.get("name", "unknown")
@@ -444,7 +454,7 @@ class AgentService:
                             await on_tool_call(tool_name, display_args)
                     continue
 
-                elif chunk.event == "ToolCallCompleted":
+                if display_event.kind == RunDisplayEventKind.TOOL_COMPLETED:
                     if chunk.tools and on_tool_result:
                         for ti in reversed(chunk.tools):
                             if "content" in ti:
@@ -453,15 +463,13 @@ class AgentService:
                                 break
                     continue
 
-                if chunk.event in (
-                    "RunStarted", "RunCompleted", "UpdatingMemory",
-                    "MultiRoundTurn", "MultiRoundToolCall",
-                    "MultiRoundToolResult", "MultiRoundCompleted",
-                ):
+                if display_event.kind == RunDisplayEventKind.METADATA_SKIP:
+                    continue
+                if display_event.kind == RunDisplayEventKind.TELEMETRY_ONLY:
                     continue
 
-                if chunk.event == "RunResponse":
-                    if hasattr(chunk, "reasoning_content") and chunk.reasoning_content:
+                if display_event.kind == RunDisplayEventKind.CONTENT_DELTA:
+                    if chunk.reasoning_content:
                         reasoning_content += chunk.reasoning_content
                         if on_thinking:
                             await on_thinking(chunk.reasoning_content)

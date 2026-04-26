@@ -5,12 +5,48 @@ Requires the [gateway] extras:
 """
 import asyncio
 import os
-from unittest.mock import patch, MagicMock
+from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
 # Gateway tests require fastapi + lark-oapi etc. Skip cleanly if not installed.
 pytest.importorskip("fastapi", reason="Gateway tests require agentica[gateway] extras")
+
+
+class TestAgentServiceRunSource:
+    """AgentService passes gateway/cron run source into RunConfig."""
+
+    def test_chat_uses_gateway_source_by_default(self, tmp_path):
+        from agentica.gateway.services.agent_service import AgentService
+        from agentica.run_context import RunSource
+
+        svc = AgentService(workspace_path=str(tmp_path))
+        svc._ensure_initialized = AsyncMock()
+        svc._workspace = None
+        agent = MagicMock()
+        agent.run = AsyncMock(return_value=MagicMock(content="ok", tools=[]))
+        svc._get_agent = AsyncMock(return_value=agent)
+
+        asyncio.run(svc.chat("hello", session_id="s1", user_id="u1"))
+
+        config = agent.run.call_args.kwargs["config"]
+        assert config.source == RunSource.gateway
+
+    def test_chat_accepts_cron_source_override(self, tmp_path):
+        from agentica.gateway.services.agent_service import AgentService
+        from agentica.run_context import RunSource
+
+        svc = AgentService(workspace_path=str(tmp_path))
+        svc._ensure_initialized = AsyncMock()
+        svc._workspace = None
+        agent = MagicMock()
+        agent.run = AsyncMock(return_value=MagicMock(content="ok", tools=[]))
+        svc._get_agent = AsyncMock(return_value=agent)
+
+        asyncio.run(svc.chat("hello", session_id="s1", user_id="u1", source=RunSource.cron))
+
+        config = agent.run.call_args.kwargs["config"]
+        assert config.source == RunSource.cron
 
 
 # ============== TestSettings ==============

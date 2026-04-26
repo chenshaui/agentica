@@ -31,6 +31,7 @@ from agentica.cron.jobs import (
     now_ms,
 )
 from agentica.cron.types import RunStatus
+from agentica.run_context import RunSource
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +167,7 @@ async def _execute_job(
             "attempt": attempt,
             "workspace": job.workspace,
             "permissions": job.permissions,
+            "run_source": RunSource.cron.value,
         }
         run_coro = agent_runner.run(prompt=job.prompt, context=context)
         if job.timeout_seconds > 0:

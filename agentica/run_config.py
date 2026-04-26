@@ -18,6 +18,7 @@ from typing import (
 )
 
 from agentica.hooks import RunHooks
+from agentica.run_context import RunSource
 
 
 @dataclass
@@ -52,3 +53,5 @@ class RunConfig:
     # Cost budget: stop the run when total cost exceeds this amount (USD).
     # None = no limit. Works with CostTracker (always active).
     max_cost_usd: Optional[float] = None
+    # Explicit provenance for this run. Product entry points should set this.
+    source: RunSource = RunSource.sdk

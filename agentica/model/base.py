@@ -22,6 +22,7 @@ from agentica.model.message import Message
 from agentica.model.metrics import Metrics
 from agentica.model.response import ModelResponse, ModelResponseEvent
 from agentica.model.usage import Usage, RequestUsage, TokenDetails
+from agentica.security.redact import redact_sensitive_text
 from agentica.tools.base import ModelTool, Tool, Function, FunctionCall, ToolCallException, get_function_call_for_tool_call
 from agentica.utils.timer import Timer
 from agentica.cost_tracker import CostTracker, get_model_context_window
@@ -660,16 +661,17 @@ class Model(ABC):
             if isinstance(function_call.result, (GeneratorType, collections.abc.Iterator)):
                 for item in function_call.result:
                     function_call_output += str(item)
-                    if function_call.function.show_result:
-                        yield ModelResponse(content=str(item))
             else:
                 function_call_output = function_call.result
                 # Ensure output is always str for tool Message.content — some
                 # providers reject list-type tool results (M-02 fix)
                 if function_call_output is not None and not isinstance(function_call_output, str):
                     function_call_output = str(function_call_output)
-                if function_call.function.show_result:
-                    yield ModelResponse(content=function_call_output)
+
+            if isinstance(function_call_output, str):
+                function_call_output = redact_sensitive_text(function_call_output)
+            if function_call.function.show_result:
+                yield ModelResponse(content=function_call_output)
 
             # --- Layer 1: per-tool large result persistence ---
             # Persist to ~/.agentica/projects/<project-hash>/<session-id>/tool-results/
