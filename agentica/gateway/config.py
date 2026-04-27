@@ -89,6 +89,7 @@ class Settings:
     model_provider: str = ""
     model_name: str = ""
     model_thinking: str = ""
+    model_reasoning_effort: str = ""
 
     # Optional sibling models for DeepAgent. None / empty means reuse the
     # main model (same provider, base_url, api_key).
@@ -213,9 +214,10 @@ class Settings:
             ],
 
             # Model / path
-            model_provider=os.getenv("AGENTICA_MODEL_PROVIDER", "zhipuai"),
-            model_name=os.getenv("AGENTICA_MODEL_NAME", "glm-4.7-flash"),
+            model_provider=os.getenv("AGENTICA_MODEL_PROVIDER", "deepseek"),
+            model_name=os.getenv("AGENTICA_MODEL_NAME", "deepseek-v4-flash"),
             model_thinking=os.getenv("AGENTICA_MODEL_THINKING", ""),
+            model_reasoning_effort=os.getenv("AGENTICA_REASONING_EFFORT", ""),
 
             # Auxiliary model (leave empty to reuse main model)
             aux_model_provider=os.getenv("AGENTICA_AUX_MODEL_PROVIDER", ""),

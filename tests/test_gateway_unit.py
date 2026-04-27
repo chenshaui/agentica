@@ -63,9 +63,10 @@ class TestSettings:
         assert s.port == 8789
         assert s.debug is False
         assert s.gateway_token is None
-        assert s.model_provider == "zhipuai"
-        assert s.model_name == "glm-4.7-flash"
+        assert s.model_provider == "deepseek"
+        assert s.model_name == "deepseek-v4-flash"
         assert s.model_thinking == ""
+        assert s.model_reasoning_effort == ""
 
     def test_from_env_custom(self):
         """Settings.from_env() reads custom env vars."""
@@ -78,6 +79,7 @@ class TestSettings:
             "AGENTICA_MODEL_PROVIDER": "openai",
             "AGENTICA_MODEL_NAME": "gpt-4o",
             "AGENTICA_MODEL_THINKING": "enabled",
+            "AGENTICA_REASONING_EFFORT": "max",
         }
         with patch.dict(os.environ, env, clear=True):
             s = Settings.from_env()
@@ -88,6 +90,7 @@ class TestSettings:
         assert s.model_provider == "openai"
         assert s.model_name == "gpt-4o"
         assert s.model_thinking == "enabled"
+        assert s.model_reasoning_effort == "max"
 
     def test_mutable_model_fields(self):
         """model_provider, model_name, model_thinking should be mutable."""
@@ -96,9 +99,11 @@ class TestSettings:
         s.model_provider = "anthropic"
         s.model_name = "claude-3.5"
         s.model_thinking = "auto"
+        s.model_reasoning_effort = "high"
         assert s.model_provider == "anthropic"
         assert s.model_name == "claude-3.5"
         assert s.model_thinking == "auto"
+        assert s.model_reasoning_effort == "high"
 
     def test_base_dir_mutable(self):
         """base_dir should be settable as both str and Path."""
@@ -438,6 +443,7 @@ class TestModelFactory:
         from agentica.gateway.services.model_factory import create_model
         with patch("agentica.gateway.services.model_factory.settings") as mock_settings:
             mock_settings.model_thinking = ""
+            mock_settings.model_reasoning_effort = ""
             model = create_model("openai", "gpt-4o-mini")
         assert model.__class__.__name__ == "OpenAIChat"
 
@@ -445,6 +451,7 @@ class TestModelFactory:
         from agentica.gateway.services.model_factory import create_model
         with patch("agentica.gateway.services.model_factory.settings") as mock_settings:
             mock_settings.model_thinking = ""
+            mock_settings.model_reasoning_effort = ""
             model = create_model("kimi", "moonshot-v1")
         assert model.__class__.__name__ == "KimiChat"
 
@@ -457,8 +464,36 @@ class TestModelFactory:
             provider_name = next(iter(PROVIDER_REGISTRY))
             with patch("agentica.gateway.services.model_factory.settings") as mock_settings:
                 mock_settings.model_thinking = ""
+                mock_settings.model_reasoning_effort = ""
                 model = create_model(provider_name, "test-model")
             assert model is not None
+
+    def test_deepseek_provider_uses_v4_flash_thinking_defaults(self):
+        """Gateway DeepSeek models should inherit SDK provider thinking defaults."""
+        from agentica.gateway.services.model_factory import create_model
+
+        with patch("agentica.gateway.services.model_factory.settings") as mock_settings:
+            mock_settings.model_thinking = ""
+            mock_settings.model_reasoning_effort = ""
+            model = create_model("deepseek", "deepseek-v4-flash")
+
+        assert model.id == "deepseek-v4-flash"
+        assert model.base_url == "https://api.deepseek.com"
+        assert model.context_window == 1_000_000
+        assert model.max_output_tokens == 384_000
+        assert model.reasoning_effort == "high"
+        assert model.extra_body == {"thinking": {"type": "enabled"}}
+
+    def test_deepseek_provider_respects_gateway_reasoning_effort(self):
+        """Gateway env reasoning effort should override DeepSeek provider defaults."""
+        from agentica.gateway.services.model_factory import create_model
+
+        with patch("agentica.gateway.services.model_factory.settings") as mock_settings:
+            mock_settings.model_thinking = ""
+            mock_settings.model_reasoning_effort = "max"
+            model = create_model("deepseek", "deepseek-v4-flash")
+
+        assert model.reasoning_effort == "max"
 
     def test_cron_tools_returns_list(self):
         from agentica.gateway.services.model_factory import get_cron_tools

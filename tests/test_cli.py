@@ -467,6 +467,64 @@ class TestCLIConfiguration(unittest.TestCase):
         self.assertIsInstance(history_file, str)
         self.assertTrue(history_file.endswith("cli_history.txt"))
 
+    def test_parse_args_defaults_to_deepseek_v4_flash(self):
+        """CLI defaults should use the current DeepSeek v4 flash model."""
+        from agentica.cli.config import parse_args
+
+        with patch.object(sys, "argv", ["agentica"]):
+            args = parse_args()
+
+        self.assertEqual(args.model_provider, "deepseek")
+        self.assertEqual(args.model_name, "deepseek-v4-flash")
+        self.assertIsNone(args.reasoning_effort)
+
+    def test_get_model_defaults_deepseek_cli_reasoning_effort_to_max(self):
+        """CLI DeepSeek usage should default to max effort for agentic tasks."""
+        from agentica.cli.config import get_model
+
+        model = get_model("deepseek", "deepseek-v4-flash", api_key="fake_key")
+
+        self.assertEqual(model.reasoning_effort, "max")
+
+    def test_get_model_respects_explicit_deepseek_reasoning_effort(self):
+        """Explicit CLI reasoning effort should override the agentic default."""
+        from agentica.cli.config import get_model
+
+        model = get_model(
+            "deepseek",
+            "deepseek-v4-flash",
+            api_key="fake_key",
+            reasoning_effort="high",
+        )
+
+        self.assertEqual(model.reasoning_effort, "high")
+
+    def test_create_agent_uses_deepseek_cli_reasoning_default(self):
+        """DeepAgent creation should inherit the CLI's max-thinking default."""
+        from agentica.cli.config import create_agent
+
+        captured = {}
+
+        class FakeDeepAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self.tools = []
+
+        with patch("agentica.agent.deep.DeepAgent", FakeDeepAgent):
+            create_agent(
+                {
+                    "model_provider": "deepseek",
+                    "model_name": "deepseek-v4-flash",
+                    "debug": False,
+                    "work_dir": None,
+                },
+                extra_tools=[],
+                workspace=None,
+                skills_registry=None,
+            )
+
+        self.assertEqual(captured["model"].reasoning_effort, "max")
+
     def test_parse_extensions_remove_command(self):
         """CLI supports `agentica extensions remove <skill-name>`."""
         from agentica.cli.config import parse_args

@@ -137,7 +137,7 @@ EXAMPLE_MODELS = {
     'azure': ['gpt-4o', 'gpt-4o-mini'],
     'moonshot': ['kimi-k2.5', 'moonshot-v1-128k'],
     'zhipuai': ['glm-5', 'glm-4-flash', 'glm-4.7-flash'],
-    'deepseek': ['deepseek-chat', 'deepseek-reasoner'],
+    'deepseek': ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-reasoner', 'deepseek-chat'],
     'yi': ['yi-lightning', 'yi-large'],
     'doubao': ['doubao-1.5-pro-32k', 'doubao-1.5-lite-32k', 'doubao-1.5-vision-pro-32k'],
 }
@@ -214,14 +214,16 @@ def parse_args():
     parser.add_argument('--query', type=str, help='Question to ask the LLM', default=None)
     parser.add_argument('--model_provider', type=str,
                         choices=list(MODEL_REGISTRY.keys()),
-                        help='LLM model provider', default='zhipuai')
+                        help='LLM model provider', default='deepseek')
     parser.add_argument('--model_name', type=str,
-                        help='LLM model name to use, can be gpt-5/glm-4.7-flash/deepseek-chat/yi-lightning/...',
-                        default='glm-4.5-air')
+                        help='LLM model name to use, can be deepseek-v4-flash/deepseek-v4-pro/gpt-5/glm-4.7-flash/...',
+                        default='deepseek-v4-flash')
     parser.add_argument('--base_url', type=str, help='API base URL for the LLM')
     parser.add_argument('--api_key', type=str, help='API key for the LLM')
     parser.add_argument('--max_tokens', type=int, help='Maximum number of tokens for the LLM')
     parser.add_argument('--temperature', type=float, help='Temperature for the LLM')
+    parser.add_argument('--reasoning_effort', type=str, choices=['high', 'max'],
+                        help='Reasoning effort for thinking models; DeepSeek CLI defaults to max')
 
     # Auxiliary model (compression / memory extraction / experience lifecycle).
     # Omit to reuse the main model (single API key). Any field can differ — a
@@ -303,7 +305,15 @@ def configure_tools(tool_names: Optional[List[str]] = None) -> List[Any]:
     return tools
 
 
-def get_model(model_provider, model_name, base_url=None, api_key=None, max_tokens=None, temperature=None):
+def get_model(
+    model_provider,
+    model_name,
+    base_url=None,
+    api_key=None,
+    max_tokens=None,
+    temperature=None,
+    reasoning_effort=None,
+):
     """Create a model instance based on the provider name.
 
     Uses MODEL_REGISTRY for provider lookup instead of if/elif chains.
@@ -317,6 +327,10 @@ def get_model(model_provider, model_name, base_url=None, api_key=None, max_token
         params["max_tokens"] = max_tokens
     if temperature is not None:
         params["temperature"] = temperature
+    if model_provider == "deepseek":
+        params["reasoning_effort"] = reasoning_effort or "max"
+    elif reasoning_effort is not None:
+        params["reasoning_effort"] = reasoning_effort
 
     model_class = MODEL_REGISTRY.get(model_provider)
     if model_class is None:
@@ -348,6 +362,7 @@ def _build_sibling_model(agent_config: dict, prefix: str):
             or agent_config.get("api_key"),
         max_tokens=agent_config.get("max_tokens"),
         temperature=agent_config.get("temperature"),
+        reasoning_effort=agent_config.get("reasoning_effort"),
     )
 
 
@@ -393,6 +408,7 @@ def create_agent(agent_config: dict, extra_tools: Optional[List] = None,
         api_key=agent_config.get("api_key"),
         max_tokens=agent_config.get("max_tokens"),
         temperature=agent_config.get("temperature"),
+        reasoning_effort=agent_config.get("reasoning_effort"),
     )
 
     # Optional sibling models. When the user doesn't pass --aux_model_name /

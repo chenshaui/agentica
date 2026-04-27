@@ -1582,8 +1582,8 @@ def get_builtin_tools(
         tools.append(SkillTool(custom_skill_dirs=custom_skill_dirs, auto_load=True))
 
     if include_user_input:
-        from agentica.tools.user_input_tool import UserInputTool
-        tools.append(UserInputTool(input_callback=user_input_callback))
+        from agentica.tools.user_input_tool import AskUserQuestionTool
+        tools.append(AskUserQuestionTool(input_callback=user_input_callback))
 
     return tools
 

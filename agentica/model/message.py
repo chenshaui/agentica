@@ -61,8 +61,9 @@ class Message(BaseModel):
     # Data from the provider we might need on subsequent messages
     provider_data: Optional[Dict[str, Any]] = None
 
-    # --- Data not sent to the Model API ---
-    # The reasoning content from the model
+    # --- Provider fields that may be sent back to compatible Model APIs ---
+    # OpenAI-compatible reasoning traces. DeepSeek requires this on later turns
+    # when an assistant message with tool calls is replayed.
     reasoning_content: Optional[str] = None
     # -*- Attributes not sent to the model
     # The name of the tool called

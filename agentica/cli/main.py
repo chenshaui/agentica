@@ -33,6 +33,7 @@ def main():
         "api_key": args.api_key,
         "max_tokens": args.max_tokens,
         "temperature": args.temperature,
+        "reasoning_effort": args.reasoning_effort,
         # Auxiliary model (None means reuse main model).
         "aux_model_provider": args.aux_model_provider,
         "aux_model_name": args.aux_model_name,

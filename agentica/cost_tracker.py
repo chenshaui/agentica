@@ -64,9 +64,11 @@ _FALLBACK_PRICING: Dict[str, Dict[str, float]] = {
     "gemini-2.0-flash":     {"input": 0.10,  "output": 0.40,  "cache_read": 0.025, "cache_write": 0.00, "context_window": 1048576},
     "gemini-1.5-pro":       {"input": 1.25,  "output": 5.00,  "cache_read": 0.312, "cache_write": 0.00, "context_window": 1000000},
     "gemini-1.5-flash":     {"input": 0.075, "output": 0.30,  "cache_read": 0.019, "cache_write": 0.00, "context_window": 1000000},
-    # ---- DeepSeek (official) ----
-    "deepseek-chat":        {"input": 0.28,  "output": 0.42,  "cache_read": 0.028, "cache_write": 0.00, "context_window": 131072},
-    "deepseek-reasoner":    {"input": 0.28,  "output": 0.42,  "cache_read": 0.028, "cache_write": 0.00, "context_window": 128000},
+    # ---- DeepSeek (official, CNY list price converted to USD at ~7.2 CNY/USD) ----
+    "deepseek-v4-flash":    {"input": 0.14,  "output": 0.28, "cache_read": 0.03, "cache_write": 0.00, "context_window": 1000000},
+    "deepseek-v4-pro":      {"input": 1.67,  "output": 3.33, "cache_read": 0.14, "cache_write": 0.00, "context_window": 1000000},
+    "deepseek-chat":        {"input": 0.14,  "output": 0.28, "cache_read": 0.03, "cache_write": 0.00, "context_window": 1000000},
+    "deepseek-reasoner":    {"input": 0.14,  "output": 0.28, "cache_read": 0.03, "cache_write": 0.00, "context_window": 1000000},
     # ---- ZhipuAI (official) ----
     "glm-5":                {"input": 1.00,  "output": 3.20,  "cache_read": 0.20,  "cache_write": 0.00, "context_window": 204800},
     "glm-5.1":              {"input": 6.00,  "output": 24.00, "cache_read": 1.30,  "cache_write": 0.00, "context_window": 200000},

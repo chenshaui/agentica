@@ -372,12 +372,12 @@ from agentica.tools.ocr_tool import OcrTool                  # 文字识别
 agent = Agent(tools=[DalleTool(), ImageAnalysisTool()])
 ```
 
-### Human-in-the-loop：`UserInputTool`
+### Human-in-the-loop：`AskUserQuestionTool`
 
 让 Agent 在执行过程中向用户提问：
 
 ```python
-from agentica.tools.user_input_tool import UserInputTool
+from agentica.tools.user_input_tool import AskUserQuestionTool
 
 def my_input_handler(prompt: str, options=None) -> str:
     """自定义输入处理（如 Web UI 弹窗）"""
@@ -386,7 +386,7 @@ def my_input_handler(prompt: str, options=None) -> str:
 
 agent = Agent(
     model=ZhipuAI(),
-    tools=[UserInputTool(input_callback=my_input_handler)],
+    tools=[AskUserQuestionTool(input_callback=my_input_handler)],
 )
 # Agent 需要确认时会调用 user_input 工具：
 # "确定要删除 production 数据库吗？(yes/no)"

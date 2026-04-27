@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 @author:XuMing(xuming624@qq.com)
-@description: User Input Tool - Human-in-the-loop tool for agent interactions
+@description: Ask User Question Tool - Human-in-the-loop tool for agent interactions
 
 This tool enables agents to request input or confirmation from users during execution.
 It supports various interaction modes:
@@ -12,10 +12,10 @@ It supports various interaction modes:
 Example:
     ```python
     from agentica import Agent
-    from agentica.tools.user_input_tool import UserInputTool
+    from agentica.tools.user_input_tool import AskUserQuestionTool
     
     agent = Agent(
-        tools=[UserInputTool()],
+        tools=[AskUserQuestionTool()],
         instructions="When uncertain, ask the user for confirmation.",
     )
     ```
@@ -28,7 +28,7 @@ from agentica.model.message import Message
 from agentica.utils.log import logger
 
 
-class UserInputTool(Tool):
+class AskUserQuestionTool(Tool):
     """
     Human-in-the-loop tool that allows agents to request user input during execution.
     
@@ -49,14 +49,14 @@ class UserInputTool(Tool):
     Example:
         ```python
         # Basic usage with console input
-        tool = UserInputTool()
+        tool = AskUserQuestionTool()
         
         # With custom callback (e.g., for web applications)
         def web_input_callback(prompt: str, options: Optional[List[str]] = None) -> str:
             # Send prompt to frontend and wait for response
             return frontend_api.get_user_input(prompt, options)
         
-        tool = UserInputTool(input_callback=web_input_callback)
+        tool = AskUserQuestionTool(input_callback=web_input_callback)
         ```
     """
     
@@ -92,7 +92,7 @@ You have access to the `user_input` tool to request input or confirmation from t
         default_on_timeout: Optional[str] = None,
     ):
         """
-        Initialize UserInputTool.
+        Initialize AskUserQuestionTool.
         
         Args:
             input_callback: Custom callback function for getting user input.
@@ -100,7 +100,7 @@ You have access to the `user_input` tool to request input or confirmation from t
             timeout: Timeout in seconds for waiting for user input.
             default_on_timeout: Default value to return if timeout occurs.
         """
-        super().__init__(name="user_input_tool")
+        super().__init__(name="ask_user_question_tool")
         self.input_callback = input_callback
         self.timeout = timeout
         self.default_on_timeout = default_on_timeout
@@ -289,7 +289,7 @@ You have access to the `user_input` tool to request input or confirmation from t
         return self.user_input(prompt=prompt, mode="confirm")
 
 
-class UserInputRequired(StopAgentRun):
+class AskUserQuestionRequired(StopAgentRun):
     """
     Exception raised when user input is required but not available.
     
@@ -304,7 +304,7 @@ class UserInputRequired(StopAgentRun):
         options: Optional[List[str]] = None,
     ):
         """
-        Initialize UserInputRequired exception.
+        Initialize AskUserQuestionRequired exception.
         
         Args:
             prompt: The prompt to show to the user
@@ -327,10 +327,10 @@ class UserInputRequired(StopAgentRun):
 
 
 if __name__ == "__main__":
-    # Test the UserInputTool
-    tool = UserInputTool()
+    # Test the AskUserQuestionTool
+    tool = AskUserQuestionTool()
     
-    print("Testing UserInputTool...")
+    print("Testing AskUserQuestionTool...")
     
     # Test confirmation
     print("\n--- Test 1: Confirmation ---")

@@ -59,6 +59,12 @@ _OPENAI_REQUEST_PARAMS = [
     "stop", "temperature", "user", "top_p", "extra_headers", "extra_body",
     "extra_query", "metadata",
 ]
+_DEEPSEEK_THINKING_UNSUPPORTED_PARAMS = (
+    "temperature",
+    "top_p",
+    "presence_penalty",
+    "frequency_penalty",
+)
 
 
 @dataclass
@@ -187,6 +193,18 @@ class OpenAIChat(Model):
                 params[attr_name] = val
         return params
 
+    def _is_deepseek_thinking_request(self, request_params: Dict[str, Any]) -> bool:
+        """Return True when DeepSeek thinking mode is explicitly enabled."""
+        if self.provider != "DeepSeek":
+            return False
+        extra_body = request_params.get("extra_body")
+        if not isinstance(extra_body, dict):
+            return False
+        thinking = extra_body.get("thinking")
+        if not isinstance(thinking, dict):
+            return False
+        return thinking.get("type") == "enabled"
+
     @property
     def request_kwargs(self) -> Dict[str, Any]:
         """Returns keyword arguments for API requests."""
@@ -198,6 +216,9 @@ class OpenAIChat(Model):
                 request_params["tool_choice"] = self.tool_choice if self.tool_choice is not None else "auto"
         if self.request_params is not None:
             request_params.update(self.request_params)
+        if self._is_deepseek_thinking_request(request_params):
+            for param_name in _DEEPSEEK_THINKING_UNSUPPORTED_PARAMS:
+                request_params.pop(param_name, None)
         return request_params
 
     def to_dict(self) -> Dict[str, Any]:
@@ -321,6 +342,7 @@ class OpenAIChat(Model):
             role=response_message.role or "assistant",
             content=content,
         )
+        assistant_message.provider_data = response_message.model_dump(exclude_none=True)
         if response_message.tool_calls is not None and len(response_message.tool_calls) > 0:
             try:
                 assistant_message.tool_calls = [t.model_dump() for t in response_message.tool_calls]
@@ -334,6 +356,8 @@ class OpenAIChat(Model):
 
         if hasattr(response_message, "reasoning_content") and response_message.reasoning_content is not None:
             assistant_message.reasoning_content = response_message.reasoning_content
+        elif hasattr(response_message, "reasoning") and response_message.reasoning is not None:
+            assistant_message.reasoning_content = response_message.reasoning
 
         self.update_usage_metrics(assistant_message, metrics, response_usage)
         return assistant_message
@@ -448,9 +472,14 @@ class OpenAIChat(Model):
 
                 response_delta: ChoiceDelta = response.choices[0].delta
 
+                reasoning_delta = None
                 if hasattr(response_delta, "reasoning_content") and response_delta.reasoning_content:
-                    stream_data.response_reasoning_content += response_delta.reasoning_content
-                    yield ModelResponse(reasoning_content=response_delta.reasoning_content)
+                    reasoning_delta = response_delta.reasoning_content
+                elif hasattr(response_delta, "reasoning") and response_delta.reasoning:
+                    reasoning_delta = response_delta.reasoning
+                if reasoning_delta:
+                    stream_data.response_reasoning_content += reasoning_delta
+                    yield ModelResponse(reasoning_content=reasoning_delta)
 
                 if hasattr(response_delta, "content") and response_delta.content:
                     stream_data.response_content += response_delta.content

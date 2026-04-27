@@ -55,6 +55,13 @@ def create_model(
             params["extra_body"] = {"thinking": {"type": settings.model_thinking}}
         logger.info(f"Model thinking mode: {settings.model_thinking} (provider={model_provider})")
 
+    if settings.model_reasoning_effort:
+        if settings.model_reasoning_effort not in ("high", "max"):
+            raise ValueError("AGENTICA_REASONING_EFFORT must be one of: high, max")
+        if model_provider == "deepseek":
+            params["reasoning_effort"] = settings.model_reasoning_effort
+            logger.info(f"DeepSeek reasoning effort: {settings.model_reasoning_effort}")
+
     # Core providers with dedicated classes
     if model_provider == "openai":
         from agentica.model.openai import OpenAIChat

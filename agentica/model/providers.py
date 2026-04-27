@@ -14,7 +14,7 @@ Usage:
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Dict, List
+from typing import Any, Optional, Dict, List
 from os import getenv
 
 
@@ -29,6 +29,7 @@ class ProviderConfig:
     provider: Optional[str] = None
     context_window: int = 128000
     max_output_tokens: Optional[int] = None
+    request_params: Dict[str, Any] = field(default_factory=dict)
     models: List[str] = field(default_factory=list)
 
 
@@ -85,7 +86,9 @@ def create_provider(key: str, **overrides):
         "provider": config.provider or config.name,
         "api_key": api_key,
         "base_url": config.base_url,
+        "context_window": config.context_window,
     }
+    params.update(config.request_params)
     if config.max_output_tokens is not None:
         params["max_output_tokens"] = config.max_output_tokens
 
@@ -100,10 +103,16 @@ def create_provider(key: str, **overrides):
 
 register_provider("deepseek", ProviderConfig(
     name="DeepSeek",
-    default_model="deepseek-chat",
-    base_url="https://api.deepseek.com/v1",
+    default_model=getenv("DEEPSEEK_MODEL_NAME", "deepseek-v4-flash"),
+    base_url="https://api.deepseek.com",
     api_key_env="DEEPSEEK_API_KEY",
-    models=["deepseek-chat", "deepseek-reasoner"],
+    context_window=1_000_000,
+    max_output_tokens=384_000,
+    request_params={
+        "reasoning_effort": "high",
+        "extra_body": {"thinking": {"type": "enabled"}},
+    },
+    models=["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-reasoner", "deepseek-chat"],
 ))
 
 register_provider("doubao", ProviderConfig(
@@ -143,9 +152,22 @@ register_provider("yi", ProviderConfig(
 
 register_provider("nvidia", ProviderConfig(
     name="Nvidia",
-    default_model="nvidia/llama-3.1-nemotron-70b-instruct",
+    default_model=getenv("NVIDIA_MODEL_NAME", "deepseek-ai/deepseek-v4-flash"),
     base_url="https://integrate.api.nvidia.com/v1",
     api_key_env="NVIDIA_API_KEY",
+    max_output_tokens=16384,
+    request_params={
+        "temperature": 1,
+        "top_p": 0.95,
+        "max_tokens": 16384,
+        "extra_body": {
+            "chat_template_kwargs": {
+                "thinking": True,
+                "reasoning_effort": "high",
+            }
+        },
+    },
+    models=["deepseek-ai/deepseek-v4-flash"],
 ))
 
 register_provider("internlm", ProviderConfig(
@@ -160,7 +182,7 @@ register_provider("moonshot", ProviderConfig(
     default_model="kimi-k2.5",
     base_url="https://api.moonshot.cn/v1",
     api_key_env="MOONSHOT_API_KEY",
-    models=["kimi-k2.5", "moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"],
+    models=["kimi-k2.6", "kimi-k2.5", "moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"],
 ))
 
 register_provider("zhipuai", ProviderConfig(
@@ -169,7 +191,7 @@ register_provider("zhipuai", ProviderConfig(
     base_url="https://open.bigmodel.cn/api/paas/v4",
     api_key_env="ZHIPUAI_API_KEY",
     api_key_env_fallback="ZAI_API_KEY",
-    models=["glm-4.7-flash", "glm-4-plus", "glm-4-long", "glm-4-flashx", "glm-4-flash", "glm-4-air", "glm-4-airx", "glm-4"],
+    models=["glm-4.7-flash", "glm-4-plus", "glm-4-long", "glm-4-flashx", "glm-4-flash", "glm-4-air", "glm-4-airx", "glm-4", "glm-5.1"],
 ))
 
 register_provider("sambanova", ProviderConfig(
