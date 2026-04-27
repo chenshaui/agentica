@@ -110,6 +110,7 @@ class DeepAgent(Agent):
         name: str = "DeepAgent",
         tools: Optional[List[Union[ModelTool, Tool, Callable, Dict, Function]]] = None,
         workspace: Optional[Union[Any, str]] = None,
+        user_id: Optional[str] = None,
         work_dir: Optional[str] = None,
         session_id: Optional[str] = None,
         add_history_to_context: bool = True,
@@ -147,7 +148,7 @@ class DeepAgent(Agent):
 
         # Default workspace
         if workspace is None:
-            workspace = Workspace(os.path.expanduser("~/.agentica/workspace"))
+            workspace = Workspace(os.path.expanduser("~/.agentica/workspace"), user_id=user_id)
 
         # Default work_dir
         if work_dir is None:
@@ -221,6 +222,7 @@ class DeepAgent(Agent):
             name=name,
             tools=all_tools,
             workspace=workspace,
+            user_id=user_id,
             work_dir=work_dir,
             enable_long_term_memory=enable_long_term_memory,
             session_id=session_id,

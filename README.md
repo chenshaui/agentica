@@ -129,6 +129,11 @@ agent = DeepAgent(
 
 `DeepAgent` 默认启用 `SkillTool(auto_load=True)`，会自动发现 `~/.agentica/skills/` 和 `.agentica/skills/` 目录下的 skill；同时默认开启 `tool_config.auto_load_mcp=True`，启动时会自动读取工作目录里的 `mcp_config.json/yaml/yml`。这样 DeepAgent 开箱就是带 skills + MCP + memory 的一键完全体。
 
+> ⚠️ **使用 `Agent`（非 DeepAgent）开启持久化时容易踩的两个坑**
+> - **会话日志不落盘**：`session_id` 默认 `None`，必须显式传入才会写 `~/.agentica/projects/<slug>/<session_id>.jsonl`。
+> - **长期记忆/自动归档不生效**：自动归档和记忆抽取的门控是 `enable_long_term_memory=True` **且** `workspace` 非空，只配 `long_term_memory_config` 不打开开关；多用户场景用 `Agent(workspace="...", user_id=user_id, session_id=user_id, enable_long_term_memory=True)`。
+> - 详见 [常见问题](https://github.com/shibing624/agentica/blob/main/docs/guides/best_practices.md#常见问题)。
+
 ## CLI
 
 ```bash

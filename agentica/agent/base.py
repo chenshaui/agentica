@@ -217,6 +217,7 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
             tools: Optional[List[Union[ModelTool, Tool, Callable, Dict, Function]]] = None,
             knowledge: Optional[Any] = None,
             workspace: Optional[Union[Any, str]] = None,  # Workspace or str path
+            user_id: Optional[str] = None,  # User ID for multi-user workspace isolation
             work_dir: Optional[str] = None,  # Working directory for file operations
             enable_long_term_memory: bool = False,  # Enable long-term memory tools and hooks
             enable_experience_capture: bool = False,  # Enable experience capture (self-evolution)
@@ -256,6 +257,7 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
             tools=tools,
             knowledge=knowledge,
             workspace=workspace,
+            user_id=user_id,
             work_dir=work_dir,
             enable_long_term_memory=enable_long_term_memory,
             enable_experience_capture=enable_experience_capture,
@@ -305,6 +307,7 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
         tools: Optional[List[Union[ModelTool, Tool, Callable, Dict, Function]]],
         knowledge: Optional[Any],
         workspace: Optional[Union[Any, str]],
+        user_id: Optional[str],
         work_dir: Optional[str],
         enable_long_term_memory: bool,
         enable_experience_capture: bool,
@@ -327,9 +330,16 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
 
         if isinstance(workspace, str):
             from agentica.workspace import Workspace
-            self.workspace = Workspace(workspace)
+            self.workspace = Workspace(workspace, user_id=user_id)
         else:
             self.workspace = workspace
+            if user_id is not None and workspace is not None:
+                existing = workspace.user_id
+                if existing not in (None, "default") and existing != user_id:
+                    logger.warning(
+                        f"Agent user_id={user_id!r} overrides Workspace user_id={existing!r}"
+                    )
+                workspace.set_user(user_id)
 
     def _init_execution(
         self,

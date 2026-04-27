@@ -728,6 +728,59 @@ agent = Agent(
 3. 使用更强的模型
 4. 添加知识库
 
+### Q: 会话日志没有落盘到 `~/.agentica/projects/...`？
+
+**A:** `Agent` 默认 `session_id=None`，此时不会创建 `SessionLog`，也就不会写 jsonl。要持久化对话日志必须显式传 `session_id`：
+
+```python
+agent = Agent(
+    model=...,
+    session_id=user_id,  # 多用户场景常用 user_id 作为 session_id
+)
+```
+
+落盘路径：`~/.agentica/projects/<project-slug>/<session_id>.jsonl`，`<project-slug>` 由当前工作目录派生。
+
+源码位置：`agent/base.py::_init_execution`，`session_id is None` 时 `_session_log` 直接为 `None`。
+
+### Q: 配了 `long_term_memory_config` / `Workspace`，但长期记忆和对话归档没生效？
+
+**A:** 自动归档（`ConversationArchiveHooks`）和自动抽取记忆（`MemoryExtractHooks`）的注入条件是 **`enable_long_term_memory=True` 且 `workspace is not None`** 双闸门，仅配 `long_term_memory_config` 不会打开开关：
+
+```python
+agent = Agent(
+    model=...,
+    workspace=Workspace("~/.agentica/workspace", user_id=user_id),
+    enable_long_term_memory=True,             # 关键：必须显式开启
+    long_term_memory_config=WorkspaceMemoryConfig(
+        auto_archive=True,
+        auto_extract_memory=True,
+    ),
+)
+```
+
+`DeepAgent` 已默认 `enable_long_term_memory=True`，开箱即用。普通 `Agent` 需自己打开。
+
+源码位置：`agent/base.py::_post_init` 中以 `enable_long_term_memory and workspace is not None` 作为 hooks 注入门控。
+
+### Q: 多用户场景怎么隔离会话和记忆？
+
+**A:** 一个用户一个 Agent 实例，构造时把 `user_id` 同时传给 `Agent` 和 `session_id`：
+
+```python
+def create_agent(user_id: str) -> Agent:
+    return Agent(
+        model=...,
+        workspace="~/.agentica/workspace",   # 字符串走便捷路径
+        user_id=user_id,                      # workspace 落到 users/<user_id>/
+        session_id=user_id,                   # 会话日志按 user 切文件
+        enable_long_term_memory=True,
+        long_term_memory_config=WorkspaceMemoryConfig(auto_archive=True),
+    )
+```
+
+不要试图在 `agent.run()` 里切 `user_id`——`auto_archive` / 记忆 hooks 会把数据写错位置。
+
 ---
 
-*文档最后更新: 2026-02-16*
+*文档最后更新: 2026-04-27*
