@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """
+@author:XuMing(xuming624@qq.com)
 @description: CostTracker — per-run LLM cost accounting.
 
 Tracks token usage and estimates USD cost for every API call within

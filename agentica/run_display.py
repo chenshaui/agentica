@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""UI-agnostic classification for RunResponse streaming events."""
+"""
+@author:XuMing(xuming624@qq.com)
+@description: UI-agnostic classification for RunResponse streaming events.
+"""
 
 from dataclasses import dataclass
 from enum import Enum

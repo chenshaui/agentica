@@ -1,3 +1,9 @@
+# -*- coding: utf-8 -*-
+"""
+@author:XuMing(xuming624@qq.com)
+@description: Media classes 
+"""
+
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 

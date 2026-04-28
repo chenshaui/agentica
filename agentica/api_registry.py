@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Single-source registry for Agentica's top-level public API."""
+"""
+@author:XuMing(xuming624@qq.com)
+@description: Single-source registry for Agentica's top-level public API.
+"""
 
 PROVIDER_ALIAS_TO_SLUG = {
     "DeepSeekChat": "deepseek",

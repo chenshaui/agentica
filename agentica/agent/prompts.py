@@ -2,9 +2,6 @@
 """
 @author:XuMing(xuming624@qq.com)
 @description: Prompt building methods for Agent
-
-V2: Reads prompt settings from self.prompt_config (PromptConfig dataclass)
-and self.tool_config instead of flat self.xxx attributes.
 """
 
 import json

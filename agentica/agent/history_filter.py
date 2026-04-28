@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
-"""History message filtering pipeline.
+"""
+@author:XuMing(xuming624@qq.com)
+@description: History message filtering pipeline.
 
 Used by ``PromptsMixin`` to apply ``HistoryConfig`` rules and the optional
 ``Agent.history_filter`` callable to multi-turn history before it's appended
