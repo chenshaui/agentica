@@ -17,6 +17,7 @@ from agentica.document import Document
 from agentica.model.message import Message, MessageReferences
 from agentica.run_response import RunResponseExtraData
 from agentica.utils.timer import Timer
+from agentica.agent.history_filter import apply_history_pipeline
 
 
 class PromptsMixin:
@@ -684,6 +685,11 @@ class PromptsMixin:
         if self.add_history_to_context:
             history: List[Message] = self.working_memory.get_messages_from_last_n_runs(
                 last_n=self.num_history_turns, skip_role=pc.system_message_role
+            )
+            history = apply_history_pipeline(
+                history,
+                config=self.history_config,
+                user_filter=self.history_filter,
             )
             if len(history) > 0:
                 logger.debug(f"Adding {len(history)} messages from history")

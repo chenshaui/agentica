@@ -13,12 +13,32 @@ from agentica.api_registry import (
 
 def test_api_registry_contains_core_lazy_exports():
     assert LAZY_IMPORTS["SqliteDb"] == "agentica.db.sqlite"
-    assert LAZY_IMPORTS["OpenAIChat"] == "agentica.model.openai.chat"
-    assert LAZY_IMPORTS["BuiltinTodoTool"] == "agentica.tools.buildin_tools"
     assert LAZY_IMPORTS["AskUserQuestionTool"] == "agentica.tools.user_input_tool"
     assert LAZY_IMPORTS["AskUserQuestionRequired"] == "agentica.tools.user_input_tool"
     assert "UserInputTool" not in LAZY_IMPORTS
     assert "UserInputRequired" not in LAZY_IMPORTS
+    # OpenAIChat + builtin tools are eager (openai is a hard dep, builtin tools have no extra deps)
+    assert "OpenAIChat" not in LAZY_IMPORTS
+    assert "BuiltinTodoTool" not in LAZY_IMPORTS
+    assert "BuiltinFileTool" not in LAZY_IMPORTS
+
+
+def test_eager_top_level_imports_are_directly_accessible():
+    """OpenAIChat and 7 builtin tools must be importable via `from agentica import X`."""
+    from agentica import (
+        OpenAIChat,
+        BuiltinFileTool, BuiltinExecuteTool, BuiltinFetchUrlTool,
+        BuiltinWebSearchTool, BuiltinTodoTool, BuiltinTaskTool,
+        BuiltinMemoryTool,
+    )
+    assert OpenAIChat is not None
+    assert BuiltinFileTool is not None
+    assert BuiltinExecuteTool is not None
+    assert BuiltinFetchUrlTool is not None
+    assert BuiltinWebSearchTool is not None
+    assert BuiltinTodoTool is not None
+    assert BuiltinTaskTool is not None
+    assert BuiltinMemoryTool is not None
 
 
 def test_api_registry_contains_provider_aliases():

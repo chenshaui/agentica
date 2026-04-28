@@ -51,16 +51,16 @@ pip install -U agentica
 
 ## Quick Start
 
+No need to learn `asyncio`. `run_sync` runs the full agentic loop internally
+(parallel tools, streaming, compression, retries) — from the outside it's just
+a normal sync function:
+
 ```python
-import asyncio
-from agentica import Agent, ZhipuAI
+from agentica import Agent, OpenAIChat
 
-async def main():
-    agent = Agent(model=ZhipuAI())
-    result = await agent.run("Describe Beijing in one sentence")
-    print(result.content)
-
-asyncio.run(main())
+agent = Agent(model=OpenAIChat(id="gpt-4o-mini"))
+result = agent.run_sync("Describe Beijing in one sentence")
+print(result.content)
 ```
 
 ```
@@ -70,9 +70,52 @@ Beijing is the capital of China, a historic city with over 3,000 years of histor
 Set up your API keys first:
 
 ```bash
-export ZHIPUAI_API_KEY="your-api-key"      # ZhipuAI (glm-4.7-flash is free)
 export OPENAI_API_KEY="sk-xxx"              # OpenAI
+export ZHIPUAI_API_KEY="your-api-key"       # ZhipuAI (glm-4.7-flash is free)
 export DEEPSEEK_API_KEY="your-api-key"      # DeepSeek
+```
+
+### Sync vs Async
+
+| Your code style | Recommended API |
+|---|---|
+| Plain script / Jupyter / FastAPI route (default) | `agent.run_sync(...)`, `agent.print_response_sync(...)`, `for chunk in agent.run_stream_sync(...)` |
+| Already inside an asyncio loop / want to `gather` N agents in parallel | `await agent.run(...)`, `async for chunk in agent.run_stream(...)` |
+
+`run_sync` is just `asyncio.run(self.run(...))` under the hood, and tool calls
+still run concurrently via `asyncio.gather`. **The sync API does not sacrifice
+performance** — it just hides the event loop.
+
+```python
+import asyncio
+from agentica import Agent, OpenAIChat
+
+async def main():
+    agent = Agent(model=OpenAIChat(id="gpt-4o-mini"))
+    result = await agent.run("Describe Shanghai in one sentence")
+    print(result.content)
+
+asyncio.run(main())
+```
+
+### Recommended imports
+
+Core SDK + builtin tools are exported at the top level — no long paths to remember:
+
+```python
+from agentica import (
+    Agent, DeepAgent, Workspace, tool,
+    OpenAIChat,                                       # openai is a hard dep
+    BuiltinFileTool, BuiltinExecuteTool,              # files / shell
+    BuiltinFetchUrlTool, BuiltinWebSearchTool,        # web
+    BuiltinTodoTool, BuiltinTaskTool,                 # task list / sub-agent
+    HistoryConfig, WorkspaceMemoryConfig, RunConfig,  # configs
+)
+
+# Other models / heavy tools live in submodules (avoid pulling heavy deps at startup)
+from agentica.model.anthropic.claude import Claude   # pip install anthropic
+from agentica.model.ollama.chat import Ollama
+from agentica.tools.shell_tool import ShellTool
 ```
 
 ## Features
@@ -128,6 +171,92 @@ agent = DeepAgent(
 ```
 
 `DeepAgent` enables `SkillTool(auto_load=True)` by default, so it automatically discovers skills from `~/.agentica/skills/` and `.agentica/skills/`; it also turns on `tool_config.auto_load_mcp=True`, which auto-loads `mcp_config.json/yaml/yml` from the working directory when present. In practice, `DeepAgent` now boots as a one-command runtime with skills + MCP + memory already wired in.
+
+## Agent Recipes
+
+`Agent` has many parameters, but most production code uses one of these 5 templates. Copy-paste and adapt:
+
+### One-shot script (minimal)
+
+```python
+agent = Agent(model=OpenAIChat(id="gpt-4o-mini"))
+print(agent.run_sync("Describe Beijing in one sentence").content)
+```
+
+### Multi-turn conversation
+
+```python
+agent = Agent(
+    model=OpenAIChat(id="gpt-4o-mini"),
+    add_history_to_context=True,
+    num_history_turns=5,
+)
+agent.run_sync("My name is Alice, I'm an ML engineer.")
+agent.run_sync("What is my name?")  # the model remembers
+```
+
+### Tool-based Agent (custom tool set)
+
+```python
+from agentica import Agent, OpenAIChat, BuiltinWebSearchTool, BuiltinFileTool, BuiltinExecuteTool
+
+agent = Agent(
+    model=OpenAIChat(id="gpt-4o-mini"),
+    tools=[BuiltinWebSearchTool(), BuiltinFileTool(work_dir="./workspace"), BuiltinExecuteTool(work_dir="./workspace")],
+)
+agent.run_sync("Search Python 3.13 new features and write them to features.md")
+```
+
+### Multi-user + long-term memory + session archive
+
+One Agent instance per user. `session_id` is usually just the `user_id`:
+
+```python
+from agentica import Agent, OpenAIChat, Workspace, WorkspaceMemoryConfig
+
+def create_agent(user_id: str) -> Agent:
+    return Agent(
+        model=OpenAIChat(id="gpt-4o-mini"),
+        workspace=Workspace("~/.agentica/workspace", user_id=user_id),
+        session_id=user_id,                      # session log goes to ~/.agentica/projects/.../{user_id}.jsonl
+        enable_long_term_memory=True,            # ← REQUIRED — opt-in switch
+        long_term_memory_config=WorkspaceMemoryConfig(
+            auto_archive=True,                   # archive each conversation after run()
+            auto_extract_memory=True,            # LLM extracts memory entries
+        ),
+        add_history_to_context=True,
+        num_history_turns=5,
+    )
+```
+
+> **Common pitfall**: setting `long_term_memory_config` but forgetting `enable_long_term_memory=True` — all memory/archive features get silently ignored. Since v1.4.1, `Agent.__init__` now warns about this misconfiguration.
+
+### Long-session token saving: customize history
+
+Search-tool results are typically huge and rarely needed in later turns. You can drop them from history and truncate AI replies:
+
+```python
+from agentica import Agent, OpenAIChat, HistoryConfig
+
+agent = Agent(
+    model=OpenAIChat(id="gpt-4o-mini"),
+    add_history_to_context=True,
+    num_history_turns=10,
+    history_config=HistoryConfig(
+        excluded_tools=["search_*", "web_search"],   # drop matching tool results, paired tool_calls auto-stripped
+        assistant_max_chars=200,                      # truncate AI replies to 200 chars
+    ),
+)
+```
+
+For more advanced filtering (strip user-prompt prefixes, drop messages by metadata, etc.), use the `history_filter` callback. See `examples/memory/03_history_filter.py`.
+
+### Full power (CLI / Gateway / long-running tasks)
+
+```python
+from agentica import DeepAgent
+agent = DeepAgent()  # 40+ builtin tools + compression + long-term memory + skills + MCP, batteries-included
+```
 
 ## CLI
 

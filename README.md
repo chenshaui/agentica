@@ -51,16 +51,14 @@ pip install -U agentica
 
 ## 快速开始
 
+不用学 asyncio 也能跑。`run_sync` 在内部跑完整 agentic loop（工具并发、流式、压缩、重试都在），从外面看就是一个普通同步函数：
+
 ```python
-import asyncio
-from agentica import Agent, ZhipuAI
+from agentica import Agent, OpenAIChat
 
-async def main():
-    agent = Agent(model=ZhipuAI())
-    result = await agent.run("一句话介绍北京")
-    print(result.content)
-
-asyncio.run(main())
+agent = Agent(model=OpenAIChat(id="gpt-4o-mini"))
+result = agent.run_sync("一句话介绍北京")
+print(result.content)
 ```
 
 ```
@@ -70,9 +68,50 @@ asyncio.run(main())
 需要先设置 API Key：
 
 ```bash
-export ZHIPUAI_API_KEY="your-api-key"      # 智谱AI（glm-4.7-flash 免费）
 export OPENAI_API_KEY="sk-xxx"              # OpenAI
+export ZHIPUAI_API_KEY="your-api-key"       # 智谱AI（glm-4.7-flash 免费）
 export DEEPSEEK_API_KEY="your-api-key"      # DeepSeek
+```
+
+### 同步 vs 异步
+
+| 你的代码风格 | 推荐 API |
+|---|---|
+| 普通脚本 / Jupyter / FastAPI 路由（默认） | `agent.run_sync(...)`、`agent.print_response_sync(...)`、`for chunk in agent.run_stream_sync(...)` |
+| 已经在 asyncio 事件循环里 / 想 `gather` N 个 agent 并发 | `await agent.run(...)`、`async for chunk in agent.run_stream(...)` |
+
+`run_sync` 内部就是 `asyncio.run(self.run(...))`，工具调用层用 `asyncio.gather` 并发——**同步 API 不会牺牲性能**，只是把事件循环藏起来了。
+
+```python
+import asyncio
+from agentica import Agent, OpenAIChat
+
+async def main():
+    agent = Agent(model=OpenAIChat(id="gpt-4o-mini"))
+    result = await agent.run("一句话介绍上海")
+    print(result.content)
+
+asyncio.run(main())
+```
+
+### 推荐导入方式
+
+核心 SDK + 内置工具都已经顶层导出，不用记长路径：
+
+```python
+from agentica import (
+    Agent, DeepAgent, Workspace, tool,
+    OpenAIChat,                                       # openai 是核心依赖
+    BuiltinFileTool, BuiltinExecuteTool,              # 文件 / 执行
+    BuiltinFetchUrlTool, BuiltinWebSearchTool,        # 网页
+    BuiltinTodoTool, BuiltinTaskTool,                 # 任务清单 / 子 Agent
+    HistoryConfig, WorkspaceMemoryConfig, RunConfig,  # 配置
+)
+
+# 其他模型 / 重型工具走子模块（避免启动时拉重依赖）
+from agentica.model.anthropic.claude import Claude   # pip install anthropic
+from agentica.model.ollama.chat import Ollama
+from agentica.tools.shell_tool import ShellTool
 ```
 
 ## 功能特性
@@ -129,10 +168,91 @@ agent = DeepAgent(
 
 `DeepAgent` 默认启用 `SkillTool(auto_load=True)`，会自动发现 `~/.agentica/skills/` 和 `.agentica/skills/` 目录下的 skill；同时默认开启 `tool_config.auto_load_mcp=True`，启动时会自动读取工作目录里的 `mcp_config.json/yaml/yml`。这样 DeepAgent 开箱就是带 skills + MCP + memory 的一键完全体。
 
-> ⚠️ **使用 `Agent`（非 DeepAgent）开启持久化时容易踩的两个坑**
-> - **会话日志不落盘**：`session_id` 默认 `None`，必须显式传入才会写 `~/.agentica/projects/<slug>/<session_id>.jsonl`。
-> - **长期记忆/自动归档不生效**：自动归档和记忆抽取的门控是 `enable_long_term_memory=True` **且** `workspace` 非空，只配 `long_term_memory_config` 不打开开关；多用户场景用 `Agent(workspace="...", user_id=user_id, session_id=user_id, enable_long_term_memory=True)`。
-> - 详见 [常见问题](https://github.com/shibing624/agentica/blob/main/docs/guides/best_practices.md#常见问题)。
+## Agent 配方（Recipes）
+
+`Agent` 参数多，但常用组合就那几个。直接 copy-paste：
+
+### 一次性脚本（最简）
+
+```python
+agent = Agent(model=OpenAIChat(id="gpt-4o-mini"))
+print(agent.run_sync("一句话介绍北京").content)
+```
+
+### 多轮对话
+
+```python
+agent = Agent(
+    model=OpenAIChat(id="gpt-4o-mini"),
+    add_history_to_context=True,
+    num_history_turns=5,
+)
+agent.run_sync("我叫 Alice，是 ML 工程师。")
+agent.run_sync("我叫什么？")  # 模型记得
+```
+
+### 工具型 Agent（自定义工具组合）
+
+```python
+from agentica import Agent, OpenAIChat, BuiltinWebSearchTool, BuiltinFileTool, BuiltinExecuteTool
+
+agent = Agent(
+    model=OpenAIChat(id="gpt-4o-mini"),
+    tools=[BuiltinWebSearchTool(), BuiltinFileTool(work_dir="./workspace"), BuiltinExecuteTool(work_dir="./workspace")],
+)
+agent.run_sync("帮我搜 Python 3.13 新特性，写到 features.md")
+```
+
+### 多用户 + 长期记忆 + 会话归档
+
+每个用户一个 Agent 实例，`session_id` 一般直接复用 `user_id`：
+
+```python
+from agentica import Agent, OpenAIChat, Workspace, WorkspaceMemoryConfig
+
+def create_agent(user_id: str) -> Agent:
+    return Agent(
+        model=OpenAIChat(id="gpt-4o-mini"),
+        workspace=Workspace("~/.agentica/workspace", user_id=user_id),
+        session_id=user_id,                      # 会话日志按 user 切到 ~/.agentica/projects/.../{user_id}.jsonl
+        enable_long_term_memory=True,            # ← 关键：必须显式开启
+        long_term_memory_config=WorkspaceMemoryConfig(
+            auto_archive=True,                   # 每次 run 后归档对话
+            auto_extract_memory=True,            # LLM 自动抽取记忆
+        ),
+        add_history_to_context=True,
+        num_history_turns=5,
+    )
+```
+
+> **常见踩坑**：只配 `long_term_memory_config` 但忘了 `enable_long_term_memory=True`，所有记忆/归档都会被静默忽略。从 v1.3.7 起 `Agent.__init__` 会在这种情况下打 warning，但请直接按上面写就不会踩。
+
+### 长会话省 token：定制历史消息
+
+搜索类工具结果通常巨大且后续轮次用不上，可以在历史里删掉；AI 回复可以截断：
+
+```python
+from agentica import Agent, OpenAIChat, HistoryConfig
+
+agent = Agent(
+    model=OpenAIChat(id="gpt-4o-mini"),
+    add_history_to_context=True,
+    num_history_turns=10,
+    history_config=HistoryConfig(
+        excluded_tools=["search_*", "web_search"],   # 整条 tool 结果丢掉，对应的 tool_calls 自动同步剥离
+        assistant_max_chars=200,                      # AI 回复截断到 200 字
+    ),
+)
+```
+
+更复杂的过滤（剥用户 prompt 前缀、按 metadata 删消息等）用 `history_filter` 回调，看 `examples/memory/03_history_filter.py`。
+
+### 完全体（CLI / Gateway / 长任务）
+
+```python
+from agentica import DeepAgent
+agent = DeepAgent()  # 40+ 内置工具 + 压缩 + 长期记忆 + skills + MCP，开箱即用
+```
 
 ## CLI
 

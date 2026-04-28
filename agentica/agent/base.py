@@ -47,10 +47,11 @@ from agentica.memory.session_log import SessionLog
 from agentica.compression import CompressionManager
 from agentica.config import LANGFUSE_SECRET_KEY, LANGFUSE_PUBLIC_KEY
 from agentica.agent.config import (
-    PromptConfig, ToolConfig, WorkspaceMemoryConfig, SandboxConfig,
+    PromptConfig, ToolConfig, WorkspaceMemoryConfig, HistoryConfig, SandboxConfig,
     ToolRuntimeConfig, SkillRuntimeConfig, ExperienceConfig,
     AgentDefinition, AgentExecutionConfig, AgentMemoryConfig, AgentSafetyConfig,
 )
+from agentica.agent.history_filter import HistoryFilter
 from agentica.hooks import (
     AgentHooks, RunHooks, ConversationArchiveHooks, MemoryExtractHooks,
     ExperienceCaptureHooks, _CompositeRunHooks,
@@ -140,6 +141,8 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
     long_term_memory_config: WorkspaceMemoryConfig = field(default_factory=WorkspaceMemoryConfig)
     experience_config: ExperienceConfig = field(default_factory=ExperienceConfig)
     sandbox_config: Optional[SandboxConfig] = None
+    history_config: HistoryConfig = field(default_factory=HistoryConfig)
+    history_filter: Optional[HistoryFilter] = None
 
     # Tool-level guardrails (run before/after each tool call)
     tool_input_guardrails: List[Any] = field(default_factory=list)
@@ -237,6 +240,8 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
             long_term_memory_config: Optional[WorkspaceMemoryConfig] = None,
             experience_config: Optional[ExperienceConfig] = None,
             sandbox_config: Optional[SandboxConfig] = None,
+            history_config: Optional[HistoryConfig] = None,
+            history_filter: Optional[HistoryFilter] = None,
             tool_input_guardrails: Optional[List[Any]] = None,
             tool_output_guardrails: Optional[List[Any]] = None,
             # ---- Agent-level guardrails (run on user input / agent output) ----
@@ -278,6 +283,8 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
             long_term_memory_config=long_term_memory_config,
             experience_config=experience_config,
             sandbox_config=sandbox_config,
+            history_config=history_config,
+            history_filter=history_filter,
             tool_input_guardrails=tool_input_guardrails,
             tool_output_guardrails=tool_output_guardrails,
             input_guardrails=input_guardrails,
@@ -373,6 +380,8 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
         long_term_memory_config: Optional[WorkspaceMemoryConfig],
         experience_config: Optional[ExperienceConfig],
         sandbox_config: Optional[SandboxConfig],
+        history_config: Optional[HistoryConfig],
+        history_filter: Optional[HistoryFilter],
         tool_input_guardrails: Optional[List[Any]],
         tool_output_guardrails: Optional[List[Any]],
         input_guardrails: Optional[List[Any]],
@@ -384,6 +393,8 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
         self.long_term_memory_config = long_term_memory_config or WorkspaceMemoryConfig()
         self.experience_config = experience_config or ExperienceConfig()
         self.sandbox_config = sandbox_config
+        self.history_config = history_config or HistoryConfig()
+        self.history_filter = history_filter
         self.tool_input_guardrails = tool_input_guardrails or []
         self.tool_output_guardrails = tool_output_guardrails or []
         self.input_guardrails = input_guardrails or []
@@ -437,6 +448,8 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
             logger.debug("Set Log level: debug")
         else:
             set_log_level_to_info()
+
+        self._warn_misconfigured_long_term_memory()
 
         # Auto-load MCP tools
         if self.tool_config.auto_load_mcp:
@@ -525,6 +538,31 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
             auto_hooks.append(ExperienceCaptureHooks(self.experience_config))
         if auto_hooks:
             self._default_run_hooks = _CompositeRunHooks(auto_hooks)
+
+    def _warn_misconfigured_long_term_memory(self) -> None:
+        """Warn when long-term memory config is set but the master switch is off.
+
+        Common pitfall: user passes ``long_term_memory_config=WorkspaceMemoryConfig(auto_archive=True)``
+        and a Workspace, but forgets ``enable_long_term_memory=True``. The hooks
+        in ``_post_init`` are gated on the boolean flag, so the config is silently
+        ignored. Fail loud at construction time instead.
+        """
+        # Only check opt-in fields (auto_archive / auto_extract_memory default to False).
+        # load_workspace_* default to True, so they'd trigger on every plain Agent(workspace=...).
+        cfg = self.long_term_memory_config
+        opted_in = bool(cfg and (cfg.auto_archive or cfg.auto_extract_memory))
+        if opted_in and not self.enable_long_term_memory:
+            logger.warning(
+                "long_term_memory_config has auto_archive / auto_extract_memory enabled, "
+                "but enable_long_term_memory=False. These settings will be IGNORED. "
+                "Pass enable_long_term_memory=True to activate."
+            )
+        if self.enable_long_term_memory and self.workspace is None:
+            logger.warning(
+                "enable_long_term_memory=True but workspace=None. Long-term memory, "
+                "auto-archive and memory extraction will all be disabled. "
+                "Pass workspace=Workspace('~/.agentica/workspace', user_id=...) to activate."
+            )
 
     def _wire_tools_to_self(self) -> None:
         """Bind agent-aware tools to this agent.

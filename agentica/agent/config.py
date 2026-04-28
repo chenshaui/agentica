@@ -112,6 +112,43 @@ class WorkspaceMemoryConfig:
 
 
 @dataclass
+class HistoryConfig:
+    """Filter rules applied to multi-turn history before it's injected into the prompt.
+
+    Active only when ``Agent.add_history_to_context=True``. The filter runs on a
+    *copy* of the historical messages — the underlying ``working_memory.runs``
+    is never mutated, so different filters can be tried across runs without
+    losing data.
+
+    Pipeline (in this order):
+        working_memory.get_messages_from_last_n_runs(...)   # built-in tool-result truncation
+              ↓
+        excluded_tools  → drop matching tool messages + paired assistant.tool_calls
+              ↓
+        assistant_max_chars  → truncate long assistant replies
+              ↓
+        Agent.history_filter(history)  → user-defined Callable (final say)
+              ↓
+        consistency fix  → strip orphan assistant.tool_calls (no matching tool result)
+
+    Attributes:
+        excluded_tools: Tool name patterns whose results are dropped from history.
+            Glob style via ``fnmatch`` (e.g. ``"search_*"``, ``"web_search"``).
+            Matched tool messages are removed AND the corresponding ``tool_calls``
+            entries on the preceding assistant message are stripped, so the OpenAI
+            API contract ("each tool_call must be followed by its tool result")
+            is preserved.
+        assistant_max_chars: If set, truncate ``assistant`` message content longer
+            than this length. ``None`` = no truncation. Tool calls are not affected.
+            Only applies when ``content`` is a string — multimodal assistant turns
+            (where ``content`` is a list of content blocks) are left untouched to
+            avoid accidentally dropping image/audio parts.
+    """
+    excluded_tools: List[str] = field(default_factory=list)
+    assistant_max_chars: Optional[int] = None
+
+
+@dataclass
 class ToolRuntimeConfig:
     """Runtime configuration for a single tool.
 

@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
 """
 @author:XuMing(xuming624@qq.com)
-@description: Stream output demo - Demonstrates streaming response
+@description: Stream output demo — sync first, async further down.
 
-This example shows different ways to use streaming output:
-1. Using print_response_stream_sync (sync)
-2. Using run_stream_sync and iterating over chunks (sync)
-3. Async streaming with print_response
-4. Async streaming with run_stream (recommended for async streaming)
-5. Async non-streaming with run
+▶ Sync (recommended starting point):
+    Example 1: agent.print_response_stream_sync("...")        # one-liner pretty print
+    Example 2: for chunk in agent.run_stream_sync("..."):     # manual iteration
+
+▶ Async (use inside an event loop):
+    Example 3: await agent.print_response_stream("...")
+    Example 4: async for chunk in agent.run_stream("...")
+    Example 5: await agent.run("...")  # non-streaming
 """
 import sys
 import os

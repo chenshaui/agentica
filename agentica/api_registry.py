@@ -38,11 +38,10 @@ LAZY_IMPORTS = {
     "JsonDb": "agentica.db.json",
     "MysqlDb": "agentica.db.mysql",
     "RedisDb": "agentica.db.redis",
-    # model core (pulls in openai SDK)
+    # model core (pulls in openai SDK; OpenAIChat itself is now eager)
     "Model": "agentica.model.base",
     "ModelResponse": "agentica.model.response",
     "FileType": "agentica.model.response",
-    "OpenAIChat": "agentica.model.openai.chat",
     "OpenAILike": "agentica.model.openai.like",
     "AzureOpenAIChat": "agentica.model.azure.openai_chat",
     # model providers (heavy dependencies)
@@ -134,14 +133,8 @@ LAZY_IMPORTS = {
     "WeatherTool": "agentica.tools.weather_tool",
     "CodeTool": "agentica.tools.code_tool",
     "PatchTool": "agentica.tools.patch_tool",
-    # built-in tools
-    "BuiltinFileTool": "agentica.tools.buildin_tools",
-    "BuiltinExecuteTool": "agentica.tools.buildin_tools",
-    "BuiltinWebSearchTool": "agentica.tools.buildin_tools",
-    "BuiltinFetchUrlTool": "agentica.tools.buildin_tools",
-    "BuiltinTodoTool": "agentica.tools.buildin_tools",
-    "BuiltinTaskTool": "agentica.tools.builtin_task_tool",
-    "BuiltinMemoryTool": "agentica.tools.buildin_tools",
+    # built-in tools — moved to eager imports in __init__.py.
+    # Only the helper factory stays lazy (avoids importing all tool modules at startup).
     "get_builtin_tools": "agentica.tools.buildin_tools",
     # subagent system
     "SubagentType": "agentica.subagent",
@@ -247,6 +240,9 @@ EAGER_PUBLIC_EXPORTS = [
     "SystemMessage", "ToolMessage", "Media", "Video", "Audio", "Image",
     "Usage", "RequestUsage", "TokenDetails",
     "create_provider", "list_providers",
+    "OpenAIChat",
+    "BuiltinFileTool", "BuiltinExecuteTool", "BuiltinFetchUrlTool",
+    "BuiltinWebSearchTool", "BuiltinTodoTool", "BuiltinTaskTool", "BuiltinMemoryTool",
     "AgentRun", "SessionSummary", "MemorySummarizer", "WorkingMemory",
     "MemoryType", "MemoryEntry",
     "WorkflowRun", "WorkflowMemory",
@@ -261,7 +257,7 @@ EAGER_PUBLIC_EXPORTS = [
     "count_tokens", "count_text_tokens", "count_image_tokens",
     "count_message_tokens", "count_tool_tokens",
     "Agent", "AgentCancelledError",
-    "PromptConfig", "ToolConfig", "WorkspaceMemoryConfig", "SandboxConfig",
+    "PromptConfig", "ToolConfig", "WorkspaceMemoryConfig", "HistoryConfig", "SandboxConfig",
     "ToolRuntimeConfig", "SkillRuntimeConfig", "ExperienceConfig", "SkillUpgradeConfig",
     "RunConfig", "Workflow", "WorkflowSession", "AgentHooks", "RunHooks",
     "ConversationArchiveHooks", "MemoryExtractHooks", "ExperienceCaptureHooks",

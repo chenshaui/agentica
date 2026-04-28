@@ -4,16 +4,122 @@
 
 ## 目录
 
+- [Agent 配方（Recipes）](#agent-配方recipes)
 - [Agent 设计原则](#agent-设计原则)
 - [提示词工程](#提示词工程)
 - [工具使用](#工具使用)
 - [内存管理](#内存管理)
+- [历史消息定制](#历史消息定制)
 - [RAG 最佳实践](#rag-最佳实践)
 - [多轮对话](#多轮对话)
 - [团队协作](#团队协作)
 - [性能优化](#性能优化)
 - [错误处理](#错误处理)
 - [生产部署](#生产部署)
+- [常见问题](#常见问题)
+
+---
+
+## Agent 配方（Recipes）
+
+`Agent` 参数很多，但 90% 的场景用以下 5 种模板就够。直接 copy 改名字。
+
+### 1. 一次性脚本（最简）
+
+```python
+from agentica import Agent, OpenAIChat
+
+agent = Agent(model=OpenAIChat(id="gpt-4o-mini"))
+print(agent.run_sync("一句话介绍北京").content)
+```
+
+适用：CLI 工具、Jupyter 实验、单次调用。
+
+### 2. 多轮对话
+
+```python
+agent = Agent(
+    model=OpenAIChat(id="gpt-4o-mini"),
+    add_history_to_context=True,
+    num_history_turns=5,         # 滑窗大小，控制 context 预算
+    instructions="You are a helpful assistant.",
+)
+```
+
+适用：聊天机器人、客服 Bot、需要记住上下文的对话型 Agent。
+
+### 3. 工具型 Agent（自定义工具组合）
+
+```python
+from agentica import Agent, OpenAIChat, BuiltinWebSearchTool, BuiltinFileTool, BuiltinExecuteTool
+
+WORK_DIR = "./workspace"
+agent = Agent(
+    model=OpenAIChat(id="gpt-4o-mini"),
+    tools=[
+        BuiltinWebSearchTool(),
+        BuiltinFileTool(work_dir=WORK_DIR),
+        BuiltinExecuteTool(work_dir=WORK_DIR),
+    ],
+    instructions="You can search the web, read/write files, and run shell commands.",
+)
+```
+
+适用：定制化场景，只装需要的工具。**注意 `BuiltinFileTool` / `BuiltinExecuteTool` 需要传 `work_dir`，否则文件操作没有沙箱根目录**。
+
+### 4. 多用户 + 长期记忆 + 会话归档
+
+每个用户一个 Agent 实例。**不要**在 `run()` 里切 `user_id`——hooks 状态、auto_archive、记忆抽取都依赖 workspace 当前 user，运行中切会写错位置。
+
+```python
+from agentica import Agent, OpenAIChat, Workspace, WorkspaceMemoryConfig
+
+def create_agent(user_id: str) -> Agent:
+    return Agent(
+        model=OpenAIChat(id="gpt-4o-mini"),
+        workspace=Workspace("~/.agentica/workspace", user_id=user_id),
+        session_id=user_id,                       # 会话日志按 user 切到 ~/.agentica/projects/<slug>/{user_id}.jsonl
+        enable_long_term_memory=True,             # ← 必须显式开启，否则下面的 config 全废
+        long_term_memory_config=WorkspaceMemoryConfig(
+            auto_archive=True,                    # 每 run 后归档对话（零 LLM 成本）
+            auto_extract_memory=True,             # LLM 抽取记忆条目（每 run 一次额外 LLM 调用）
+        ),
+        add_history_to_context=True,
+        num_history_turns=5,
+    )
+```
+
+适用：客服系统、多租户 SaaS、需要跨会话长期记忆的产品。
+
+### 5. 完全体（DeepAgent）
+
+```python
+from agentica import DeepAgent
+
+agent = DeepAgent()  # 40+ 内置工具 + 5 阶段压缩 + 长期记忆 + skills + MCP
+print(agent.run_sync("Research RAG 最新进展并写到 report.md").content)
+```
+
+适用：CLI、Gateway、长任务。所有 batteries-included 默认值都打开。
+
+### 各场景的 Agent 参数速查
+
+| 参数 | 何时该开 | 默认 |
+|---|---|---|
+| `add_history_to_context` | 多轮对话场景 | `False` |
+| `num_history_turns` | 上下文窗口预算紧时调小 | `3` |
+| `enable_long_term_memory` | 需要跨会话记忆/归档时 | `False` |
+| `workspace` | 需要长期记忆/skill/AGENTS.md 时 | `None` |
+| `session_id` | 需要落盘 jsonl 会话日志时 | `None`（不落盘） |
+| `tools` | 需要工具调用时 | `None` |
+| `history_config` | 长会话省 token 时 | `HistoryConfig()` |
+| `history_filter` | 自定义历史过滤 | `None` |
+| `prompt_config` | 改 system prompt 行为 | `PromptConfig()` |
+| `tool_config` | 改工具行为（压缩、MCP 自动加载等） | `ToolConfig()` |
+| `enable_tracing` + `LANGFUSE_*` env | 生产可观测性 | `False` |
+| `RunConfig(max_cost_usd=...)` | 单次调用控成本 | 不限 |
+
+---
 
 ---
 
@@ -297,6 +403,85 @@ agent = Agent(
 
 # 长对话会自动生成摘要，减少 token 使用
 ```
+
+---
+
+## 历史消息定制
+
+`Agent` 默认把最近 N 轮历史原样塞进 prompt（`num_history_turns`）。长会话场景下这会很快撑爆 context，常见痛点：
+
+- 搜索 / fetch_url 等工具的结果几 KB 起步，后续轮次根本用不上但还在烧 token
+- AI 上一轮回复啰嗦了 2000 字，下一轮其实只需要结论
+- 用户 query 总带一个固定前缀（例如"用纯文本回复 ..."），不该污染历史
+
+`Agent` 提供两层 API，从声明式快捷到完全自定义：
+
+### 层 1：声明式（覆盖 80%）
+
+```python
+from agentica import Agent, OpenAIChat, HistoryConfig
+
+agent = Agent(
+    model=OpenAIChat(id="gpt-4o-mini"),
+    add_history_to_context=True,
+    num_history_turns=10,
+    history_config=HistoryConfig(
+        excluded_tools=["search_*", "web_search"],   # glob 匹配工具名，整条结果丢掉
+        assistant_max_chars=200,                      # AI 回复在历史里截断到 200 字
+    ),
+)
+```
+
+`excluded_tools` 在丢掉 tool 消息时**会自动同步从前一条 assistant 消息里剥掉对应的 `tool_calls`**——OpenAI API 强制要求"每个 tool_call 必须有匹配的 tool 结果"，不剥就 400。
+
+### 层 2：自定义 callable（任意 Python 表达力）
+
+```python
+def my_filter(history):
+    out = []
+    for m in history:
+        # 剥用户 prompt 前缀
+        if m.role == "user" and isinstance(m.content, str):
+            m = m.model_copy(update={"content": m.content.removeprefix("用纯文本回复 ")})
+        # AI 回复保留 reasoning 摘要、删掉正文
+        if m.role == "assistant" and m.tool_call_error:
+            continue   # 整条丢
+        out.append(m)
+    return out
+
+agent = Agent(
+    model=OpenAIChat(id="gpt-4o-mini"),
+    add_history_to_context=True,
+    history_filter=my_filter,
+)
+```
+
+### 执行管线
+
+```
+working_memory.get_messages_from_last_n_runs(...)   # 已有的 tool 结果截断
+        ↓
+HistoryConfig.excluded_tools                         # 丢工具结果 + 同步 tool_calls
+        ↓
+HistoryConfig.assistant_max_chars                    # 截 AI 回复
+        ↓
+Agent.history_filter(history)                        # 用户 callable
+        ↓
+consistency 修复                                      # 自动剥孤立的 tool_calls（callable 没清干净时兜底）
+        ↓
+messages_for_model
+```
+
+每一层都接收**前面层处理后**的 history。`history_filter` 是最后一道，能看到所有内置规则都跑完之后的结果再做精修。
+
+### 边界 & 注意
+
+1. **不修改原始 messages**。pipeline 在 history 副本上跑，`agent.working_memory.runs` 永远是完整原始数据，下次 run 重新过滤。改 `history_config` / `history_filter` 立刻生效，不会污染历史。
+2. **callable 删 tool 消息时，可以不清 `tool_calls`**——consistency 修复会自动剥孤立的，不会让你的 callable 出 OpenAI API 400。但能清就清，省一道兜底。
+3. **`excluded_tools` 用 `fnmatch` 风格**：`search_*`、`web_*` 直接能用，不是正则。
+4. **不会动 system / 当前 user message**。pipeline 只过滤 history 部分。
+
+完整 4 个场景的可运行示例：[`examples/memory/03_history_filter.py`](https://github.com/shibing624/agentica/blob/main/examples/memory/03_history_filter.py)。
 
 ---
 
@@ -745,7 +930,14 @@ agent = Agent(
 
 ### Q: 配了 `long_term_memory_config` / `Workspace`，但长期记忆和对话归档没生效？
 
-**A:** 自动归档（`ConversationArchiveHooks`）和自动抽取记忆（`MemoryExtractHooks`）的注入条件是 **`enable_long_term_memory=True` 且 `workspace is not None`** 双闸门，仅配 `long_term_memory_config` 不会打开开关：
+**A:** 从 v1.3.7 起 `Agent.__init__` 会主动检测这种错配并打 warning：
+
+```
+WARNING agentica.agent.base - long_term_memory_config has auto_archive / auto_extract_memory enabled,
+but enable_long_term_memory=False. These settings will be IGNORED. Pass enable_long_term_memory=True to activate.
+```
+
+根因：自动归档（`ConversationArchiveHooks`）和自动抽取记忆（`MemoryExtractHooks`）的注入条件是 **`enable_long_term_memory=True` 且 `workspace is not None`** 双闸门，仅配 `long_term_memory_config` 不会打开开关：
 
 ```python
 agent = Agent(

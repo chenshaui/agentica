@@ -42,16 +42,16 @@ pip install -U agentica
 
 ## クイックスタート
 
+`asyncio` を学ぶ必要はありません。`run_sync` は内部で完全な agentic loop
+（並列ツール呼び出し、ストリーミング、圧縮、リトライ）を実行しますが、
+外から見れば普通の同期関数です：
+
 ```python
-import asyncio
-from agentica import Agent, ZhipuAI
+from agentica import Agent, OpenAIChat
 
-async def main():
-    agent = Agent(model=ZhipuAI())
-    result = await agent.run("北京を一文で紹介してください")
-    print(result.content)
-
-asyncio.run(main())
+agent = Agent(model=OpenAIChat(id="gpt-4o-mini"))
+result = agent.run_sync("北京を一文で紹介してください")
+print(result.content)
 ```
 
 ```
@@ -61,9 +61,52 @@ asyncio.run(main())
 まず API キーを設定してください：
 
 ```bash
-export ZHIPUAI_API_KEY="your-api-key"      # ZhipuAI（glm-4.7-flash は無料）
 export OPENAI_API_KEY="sk-xxx"              # OpenAI
+export ZHIPUAI_API_KEY="your-api-key"       # ZhipuAI（glm-4.7-flash は無料）
 export DEEPSEEK_API_KEY="your-api-key"      # DeepSeek
+```
+
+### 同期 vs 非同期
+
+| コードスタイル | 推奨 API |
+|---|---|
+| 通常スクリプト / Jupyter / FastAPI ルート（デフォルト） | `agent.run_sync(...)`、`agent.print_response_sync(...)`、`for chunk in agent.run_stream_sync(...)` |
+| 既に asyncio イベントループ内 / 複数 agent を並列実行したい | `await agent.run(...)`、`async for chunk in agent.run_stream(...)` |
+
+`run_sync` は内部的には `asyncio.run(self.run(...))` で、ツール呼び出しは
+`asyncio.gather` により並行実行されます。**同期 API は性能を犠牲にしません**——
+イベントループを隠しているだけです。
+
+```python
+import asyncio
+from agentica import Agent, OpenAIChat
+
+async def main():
+    agent = Agent(model=OpenAIChat(id="gpt-4o-mini"))
+    result = await agent.run("上海を一文で紹介してください")
+    print(result.content)
+
+asyncio.run(main())
+```
+
+### 推奨インポート方法
+
+コア SDK と組み込みツールはトップレベルでエクスポート済みで、長いパスを覚える必要はありません：
+
+```python
+from agentica import (
+    Agent, DeepAgent, Workspace, tool,
+    OpenAIChat,                                       # openai はコア依存
+    BuiltinFileTool, BuiltinExecuteTool,              # ファイル / 実行
+    BuiltinFetchUrlTool, BuiltinWebSearchTool,        # Web
+    BuiltinTodoTool, BuiltinTaskTool,                 # タスク管理 / サブエージェント
+    HistoryConfig, WorkspaceMemoryConfig, RunConfig,  # 設定
+)
+
+# 他のモデル / 重いツールはサブモジュール経由（起動時の依存読み込みを回避）
+from agentica.model.anthropic.claude import Claude   # pip install anthropic
+from agentica.model.ollama.chat import Ollama
+from agentica.tools.shell_tool import ShellTool
 ```
 
 ## 機能
@@ -114,6 +157,92 @@ agent = Agent(
         max_memory_entries=5,  # 最大 5 件の関連メモリを注入
     ),
 )
+```
+
+## Agent レシピ（Recipes）
+
+`Agent` のパラメータは多いですが、よく使う組み合わせは以下の 5 つで十分です。コピペしてどうぞ：
+
+### ワンショットスクリプト（最小）
+
+```python
+agent = Agent(model=OpenAIChat(id="gpt-4o-mini"))
+print(agent.run_sync("北京を一文で紹介してください").content)
+```
+
+### マルチターン会話
+
+```python
+agent = Agent(
+    model=OpenAIChat(id="gpt-4o-mini"),
+    add_history_to_context=True,
+    num_history_turns=5,
+)
+agent.run_sync("私の名前は Alice、ML エンジニアです。")
+agent.run_sync("私の名前は？")  # モデルは覚えています
+```
+
+### ツール型 Agent（カスタムツール組み合わせ）
+
+```python
+from agentica import Agent, OpenAIChat, BuiltinWebSearchTool, BuiltinFileTool, BuiltinExecuteTool
+
+agent = Agent(
+    model=OpenAIChat(id="gpt-4o-mini"),
+    tools=[BuiltinWebSearchTool(), BuiltinFileTool(work_dir="./workspace"), BuiltinExecuteTool(work_dir="./workspace")],
+)
+agent.run_sync("Python 3.13 の新機能を調べて features.md に書いてください")
+```
+
+### マルチユーザー + 長期記憶 + 会話アーカイブ
+
+ユーザーごとに 1 つの Agent インスタンス。`session_id` は通常 `user_id` と同じで OK：
+
+```python
+from agentica import Agent, OpenAIChat, Workspace, WorkspaceMemoryConfig
+
+def create_agent(user_id: str) -> Agent:
+    return Agent(
+        model=OpenAIChat(id="gpt-4o-mini"),
+        workspace=Workspace("~/.agentica/workspace", user_id=user_id),
+        session_id=user_id,                      # 会話ログは ~/.agentica/projects/.../{user_id}.jsonl に保存
+        enable_long_term_memory=True,            # ← 必須：明示的に有効化
+        long_term_memory_config=WorkspaceMemoryConfig(
+            auto_archive=True,                   # 各 run 後に会話をアーカイブ
+            auto_extract_memory=True,            # LLM が記憶エントリを自動抽出
+        ),
+        add_history_to_context=True,
+        num_history_turns=5,
+    )
+```
+
+> **よくある落とし穴**：`long_term_memory_config` を設定しても `enable_long_term_memory=True` を忘れると、すべての記憶/アーカイブ機能が静かに無視されます。v1.4.1 から `Agent.__init__` がこの設定ミスを警告します。
+
+### 長セッションのトークン削減：履歴メッセージのカスタマイズ
+
+検索ツールの結果は通常巨大で後続ターンでは不要なことが多いので、履歴から削除し、AI の返答は切り詰められます：
+
+```python
+from agentica import Agent, OpenAIChat, HistoryConfig
+
+agent = Agent(
+    model=OpenAIChat(id="gpt-4o-mini"),
+    add_history_to_context=True,
+    num_history_turns=10,
+    history_config=HistoryConfig(
+        excluded_tools=["search_*", "web_search"],   # マッチするツール結果を削除、対応する tool_calls も自動的に剥離
+        assistant_max_chars=200,                      # AI の返答を 200 文字に切り詰め
+    ),
+)
+```
+
+より複雑なフィルタ（ユーザープロンプトの prefix 削除、metadata によるメッセージ削除など）には `history_filter` コールバックを使います。`examples/memory/03_history_filter.py` を参照。
+
+### フルパワー（CLI / Gateway / 長時間タスク）
+
+```python
+from agentica import DeepAgent
+agent = DeepAgent()  # 40+ 組み込みツール + 圧縮 + 長期記憶 + skills + MCP、すぐに使える
 ```
 
 ## CLI

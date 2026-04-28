@@ -7,13 +7,22 @@
 v1.3.6+ Recommended Import Style (clearer; aligns with v2.0 plan)
 ═══════════════════════════════════════════════════════════════
 
-Core (always default-installed)::
+Core (always default-installed, eager top-level imports)::
 
-    from agentica import Agent, tool                          # core SDK
-    from agentica.model.openai import OpenAIChat              # OpenAI / DeepSeek / Moonshot etc
-    from agentica.model.anthropic.claude import Claude        # Claude (default)
-    from agentica.workspace import Workspace                  # persistent workspace
-    from agentica.tools.shell_tool import ShellTool           # specific tools
+    from agentica import Agent, DeepAgent, tool, Workspace    # core SDK
+    from agentica import OpenAIChat                            # default LLM (openai is a hard dep)
+    from agentica import (                                     # builtin tools (no extra deps)
+        BuiltinFileTool, BuiltinExecuteTool,
+        BuiltinFetchUrlTool, BuiltinWebSearchTool,
+        BuiltinTodoTool, BuiltinTaskTool, BuiltinMemoryTool,
+    )
+
+Other LLM providers (lazy, avoid heavy SDK import at startup)::
+
+    from agentica.model.anthropic.claude import Claude        # pip install anthropic
+    from agentica.model.ollama.chat import Ollama
+    from agentica.model.kimi.chat import KimiChat
+    from agentica.tools.shell_tool import ShellTool           # specific external tools
 
 Optional extras (need ``pip install agentica[xxx]``)::
 
@@ -63,11 +72,14 @@ from agentica.config import (
 from agentica.utils.log import set_log_level_to_debug, logger, set_log_level_to_info
 from agentica.utils.io import write_audio_to_file
 
-# ── Core Model (lightweight types only — no openai SDK at import time) ──
+# ── Core Model ──
+# OpenAIChat is eager: openai is a hard runtime dependency (requirements.txt).
+# Other model providers stay lazy to avoid pulling heavy SDKs (anthropic, ollama, litellm) at import time.
 from agentica.model.message import Message, MessageReferences, UserMessage, AssistantMessage, SystemMessage, ToolMessage
 from agentica.model.content import Media, Video, Audio, Image
 from agentica.model.usage import Usage, RequestUsage, TokenDetails
 from agentica.model.providers import create_provider, list_providers
+from agentica.model.openai.chat import OpenAIChat
 
 # ── Backward-compatible provider aliases ──
 def DeepSeekChat(**kwargs):
@@ -133,6 +145,13 @@ from agentica.document import Document
 from agentica.tools.base import Tool, ModelTool, Function, FunctionCall
 from agentica.tools.decorators import tool  # @tool decorator for defining tool functions
 
+# ── Builtin tools (eager: lightweight, used by 90% of custom Agent setups) ──
+from agentica.tools.buildin_tools import (
+    BuiltinFileTool, BuiltinExecuteTool, BuiltinFetchUrlTool,
+    BuiltinWebSearchTool, BuiltinTodoTool, BuiltinMemoryTool,
+)
+from agentica.tools.builtin_task_tool import BuiltinTaskTool
+
 # ── Compression ──
 from agentica.compression import CompressionManager
 
@@ -142,7 +161,7 @@ from agentica.utils.tokens import count_tokens, count_text_tokens, count_image_t
 # ── Agent (core) ──
 from agentica.agent import Agent, AgentCancelledError
 from agentica.agent.deep import DeepAgent
-from agentica.agent.config import PromptConfig, ToolConfig, WorkspaceMemoryConfig, SandboxConfig, ToolRuntimeConfig, SkillRuntimeConfig, ExperienceConfig, SkillUpgradeConfig
+from agentica.agent.config import PromptConfig, ToolConfig, WorkspaceMemoryConfig, HistoryConfig, SandboxConfig, ToolRuntimeConfig, SkillRuntimeConfig, ExperienceConfig, SkillUpgradeConfig
 from agentica.run_config import RunConfig
 from agentica.workflow import Workflow, WorkflowSession
 from agentica.hooks import AgentHooks, RunHooks, ConversationArchiveHooks, MemoryExtractHooks, ExperienceCaptureHooks
