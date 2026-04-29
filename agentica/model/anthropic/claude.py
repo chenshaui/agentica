@@ -170,6 +170,18 @@ class Claude(Model):
             _request_params.update(self.request_params)
         return _request_params
 
+    def describe_thinking_mode(self) -> str:
+        """Describe Anthropic extended-thinking configuration.
+
+        ``self.thinking`` is shaped like ``{"type": "enabled", "budget_tokens": 10000}``.
+        """
+        if isinstance(self.thinking, dict):
+            t = self.thinking.get("type")
+            budget = self.thinking.get("budget_tokens")
+            if t == "enabled":
+                return f"on(budget={budget})" if budget else "on"
+        return "off"
+
     async def format_messages(self, messages: List[Message]) -> Tuple[List[Dict[str, str]], str]:
         """
         Process the list of messages and separate them into API messages and system messages.

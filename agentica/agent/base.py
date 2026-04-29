@@ -1064,7 +1064,12 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin):
             from agentica.model.openai import OpenAIChat
             logger.debug("Model not set, Using OpenAIChat as default")
             self.model = OpenAIChat()
-        logger.debug(f"Agent '{self.name}' using {self.model.name or self.model.__class__.__name__}(id={self.model.id})")
+        model_cls = self.model.name or self.model.__class__.__name__
+        logger.debug(
+            f"Agent '{self.name}' using {model_cls}("
+            f"id={self.model.id}, provider={self.model.provider}, "
+            f"thinking={self.model.describe_thinking_mode()})"
+        )
 
         # Clear previously registered tools/functions and metrics to prevent accumulation
         # across multiple run() calls on the same Agent instance.

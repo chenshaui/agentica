@@ -185,6 +185,16 @@ class Model(ABC):
         """Build the API request parameters dict. Subclasses must implement."""
         ...
 
+    def describe_thinking_mode(self) -> str:
+        """Return a short, human-readable description of this model's thinking/reasoning
+        configuration for logging.
+
+        Default is ``"off"``. Subclasses (OpenAIChat, Claude, ...) override this to
+        introspect their provider-specific knobs (``reasoning_effort``,
+        ``extra_body.thinking``, ``extra_body.enable_thinking``, Anthropic ``thinking``).
+        """
+        return "off"
+
     def to_dict(self) -> Dict[str, Any]:
         _dict = {"name": self.name, "id": self.id, "provider": self.provider, "metrics": self.metrics}
         if self.functions:

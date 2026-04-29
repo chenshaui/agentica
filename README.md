@@ -25,6 +25,7 @@
 | **Works Beyond Chat** | 文件、执行、搜索、浏览器、MCP、多智能体、Workflow，不依附单一 IDE 场景 |
 | **Memory That Survives Sessions** | Workspace 记忆按条目存储、相关性召回，并可把确认过的偏好同步到 `~/.agentica/AGENTS.md` |
 | **Skill-Based Self-Learn** | SkillTool 可加载外部技能；内置 Agent 持续学习策略 |
+| **Self-Evolution（自进化）** | 工具失败 / 用户纠正 / 成功序列 → 经验卡片 → 自动生成 SKILL.md，跨会话复用 |
 | **Open, Composable Harness** | 模型、工具、记忆、Skill、Guardrails、MCP 都是可替换部件，而不是封闭 SaaS 黑盒 |
 
 ## 架构
@@ -167,6 +168,141 @@ agent = DeepAgent(
 ```
 
 `DeepAgent` 默认启用 `SkillTool(auto_load=True)`，会自动发现 `~/.agentica/skills/` 和 `.agentica/skills/` 目录下的 skill；同时默认开启 `tool_config.auto_load_mcp=True`，启动时会自动读取工作目录里的 `mcp_config.json/yaml/yml`。这样 DeepAgent 开箱就是带 skills + MCP + memory 的一键完全体。
+
+## 自进化（Self-Evolution）
+
+Agentica 不止"记住事实"，还能**记住做事方式**。Agent 在跑工具的过程中产生的所有信号——工具失败、用户纠正、成功序列——都会被采集成 **Experience 事件**，按规则编译成 **经验卡片（cards）**，等同一个规则被反复确认 N 次后，**自动生成一个 `SKILL.md`** 并落到 workspace 的 `generated_skills/` 目录。下一次启动新 Agent 时，`SkillTool` 自动发现并注入这个技能，模型就能在新会话里直接复用之前学到的做事方式。
+
+整条链路本地、可审计、零外部依赖，确定性采集（tool error / success）零 LLM 成本，只有"用户纠正分类"和"是否生成新技能"这两步用 `auxiliary_model` 做 LLM 判定。
+
+### 流程图
+
+```mermaid
+flowchart TB
+    subgraph Run["Agent.run() 单次执行"]
+        Loop["Runner: LLM ↔ Tools 循环"]
+    end
+
+    subgraph Capture["事件采集 ExperienceCaptureHooks"]
+        E1["tool_error<br/>(确定性 / 0 LLM)"]
+        E2["tool_success / tool_recovery<br/>(确定性 / 0 LLM)"]
+        E3["user_correction<br/>(auxiliary_model 分类)"]
+    end
+
+    Loop -- on_tool_end / on_agent_end --> E1
+    Loop -- on_tool_end --> E2
+    Loop -- on_user_prompt --> E3
+
+    Store[("events.jsonl<br/>append-only")]
+    E1 --> Store
+    E2 --> Store
+    E3 --> Store
+
+    Compiler["ExperienceCompiler<br/>_rule_to_title 归并 / 去重"]
+    Store --> Compiler
+
+    Cards[("experiences/*.md<br/>cards: repeat_count / tier")]
+    Compiler --> Cards
+
+    subgraph Lifecycle["生命周期 CompiledExperienceStore"]
+        L1["promotion: warm → hot<br/>(N 次 / window 内)"]
+        L2["demotion: 长期未用 → cold"]
+        L3["archive"]
+    end
+    Cards --> Lifecycle
+
+    Gate{{"SkillEvolutionManager<br/>min_repeat_count + min_tier<br/>+ min_success_applications"}}
+    Cards -- maybe_spawn_skill --> Gate
+
+    Judge["LLM 判定 (auxiliary_model)<br/>keep / promote / revise / rollback"]
+    Gate -->|候选通过| Judge
+
+    Skill[("generated_skills/&lt;slug&gt;/<br/>SKILL.md + meta.json")]
+    Judge -->|approve| Skill
+
+    subgraph Next["下一个 Session（新 Agent）"]
+        ST["SkillTool.auto_load<br/>发现 generated_skills/"]
+        Apply["LLM: get_skill_info →<br/>按 SKILL.md 步骤执行"]
+    end
+    Skill --> ST --> Apply
+
+    classDef ev fill:#fef3c7,stroke:#d97706
+    classDef store fill:#dbeafe,stroke:#2563eb
+    classDef llm fill:#fce7f3,stroke:#be185d
+    class E1,E2,E3 ev
+    class Store,Cards,Skill store
+    class E3,Judge llm
+```
+
+### 启用方式
+
+最小改动：把 `ExperienceCaptureHooks` 挂到 Agent 上，配置 `ExperienceConfig.skill_upgrade=SkillUpgradeConfig(mode="shadow")` 即开启完整自进化闭环。
+
+```python
+from agentica import Agent, Workspace, OpenAIChat
+from agentica.agent.config import ExperienceConfig, SkillUpgradeConfig
+from agentica.hooks import (
+    ConversationArchiveHooks,
+    ExperienceCaptureHooks,
+    MemoryExtractHooks,
+    _CompositeRunHooks,
+)
+
+workspace = Workspace("./workspace", user_id="alice")
+workspace.initialize()
+
+model = OpenAIChat(id="gpt-4o-mini")
+
+hooks = _CompositeRunHooks([
+    ConversationArchiveHooks(),                # 自动归档对话
+    MemoryExtractHooks(),                      # LLM 抽取长期记忆
+    ExperienceCaptureHooks(
+        ExperienceConfig(
+            capture_tool_errors=True,          # 确定性，零 LLM 成本
+            capture_success_patterns=True,     # 确定性，零 LLM 成本
+            capture_user_corrections=True,     # 用 auxiliary_model 分类
+            feedback_confidence_threshold=0.6,
+            promotion_count=3,                 # 同一规则被确认 3 次 → tier=hot
+            skill_upgrade=SkillUpgradeConfig(
+                mode="shadow",                 # off | draft | shadow
+                min_repeat_count=3,            # 至少重复 3 次才考虑生成 skill
+                min_tier="warm",
+                min_success_applications=1,    # 冷启动 demo 可设 0
+            ),
+        )
+    ),
+])
+
+agent = Agent(
+    model=model,
+    auxiliary_model=model,                     # 给纠正分类 / skill 判定用
+    workspace=workspace,
+)
+agent._default_run_hooks = hooks
+
+# 跑你正常的业务，所有失败 / 纠正 / 成功都会沉淀到 workspace
+agent.run_sync("帮我读一下 ./docs/agent.md")
+```
+
+跑完 N 个 session 后，workspace 长这样：
+
+```
+workspace/users/alice/
+├── experiences/
+│   ├── events.jsonl                        # 所有原始事件（append-only）
+│   ├── EXPERIENCE.md                       # 卡片索引
+│   └── <hash>__list_dir_before_read.md     # 编译后的经验卡片
+├── generated_skills/
+│   ├── INDEX.md                            # L1 关键词路由
+│   └── list-dir-before-read/
+│       ├── SKILL.md                        # 自动生成的可复用技能
+│       └── meta.json                       # status: shadow / draft / promoted
+└── reports/learning/                       # 每次 run 的学习报告
+```
+
+完整 e2e demo（Session 1 自进化生成技能 → Session 2 全新 Agent 跨会话复用）：[`examples/workspace/03_self_evolution_e2e.py`](examples/workspace/03_self_evolution_e2e.py)。
+
+> **配置取舍**：`mode="shadow"` 自动安装到 workspace 本地不影响其他用户；`mode="draft"` 只生成草稿不安装，适合人审；`mode="off"` 等价于不开启 skill 自动生成（但仍采集经验卡片）。`min_success_applications` 是"必须先有 ≥N 次 tool_recovery 才允许生成 skill"的安全闸——避免给 Agent 永远做不对的事情生成技能；冷启动 demo 把它设成 `0`。
 
 ## Agent 配方（Recipes）
 

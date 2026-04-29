@@ -193,6 +193,38 @@ class OpenAIChat(Model):
                 params[attr_name] = val
         return params
 
+    def describe_thinking_mode(self) -> str:
+        """Describe thinking/reasoning configuration across OpenAI-compatible providers.
+
+        Inspects:
+        - ``reasoning_effort`` (OpenAI o-series, gpt-5.x)
+        - ``extra_body.thinking`` (DeepSeek, Doubao: ``{"type": "enabled"|"disabled", ...}``)
+        - ``extra_body.enable_thinking`` (Qwen / DashScope-compatible)
+        """
+        details: List[str] = []
+        is_on: Optional[bool] = None
+        if self.reasoning_effort:
+            details.append(f"reasoning_effort={self.reasoning_effort}")
+            is_on = True
+        if isinstance(self.extra_body, dict):
+            thinking = self.extra_body.get("thinking")
+            if isinstance(thinking, dict):
+                t = thinking.get("type")
+                budget = thinking.get("budget_tokens")
+                if t == "enabled":
+                    is_on = True
+                elif t == "disabled":
+                    is_on = False
+                if budget:
+                    details.append(f"budget={budget}")
+            enable_thinking = self.extra_body.get("enable_thinking")
+            if isinstance(enable_thinking, bool):
+                is_on = enable_thinking
+        if is_on is None:
+            return "off"
+        status = "on" if is_on else "off"
+        return f"{status}({', '.join(details)})" if details else status
+
     def _is_deepseek_thinking_request(self, request_params: Dict[str, Any]) -> bool:
         """Return True when DeepSeek thinking mode is explicitly enabled."""
         if self.provider != "DeepSeek":
