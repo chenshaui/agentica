@@ -25,6 +25,7 @@ tool calling, long-running task loops, multi-agent orchestration, cross-session 
 | **Works Beyond Chat** | Files, execution, search, browser, MCP, multi-agent collaboration, and workflows instead of a single chat endpoint |
 | **Memory That Survives Sessions** | Workspace memory is stored as indexed entries with relevance recall, and confirmed preferences can sync into `~/.agentica/AGENTS.md` |
 | **Skill-Based Self-Learn** | SkillTool can load external skills, built-in agent self-learning strategy |
+| **Self-Evolution** | Tool failures, user corrections, and success sequences become experience cards that auto-compile into reusable `SKILL.md` files across sessions |
 | **Open Composable Harness** | Models, tools, memory, skills, guardrails, and MCP are replaceable building blocks instead of a closed hosted platform |
 
 ## Architecture
@@ -171,6 +172,141 @@ agent = DeepAgent(
 ```
 
 `DeepAgent` enables `SkillTool(auto_load=True)` by default, so it automatically discovers skills from `~/.agentica/skills/` and `.agentica/skills/`; it also turns on `tool_config.auto_load_mcp=True`, which auto-loads `mcp_config.json/yaml/yml` from the working directory when present. In practice, `DeepAgent` now boots as a one-command runtime with skills + MCP + memory already wired in.
+
+## Self-Evolution
+
+Agentica doesn't just *remember facts* — it remembers *how to do things*. While the agent runs, every signal it produces (tool failures, user corrections, successful tool sequences) is captured as an **Experience event**, compiled into **experience cards**, and once the same rule is confirmed N times the framework **auto-generates a `SKILL.md`** under `<workspace>/generated_skills/`. The next session bootstraps a brand-new agent with `SkillTool` automatically discovering and injecting that skill — so newly-spawned agents inherit hard-earned procedural know-how without any manual glue.
+
+The whole pipeline is local, auditable, and dependency-free. Deterministic capture (tool error / success) costs zero LLM tokens; only "user-correction classification" and "should we spawn a skill" use the `auxiliary_model`.
+
+### Pipeline
+
+```mermaid
+flowchart TB
+    subgraph Run["Agent.run() – single execution"]
+        Loop["Runner: LLM ↔ Tools loop"]
+    end
+
+    subgraph Capture["ExperienceCaptureHooks"]
+        E1["tool_error<br/>(deterministic / 0 LLM)"]
+        E2["tool_success / tool_recovery<br/>(deterministic / 0 LLM)"]
+        E3["user_correction<br/>(auxiliary_model classify)"]
+    end
+
+    Loop -- on_tool_end / on_agent_end --> E1
+    Loop -- on_tool_end --> E2
+    Loop -- on_user_prompt --> E3
+
+    Store[("events.jsonl<br/>append-only")]
+    E1 --> Store
+    E2 --> Store
+    E3 --> Store
+
+    Compiler["ExperienceCompiler<br/>_rule_to_title – merge / dedupe"]
+    Store --> Compiler
+
+    Cards[("experiences/*.md<br/>cards: repeat_count / tier")]
+    Compiler --> Cards
+
+    subgraph Lifecycle["CompiledExperienceStore lifecycle"]
+        L1["promotion: warm → hot<br/>(N hits within window)"]
+        L2["demotion: idle → cold"]
+        L3["archive"]
+    end
+    Cards --> Lifecycle
+
+    Gate{{"SkillEvolutionManager<br/>min_repeat_count + min_tier<br/>+ min_success_applications"}}
+    Cards -- maybe_spawn_skill --> Gate
+
+    Judge["LLM judge (auxiliary_model)<br/>keep / promote / revise / rollback"]
+    Gate -->|candidate passes| Judge
+
+    Skill[("generated_skills/&lt;slug&gt;/<br/>SKILL.md + meta.json")]
+    Judge -->|approve| Skill
+
+    subgraph Next["Next session – fresh Agent"]
+        ST["SkillTool.auto_load<br/>discovers generated_skills/"]
+        Apply["LLM: get_skill_info →<br/>follow SKILL.md procedure"]
+    end
+    Skill --> ST --> Apply
+
+    classDef ev fill:#fef3c7,stroke:#d97706
+    classDef store fill:#dbeafe,stroke:#2563eb
+    classDef llm fill:#fce7f3,stroke:#be185d
+    class E1,E2,E3 ev
+    class Store,Cards,Skill store
+    class E3,Judge llm
+```
+
+### How to enable
+
+Minimal change: attach `ExperienceCaptureHooks` to your agent and set `ExperienceConfig.skill_upgrade=SkillUpgradeConfig(mode="shadow")` to enable the full self-evolution loop end-to-end.
+
+```python
+from agentica import Agent, Workspace, OpenAIChat
+from agentica.agent.config import ExperienceConfig, SkillUpgradeConfig
+from agentica.hooks import (
+    ConversationArchiveHooks,
+    ExperienceCaptureHooks,
+    MemoryExtractHooks,
+    _CompositeRunHooks,
+)
+
+workspace = Workspace("./workspace", user_id="alice")
+workspace.initialize()
+
+model = OpenAIChat(id="gpt-4o-mini")
+
+hooks = _CompositeRunHooks([
+    ConversationArchiveHooks(),                # archive every conversation
+    MemoryExtractHooks(),                      # LLM extracts long-term memories
+    ExperienceCaptureHooks(
+        ExperienceConfig(
+            capture_tool_errors=True,          # deterministic, zero LLM cost
+            capture_success_patterns=True,     # deterministic, zero LLM cost
+            capture_user_corrections=True,     # classified by auxiliary_model
+            feedback_confidence_threshold=0.6,
+            promotion_count=3,                 # rule confirmed 3x → tier=hot
+            skill_upgrade=SkillUpgradeConfig(
+                mode="shadow",                 # off | draft | shadow
+                min_repeat_count=3,            # need ≥3 repeats to consider spawn
+                min_tier="warm",
+                min_success_applications=1,    # set 0 for cold-start demos
+            ),
+        )
+    ),
+])
+
+agent = Agent(
+    model=model,
+    auxiliary_model=model,                     # used by correction classify / skill judge
+    workspace=workspace,
+)
+agent._default_run_hooks = hooks
+
+# Run your normal workload — failures / corrections / successes accumulate in workspace
+agent.run_sync("Read ./docs/agent.md for me")
+```
+
+After a few sessions the workspace looks like:
+
+```
+workspace/users/alice/
+├── experiences/
+│   ├── events.jsonl                        # all raw events (append-only)
+│   ├── EXPERIENCE.md                       # card index
+│   └── <hash>__list_dir_before_read.md     # compiled experience card
+├── generated_skills/
+│   ├── INDEX.md                            # L1 keyword router
+│   └── list-dir-before-read/
+│       ├── SKILL.md                        # auto-generated reusable skill
+│       └── meta.json                       # status: shadow / draft / promoted
+└── reports/learning/                       # per-run learning reports
+```
+
+Full e2e demo (Session 1 evolves a skill → Session 2 uses a fresh agent that consumes it across sessions): [`examples/workspace/03_self_evolution_e2e.py`](examples/workspace/03_self_evolution_e2e.py).
+
+> **Trade-offs**: `mode="shadow"` installs locally to the workspace without affecting other users; `mode="draft"` only writes a draft for human review; `mode="off"` disables auto-skill generation but still captures experience cards. `min_success_applications` is the *"need ≥N tool_recovery events first"* safety gate — it prevents the loop from generating skills for tasks the agent never actually solved. Set to `0` only for cold-start demos.
 
 ## Agent Recipes
 

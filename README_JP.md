@@ -159,6 +159,141 @@ agent = Agent(
 )
 ```
 
+## 自己進化（Self-Evolution）
+
+Agentica は「事実を覚える」だけでなく、**「やり方を覚える」** ことができます。Agent がツールを実行する過程で発生するすべてのシグナル（ツール失敗、ユーザーからの修正、成功シーケンス）は **Experience イベント** として収集され、ルールベースで **経験カード（cards）** にコンパイルされます。同一のルールが N 回繰り返し確認されると、**`SKILL.md` が自動生成され**、workspace の `generated_skills/` ディレクトリに保存されます。次のセッションで新しい Agent を起動すると、`SkillTool` がそのスキルを自動検出して注入し、過去に学んだやり方を新セッションでそのまま再利用できます。
+
+パイプライン全体はローカル・監査可能・外部依存ゼロで動作します。決定論的な収集（tool error / success）は LLM コストゼロ、「ユーザー修正の分類」と「新スキルを生成すべきか」の 2 ステップのみが `auxiliary_model` を使用します。
+
+### フロー図
+
+```mermaid
+flowchart TB
+    subgraph Run["Agent.run() – 単一実行"]
+        Loop["Runner: LLM ↔ Tools ループ"]
+    end
+
+    subgraph Capture["イベント収集 ExperienceCaptureHooks"]
+        E1["tool_error<br/>(決定論的 / 0 LLM)"]
+        E2["tool_success / tool_recovery<br/>(決定論的 / 0 LLM)"]
+        E3["user_correction<br/>(auxiliary_model 分類)"]
+    end
+
+    Loop -- on_tool_end / on_agent_end --> E1
+    Loop -- on_tool_end --> E2
+    Loop -- on_user_prompt --> E3
+
+    Store[("events.jsonl<br/>append-only")]
+    E1 --> Store
+    E2 --> Store
+    E3 --> Store
+
+    Compiler["ExperienceCompiler<br/>_rule_to_title でマージ / 重複排除"]
+    Store --> Compiler
+
+    Cards[("experiences/*.md<br/>cards: repeat_count / tier")]
+    Compiler --> Cards
+
+    subgraph Lifecycle["ライフサイクル CompiledExperienceStore"]
+        L1["promotion: warm → hot<br/>(window 内で N 回ヒット)"]
+        L2["demotion: 長期未使用 → cold"]
+        L3["archive"]
+    end
+    Cards --> Lifecycle
+
+    Gate{{"SkillEvolutionManager<br/>min_repeat_count + min_tier<br/>+ min_success_applications"}}
+    Cards -- maybe_spawn_skill --> Gate
+
+    Judge["LLM 判定 (auxiliary_model)<br/>keep / promote / revise / rollback"]
+    Gate -->|候補通過| Judge
+
+    Skill[("generated_skills/&lt;slug&gt;/<br/>SKILL.md + meta.json")]
+    Judge -->|approve| Skill
+
+    subgraph Next["次のセッション（新しい Agent）"]
+        ST["SkillTool.auto_load<br/>generated_skills/ を検出"]
+        Apply["LLM: get_skill_info →<br/>SKILL.md の手順で実行"]
+    end
+    Skill --> ST --> Apply
+
+    classDef ev fill:#fef3c7,stroke:#d97706
+    classDef store fill:#dbeafe,stroke:#2563eb
+    classDef llm fill:#fce7f3,stroke:#be185d
+    class E1,E2,E3 ev
+    class Store,Cards,Skill store
+    class E3,Judge llm
+```
+
+### 有効化の方法
+
+最小変更：`ExperienceCaptureHooks` を Agent に取り付け、`ExperienceConfig.skill_upgrade=SkillUpgradeConfig(mode="shadow")` を設定するだけで自己進化の完全クローズドループが有効になります。
+
+```python
+from agentica import Agent, Workspace, OpenAIChat
+from agentica.agent.config import ExperienceConfig, SkillUpgradeConfig
+from agentica.hooks import (
+    ConversationArchiveHooks,
+    ExperienceCaptureHooks,
+    MemoryExtractHooks,
+    _CompositeRunHooks,
+)
+
+workspace = Workspace("./workspace", user_id="alice")
+workspace.initialize()
+
+model = OpenAIChat(id="gpt-4o-mini")
+
+hooks = _CompositeRunHooks([
+    ConversationArchiveHooks(),                # 会話を自動アーカイブ
+    MemoryExtractHooks(),                      # LLM が長期メモリを抽出
+    ExperienceCaptureHooks(
+        ExperienceConfig(
+            capture_tool_errors=True,          # 決定論的、LLM コスト 0
+            capture_success_patterns=True,     # 決定論的、LLM コスト 0
+            capture_user_corrections=True,     # auxiliary_model で分類
+            feedback_confidence_threshold=0.6,
+            promotion_count=3,                 # 同一ルールが 3 回確認 → tier=hot
+            skill_upgrade=SkillUpgradeConfig(
+                mode="shadow",                 # off | draft | shadow
+                min_repeat_count=3,            # spawn 検討に最低 3 回必要
+                min_tier="warm",
+                min_success_applications=1,    # コールドスタート demo は 0 に
+            ),
+        )
+    ),
+])
+
+agent = Agent(
+    model=model,
+    auxiliary_model=model,                     # 修正分類 / skill 判定で使用
+    workspace=workspace,
+)
+agent._default_run_hooks = hooks
+
+# 通常のワークロードを実行 — 失敗 / 修正 / 成功は workspace に蓄積される
+agent.run_sync("./docs/agent.md を読んでください")
+```
+
+数セッション実行後、workspace は次のような状態になります：
+
+```
+workspace/users/alice/
+├── experiences/
+│   ├── events.jsonl                        # 全生イベント（append-only）
+│   ├── EXPERIENCE.md                       # カードインデックス
+│   └── <hash>__list_dir_before_read.md     # コンパイル済み経験カード
+├── generated_skills/
+│   ├── INDEX.md                            # L1 キーワードルーター
+│   └── list-dir-before-read/
+│       ├── SKILL.md                        # 自動生成された再利用可能スキル
+│       └── meta.json                       # status: shadow / draft / promoted
+└── reports/learning/                       # 各 run の学習レポート
+```
+
+完全な e2e demo（Session 1 で自己進化により skill 生成 → Session 2 で全く新しい Agent がクロスセッションで再利用）：[`examples/workspace/03_self_evolution_e2e.py`](examples/workspace/03_self_evolution_e2e.py)。
+
+> **トレードオフ**：`mode="shadow"` は workspace ローカルに自動インストールされ、他ユーザーには影響しません。`mode="draft"` はドラフトのみ生成しインストールせず、人間レビュー向きです。`mode="off"` は skill 自動生成を無効化（経験カードの収集は継続）。`min_success_applications` は「最低 N 回の `tool_recovery` イベントが必要」という安全ゲート — Agent が永遠に解決できないタスクから skill を生成するのを防ぎます。コールドスタート demo のときのみ `0` に設定してください。
+
 ## Agent レシピ（Recipes）
 
 `Agent` のパラメータは多いですが、よく使う組み合わせは以下の 5 つで十分です。コピペしてどうぞ：
