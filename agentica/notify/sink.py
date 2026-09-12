@@ -488,9 +488,13 @@ def notify_sink_dispatch(
                 # Remember on the agent itself, not in a process registry: this
                 # is per-session state, it dies with the agent, and Agent is not
                 # hashable so a set/dict keyed by it would raise outright.
-                _mark_deferred(agent, _run_event_payload(record))
+                # The answer is taken here rather than at release time: by then
+                # several laps may have run, and the reply worth showing is the
+                # last one, not whatever the agent happens to hold later.
+                _mark_deferred(agent, _completion_payload(agent, record))
                 return
-            _emit_completion(sink, record, session_id=session_id, work_dir=work_dir)
+            _emit_completion(sink, _completion_payload(agent, record),
+                             session_id=session_id, work_dir=work_dir)
             return
         sink.emit_event(
             name,
@@ -594,6 +598,13 @@ def _accumulate_held(held: Optional[Dict[str, Any]],
     for key in ("reason", "error"):
         if lap.get(key) and not out.get(key):
             out[key] = lap[key]
+    # The answer and its time describe the lap that just ended, so a later lap
+    # replaces them. The released event ends a *goal*, and what the reader wants
+    # there is the last thing it said while they were away, not the first.
+    if lap.get("answer"):
+        out["answer"] = lap["answer"]
+    if lap.get("answered_at"):
+        out["answered_at"] = lap["answered_at"]
     return out
 
 
@@ -634,12 +645,38 @@ def _goal_is_driving(agent: Any) -> bool:
         return False
 
 
+#: How much of a prompt / answer goes on the wire. The desktop app renders a
+#: bubble, not a reader: a 40k-character answer would bloat every event and
+#: still not be more useful there. The marker makes the cut visible, so a
+#: consumer can tell "it said this much" from "it said 500 chars and more".
+_TEXT_LIMIT = 500
+_ELLIPSIS = "…"
+
+
+def _clip_text(value: Any) -> Optional[str]:
+    """A short, wire-safe slice of user-visible text, or None."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if len(text) <= _TEXT_LIMIT:
+        return text
+    return text[:_TEXT_LIMIT] + _ELLIPSIS
+
+
 def _run_event_payload(record: Any) -> Dict[str, Any]:
     """The metadata slice of a run event, per the contract.
 
-    Only what the desktop app needs: no prompts, no tool output, no file
-    contents. The discipline is the same as the budget docs' "aggregates, not
-    raw streams" — this channel stays narrow even though it is a local socket.
+    Only what the desktop app needs: no tool output, no file contents. Text the
+    user already saw on their own screen (the turn's prompt, the answer) is
+    included, clipped hard by ``_clip_text`` — the bubble shows the gist, and
+    the terminal remains the place to read the whole thing.
+
+    ``source_query`` is the run's anchor text, which is the user's message for a
+    normal turn but the *goal objective* in a goal-driven session. It is sent as
+    ``prompt``; a desktop showing it in a bubble is showing what started the
+    work, which is right in both readings.
     """
     raw = getattr(record, "payload", None)
     payload: Dict[str, Any] = {}
@@ -647,4 +684,32 @@ def _run_event_payload(record: Any) -> Dict[str, Any]:
         for key in ("agent_name", "duration_seconds", "had_response", "reason", "error"):
             if key in raw and raw[key] is not None:
                 payload[key] = raw[key]
+        prompt = _clip_text(raw.get("prompt") or raw.get("source_query"))
+        if prompt:
+            payload["prompt"] = prompt
+    return payload
+
+
+def _completion_payload(agent: Any, source: Any) -> Dict[str, Any]:
+    """The payload for ``run.completed``, including the answer if there is one.
+
+    The answer is read from the live agent rather than carried on the run event:
+    the run-event bus has other consumers (telemetry, hooks) that have no use
+    for a copy of the reply, and this channel is meant to stay narrow.
+
+    ``answered_at`` is the run's own timestamp, not the envelope's ``ts``. Those
+    differ whenever a completion was held back for a goal: the envelope is
+    stamped when the event is *sent* (at release, after the goal stopped), while
+    this is when the reply was actually produced. A UI showing "when did it
+    answer" needs the latter.
+    """
+    payload = source if isinstance(source, dict) else _run_event_payload(source)
+    payload = dict(payload)
+    answer = _clip_text(getattr(getattr(agent, "run_response", None), "content", None))
+    if answer:
+        payload["answer"] = answer
+    if not isinstance(source, dict):
+        stamp = getattr(source, "timestamp", None)
+        if isinstance(stamp, (int, float)):
+            payload["answered_at"] = stamp
     return payload

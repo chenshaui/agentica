@@ -75,16 +75,27 @@ settings:
 
 ### payload 字段
 
-run 类事件的 `payload` 只带元数据（**没有** prompt、无工具输出、无文件内容——
-这个通道即使在本机 socket 上也保持窄）：
+run 类事件的 `payload` 只带元数据 + **用户已在自己屏幕上见过的正文**，不带工具输出、
+不带文件内容（这个通道即使在本机 socket 上也保持窄）：
 
 | 字段 | 出现于 | 含义 |
 |---|---|---|
 | `agent_name` | 全部 run 类 | 哪个 agent 跑的 |
 | `duration_seconds` | `run.completed` / `run.failed` | 时长 |
 | `had_response` | `run.completed` | 这一场是否产出过回复 |
+| `prompt` | `run.started` | 这一轮的锚文本：普通轮是用户提问，goal 会话里是 **goal 目标** |
+| `answer` | `run.completed` | assistant 这一轮的回复，截断见下 |
+| `answered_at` | `run.completed` | 回复**产生**的时刻（unix 秒），**不是**信封 `ts` |
 | `reason` | `run.cancelled` | 为什么被取消 |
 | `error` | `run.failed` | 错误文本（`类型: 信息`） |
+
+`prompt` / `answer` 一律截断到 **500 字 + `…`**：桌宠是气泡不是阅读器，一条 40k 字的
+回复既撑爆每条事件也不会更好读。**截断标记是可见的**，消费端能区分「就说了这么多」和
+「说了 500 字还有下文」。要看全文，终端才是那个地方。
+
+`answered_at` 与信封 `ts` **可能不同**，别混：信封是事件**发出**时刻，被 goal 扣住的
+完成事件是在释放时才盖的章（可能晚很多）；`answered_at` 才是回复真正产生的时刻。要显示
+「它什么时候答的」用后者；要显示「你什么时候收到通知」用 `ts`。
 
 `payload` 是**白名单过滤**产物：loop 层可以带更多键，sink 只放行上表这几个。
 例如 `run.failed` 的 loop 事件里有 `exception_type`，但**不过线**——消费端要判断
@@ -99,9 +110,18 @@ run 类事件的 `payload` 只带元数据（**没有** prompt、无工具输出
   给出**的（可能少于四个）。对应终端里的 `y` / `p` / `n` / `x`——桌宠的按钮应照着
   `options` 渲染，不要写死两个。
 
+**approval 也接受把这四个值当文字回传**，但只认这四个的拼写（`allow` / `allow_prefix` /
+`deny` / `deny_prefix`，大小写与首尾空白不计）以及终端那四个键 `y` / `p` / `n` / `x`。
+这是**词表，不是理解**：其它任何输入——「先别动」、一句评价、一整段话——都算**没答**，
+审批继续 park，等终端或下一次明确回答。
+
+这么严是有意的：审批是四选一的闸门，把散文交给它解读，就可能替用户按下他根本没选的
+`allow`，而**误批准是这条通道唯一不能有的失败**。认不出来就保持沉默，绝不猜。
+
 **多个字段在补发的 `run.completed` 上会合并**：一场 goal 只补发一次，若中间发生过
 多轮，`duration_seconds` 是各轮**累加**（用户关心的是「我离开这段时间它跑了多久」，
-不是最后一轮），`had_response` 只要有一轮产出过就为真，`agent_name` 取首个非空值。
+不是最后一轮），`had_response` 只要有一轮产出过就为真，`agent_name` 取首个非空值；
+而 `answer` 与 `answered_at` 取**最后一轮**（你要看的是它最后说了什么，不是第一句）。
 
 ### `run.completed` 的准确含义
 
