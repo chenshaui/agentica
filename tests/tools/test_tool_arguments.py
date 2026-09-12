@@ -90,3 +90,69 @@ class TestMalformedArguments:
         call = get_function_call("say", '["hi"]', functions=_functions())
 
         assert call.error is not None
+
+
+class TestAnEvictedArgumentIsNeverExecuted:
+    """Layer 1 replaced an argument with its placeholder, so the value is gone.
+
+    A tool call whose payload is only ``<evicted-tool-arg chars=N>`` must not
+    run. Observed in a real session: three ``send_message`` calls delivered the
+    marker as the entire peer message, ``execute`` ran it as shell (``syntax
+    error near unexpected token 'newline'``), and ``write_file`` / ``apply_patch``
+    tried to put it on disk. The model reads the returned tool result and
+    re-issues the call with real content; running it just burns the turn.
+    """
+
+    def test_the_whole_marker_is_refused(self):
+        from agentica.compression.tool_call_args import omitted_tool_arg
+
+        call = _call({"text": omitted_tool_arg(1885)})
+
+        assert call.error is not None
+        assert call.arguments is None
+        assert "not executed" in call.error.lower()
+
+    def test_the_truncated_form_the_model_also_wrote_is_refused(self):
+        """The model re-emitted the marker from memory without the closing '>'."""
+        call = _call({"text": "<evicted-tool-arg chars=1553"})
+
+        assert call.error is not None
+        assert call.arguments is None
+
+    def test_a_nested_marker_is_refused_and_the_field_is_named(self):
+        call = get_function_call(
+            "say",
+            json.dumps({"text": {"deep": ["<evicted-tool-arg chars=7>"]}}),
+            functions=_functions(),
+        )
+
+        assert call.error is not None
+        assert "text.deep[0]" in call.error
+
+    def test_a_real_payload_that_mentions_the_marker_still_runs(self):
+        """Anchoring: only a leaf that IS the marker counts, not a string about it.
+
+        The agent greps for this marker in its own source; that command must
+        keep working.
+        """
+        real = "grep -rn '<evicted-tool-arg chars=' agentica/"
+
+        call = _call({"text": real})
+
+        assert call.error is None
+        assert call.arguments["text"] == real
+
+    def test_a_marker_with_trailing_text_still_runs(self):
+        """Only an argument that is entirely the placeholder is unrecoverable."""
+        text = "<evicted-tool-arg chars=5> and then real words"
+
+        call = _call({"text": text})
+
+        assert call.error is None
+        assert call.arguments["text"] == text
+
+    def test_normal_arguments_are_untouched(self):
+        call = _call({"text": "hi", "times": 2})
+
+        assert call.error is None
+        assert call.arguments == {"text": "hi", "times": 2}

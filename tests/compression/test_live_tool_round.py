@@ -236,3 +236,140 @@ def test_anthropic_packed_live_round_is_not_evicted():
     assert live_assistant.tool_calls[0]["function"]["arguments"] == json.dumps({"text": long})
     assert live_assistant.content[0]["input"]["text"] == long
     assert msgs[-1].content[0]["content"] == live_result
+
+
+def _injected(content: str) -> Message:
+    """A mid-turn steering / peer message, as the runner appends it."""
+    message = Message(role="user", content=content)
+    message._injected = True
+    return message
+
+
+def test_injected_guidance_does_not_unprotect_the_in_flight_call():
+    """Guidance arriving mid-round must not hand Layer 1 the running call.
+
+    ``_inject_steering`` / ``_inject_peer_messages`` append a user message when
+    there is no trailing ``role="tool"`` result to fold into — i.e. exactly
+    while a call is in flight. That append used to become the "tail", so the
+    cutoff moved above the assistant and its own unread payload was shrunk to
+    the placeholder. Observed live: a ``send_message`` payload reached the peer
+    as ``<evicted-tool-arg chars=1885>``.
+    """
+    long = "W" * 300
+    msgs = [
+        Message(role="user", content="go"),
+        Message(role="assistant", tool_calls=[{
+            "id": "flying", "type": "function",
+            "function": {"name": "write_file",
+                         "arguments": json.dumps({"file_path": "a.py", "content": long})},
+        }]),
+        _injected("[User guidance received while you were working]\nuse tabs"),
+    ]
+
+    assert live_tool_round_start(msgs) == 1  # the in-flight assistant
+
+    evict_context(msgs, model_id="gpt-4o", **PRESSURE)
+
+    assert _arg(msgs, 1, "content") == long
+
+
+def test_injected_message_does_not_unprotect_a_packed_round():
+    """Same hole on the Anthropic shape: results live inside a user message.
+
+    There is no trailing ``role="tool"`` for the injection to fold into, so it
+    appends — and the round it sits after is still the one that just ran.
+    """
+    long = "C" * 300
+    live_result = _result_body("claude-live")
+    live_assistant = Message(
+        role="assistant",
+        content=[{"type": "tool_use", "id": "live", "name": "send_message",
+                  "input": {"message": long}}],
+        tool_calls=[{"id": "live", "type": "function",
+                     "function": {"name": "send_message", "arguments": json.dumps({"message": long})}}],
+    )
+    packed = Message(role="user", content=[
+        {"type": "tool_result", "tool_use_id": "live", "content": live_result},
+    ])
+    msgs = [
+        Message(role="user", content="go"),
+        live_assistant,
+        packed,
+        _injected("[Message from another agent session 'p'] hi"),
+    ]
+
+    assert live_tool_round_start(msgs) == 1
+
+    evict_context(msgs, model_id="gpt-4o", **PRESSURE)
+
+    assert live_assistant.tool_calls[0]["function"]["arguments"] == json.dumps({"message": long})
+    assert live_assistant.content[0]["input"]["message"] == long
+    assert packed.content[0]["content"] == live_result
+
+
+def test_an_injected_message_alone_creates_no_protected_round():
+    """With nothing but injected text there is no round, and nothing to lose.
+
+    The boundary falls after the injected tail; either way nothing is evicted,
+    because eviction only rewrites tool results and assistant call arguments —
+    never a user message.
+    """
+    msgs = [
+        Message(role="user", content="go"),
+        _injected("[Message from another agent session 'p'] hi"),
+    ]
+    before = [m.content for m in msgs]
+
+    evict_context(msgs, model_id="gpt-4o", **PRESSURE)
+
+    assert [m.content for m in msgs] == before
+
+def test_an_ordinary_user_message_still_ends_the_live_round():
+    """Only marked injections are skipped. A real next question is a new turn."""
+    long = "R" * 300
+    msgs = [
+        Message(role="user", content="go"),
+        *_call("write_file", {"file_path": "a.py", "content": long}, "done", "wrote a.py"),
+        Message(role="user", content="now do something else"),
+    ]
+
+    # Nothing is protected: the round above already returned, and a real next
+    # question means it is history now.
+    assert live_tool_round_start(msgs) == len(msgs)
+
+    evict_context(msgs, model_id="gpt-4o", **PRESSURE)
+
+    assert _arg(msgs, 1, "content") == omitted_tool_arg(len(long))
+
+
+def test_the_todo_reminder_does_not_unprotect_the_batch_it_follows():
+    """The post-tool hook appends its reminder right after a result batch.
+
+    That batch is the one the model has not been called on yet, so it must stay
+    live. Unmarked, the reminder became the tail and its own results were
+    evicted before the model ever read them.
+    """
+    long = "T" * 300
+    live_result = _result_body("live")
+    live_assistant = Message(role="assistant", tool_calls=[{
+        "id": "live", "type": "function",
+        "function": {"name": "write_file",
+                     "arguments": json.dumps({"file_path": "a.py", "content": long})},
+    }])
+    live_tool = Message(role="tool", tool_call_id="live", tool_name="write_file", content=live_result)
+    reminder = Message(role="user", content="[Todo Reminder] The write_todos tool ...")
+    reminder._injected = True
+    msgs = [
+        Message(role="user", content="go"),
+        live_assistant,
+        live_tool,
+        reminder,
+    ]
+
+    assert live_tool_round_start(msgs) == 1
+
+    evict_context(msgs, model_id="gpt-4o", **PRESSURE)
+
+    assert _arg(msgs, 1, "content") == long
+    assert live_tool.content == live_result
+    assert not live_tool._evicted

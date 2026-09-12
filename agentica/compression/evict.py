@@ -182,15 +182,18 @@ def carries_tool_results(msg: "Message") -> bool:
     return msg.role == "tool" or bool(tool_result_blocks(msg))
 
 
-def _last_batch_start(messages: "List[Message]") -> int:
+def _last_batch_start(messages: "List[Message]", end: Optional[int] = None) -> int:
     """Index where the trailing run of tool results begins.
 
     The pipeline runs immediately before a model call, so that trailing run is
     the batch the model has not seen yet. Evicting from it guarantees a re-run,
     and if the request is still too big without it, the answer is summarisation
     rather than throwing away the turn's own evidence.
+
+    ``end`` bounds the scan (exclusive) for callers that have already decided
+    the transcript's real tail sits below some appended messages.
     """
-    i = len(messages)
+    i = len(messages) if end is None else end
     while i > 0 and carries_tool_results(messages[i - 1]):
         i -= 1
     return i
@@ -208,15 +211,27 @@ def live_tool_round_start(messages: "List[Message]") -> int:
     Layer 1 must not shrink arguments or evict results from this index on.
     The tool name does not matter: builtins, SDK ``tools=``, CLI ``--tools``,
     Web extra tools, and MCP calls all occupy the same round.
+
+    Mid-turn injections (steering, peer messages) are skipped first. They are
+    appended as a user message when there is no trailing ``role="tool"`` result
+    to fold into — either because the round is still in flight, or because the
+    provider packs results into the ``content`` of a user message (Anthropic).
+    Reading them as the tail would put the cutoff above the round and hand
+    Layer 1 the very arguments and results this function exists to protect.
     """
     n = len(messages)
     if n == 0:
         return 0
-    last = messages[-1]
+    end = n
+    while end > 0 and messages[end - 1]._injected:
+        end -= 1
+    if end == 0:
+        return 0
+    last = messages[end - 1]
     if last.role == "assistant" and last.tool_calls:
-        return n - 1
-    batch = _last_batch_start(messages)
-    if batch <= 0 or batch >= n:
+        return end - 1
+    batch = _last_batch_start(messages, end)
+    if batch <= 0 or batch >= end:
         return batch
     prev = messages[batch - 1]
     if prev.role == "assistant" and prev.tool_calls:

@@ -1644,7 +1644,14 @@ class Agent(PromptsMixin, AsToolMixin, ToolsMixin, PrinterMixin, GoalMixin):
                 "Only use it if relevant to the current work.\n\n"
                 f"Current todo list:\n{todo_items}"
             )
-            messages.append(Message(role="user", content=reminder_content))
+            # Runs as a post-tool hook, so this lands right after a result batch
+            # the model has not been called on yet. Marked so Layer 1 still
+            # treats that round as live (``live_tool_round_start``); an
+            # unmarked tail would move the cutoff above it and evict the
+            # results of the tools that just ran.
+            reminder = Message(role="user", content=reminder_content)
+            reminder._injected = True
+            messages.append(reminder)
             logger.debug(f"Injected todo reminder ({len(todos)} items, {turns_since_write} turns since write)")
 
         return _post_tool_hook

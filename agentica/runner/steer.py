@@ -52,7 +52,15 @@ class SteerMixin:
             last.content = f"{existing}\n\n{marker}" if existing else marker
             logger.debug("Folded steering guidance into the latest tool result")
         else:
-            messages.append(Message(role="user", content=marker))
+            # Appended, so it lands *after* a round that already ran. Marked so
+            # Layer 1 still sees that round as live (``live_tool_round_start``):
+            # without the mark, guidance arriving mid-round makes the cutoff
+            # include the in-flight call's own arguments — which is how a
+            # ``write_file`` payload gets replaced by the eviction placeholder
+            # before the model has ever read its result.
+            injected = Message(role="user", content=marker)
+            injected._injected = True
+            messages.append(injected)
             logger.debug("Injected steering guidance as a user message")
 
     @staticmethod
@@ -85,6 +93,10 @@ class SteerMixin:
             existing = last.content.rstrip() if isinstance(last.content, str) else ""
             last.content = f"{existing}\n\n{marker}" if existing else marker
         else:
-            messages.append(Message(role="user", content=marker))
+            # See ``_inject_steering``: an appended message sits after a round
+            # that already ran, and the round below it is still live for Layer 1.
+            injected = Message(role="user", content=marker)
+            injected._injected = True
+            messages.append(injected)
         logger.debug(f"Injected {len(drained)} peer message(s) into the run")
 

@@ -768,6 +768,34 @@ def get_function_call(
         # None/True regardless of the declared type — silently edited message
         # bodies and file content, which is never what the model meant.
         function_call.arguments = coerce_tool_args(_arguments, function_to_call)
+
+        # Fail closed on an argument Layer 1 omitted. ``is_omitted_*`` is
+        # anchored, so a command that only mentions the marker still runs.
+        # Executing the marker is never what the model meant: ``execute`` runs
+        # it as shell, ``write_file`` / ``apply_patch`` put it on disk, and
+        # ``send_message`` makes it the whole message to a peer. All three have
+        # happened — the placeholder reached the peer as its entire content.
+        # A tool result is what makes the model retry with real arguments;
+        # silently running it burns the user's turn on a call we know is empty.
+        # Imported here: ``agentica.compression`` pulls ``utils.tokens``, which
+        # imports this module — a top-level import would be a cycle.
+        from agentica.compression.tool_call_args import omitted_tool_args
+
+        omitted = omitted_tool_args(function_call.arguments)
+        if omitted:
+            fields = ", ".join(path for path, _ in omitted)
+            logger.warning(
+                f"Refusing {function_to_call.name}: argument(s) evicted to "
+                f"{omitted[0][1]!r} ({fields}); re-issue the call with the full value"
+            )
+            function_call.arguments = None
+            function_call.error = (
+                f"Error: argument(s) [{fields}] were replaced by the context-compression "
+                f"placeholder {omitted[0][1]} before this call ran, so the value is gone. "
+                f"The tool was NOT executed. Re-issue the call with the real content (for a "
+                f"file edit, re-read the file and send the full payload)."
+            )
+            return function_call
     return function_call
 
 

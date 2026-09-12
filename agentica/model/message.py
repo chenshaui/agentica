@@ -119,6 +119,14 @@ class Message(BaseModel):
     # blocks into one user message and is only done when the last one goes.
     _evicted: bool = False
 
+    # Set by the runner's mid-turn injection points (steering / peer messages)
+    # when they APPEND a user message instead of folding into the trailing tool
+    # result. Such a message sits after a round that has already run, but it is
+    # not a new user turn — the round beneath it is still this turn's live
+    # evidence, so ``live_tool_round_start`` must look past it rather than treat
+    # it as the start of a fresh history.
+    _injected: bool = False
+
     # The Unix timestamp the message was created.
     created_at: int = Field(default_factory=lambda: int(time()))
 

@@ -73,6 +73,10 @@ def test_a_message_becomes_a_user_turn_when_there_is_no_tool_result():
     assert len(messages) == 2
     assert messages[-1].role == "user"
     assert "schema changed" in messages[-1].content
+    # Marked so Layer 1 still treats the round above it as live
+    # (``live_tool_round_start``). An unmarked tail would make the cutoff
+    # include an in-flight call's own arguments.
+    assert messages[-1]._injected is True
 
 
 def test_several_messages_are_delivered_together():

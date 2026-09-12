@@ -43,7 +43,11 @@ Context Messages
 
 最近的结果之所以幸存，是因为淘汰在够到它们之前就停了。**消息尾部那一段连续的工具结果（模型还没看过的当前批次）整体排除在外**：任何固定条数都会输给 count+1 大小的并行批次，这正是「读了又读」死循环的成因。CLI `--tools`、SDK `tools=`、Web extra、MCP 与内置工具走同一条边界，不按名字开白名单。
 
+这条边界由 `live_tool_round_start` 定位，它**先跳过被标记为中途注入的消息**（`_injected`）。`_inject_steering` / `_inject_peer_messages` 在尾部没有 `role="tool"` result 可折叠时会 append 一条 user 消息，而这恰好发生在两种「调用还在飞」的情况下：调用尚未返回，或 Anthropic 把整轮结果打包进 user 消息。若不跳过，注入的消息会被当成尾巴，cutoff 抬到整轮之上，于是这一层会把**模型还没看过的**调用参数换成占位符、把刚返回的 result 淘汰掉。真实回合（用户真的问下一句）不带标记，旧轮照常可淘汰。
+
 占位符写明是哪个调用（`read_file(file_path=..., offset=...)`），模型据此可以原样重发。它**不**先把内容复制到磁盘——取回同样是一次工具调用，而对文件读取来说原路径上的内容比快照更新鲜。
+
+模型有时会把上一轮见过的占位符**当成参数值本身**再发一次（实测该轮 `output_tokens=98`，而它声称的 9763 字符 payload 光内容就约 1221 token，不可能是真内容）。这种调用不执行：`get_function_call` 在参数解码时 fail-closed，凡是**整个参数值**就是占位符的（锚定匹配，含模型常漏 `>` 的截断形式）一律返回 tool error 让模型重发，否则 `execute` 会把它当 shell 跑、`write_file` 会写进磁盘、`send_message` 会把它当作整条消息发给对端。命令里只是**提到**该占位符的（`grep -rn '<evicted-tool-arg chars=' .`）不受影响。
 
 #### 淘汰的单位是「一条结果」，不是「一条消息」
 

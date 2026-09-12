@@ -141,6 +141,10 @@ class TestSteerInjection(unittest.TestCase):
         injected = [m for m in messages if m.role == "user" and "don't change the API" in (m.content or "")]
         self.assertEqual(len(injected), 1)
         self.assertIn("[User guidance received while you were working]", injected[0].content)
+        # Marked so Layer 1 still sees the round above it as live
+        # (``live_tool_round_start``); an unmarked tail would move the cutoff
+        # above an in-flight call and let its payload be evicted.
+        self.assertTrue(injected[0]._injected)
 
     def test_inject_noop_without_steer(self):
         from agentica.runner import Runner
