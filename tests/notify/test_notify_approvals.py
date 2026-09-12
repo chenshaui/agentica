@@ -180,6 +180,80 @@ class TestTheUsersAnswerCountsFromEitherPlace:
             desktop.close()
 
 
+class TestAnAnswerTypedAsWords:
+    """A desktop relaying typed text needs no parser of its own.
+
+    The protocol takes ``{"answer": "..."}`` alongside the enum, and the mapping
+    to a decision happens here — next to the prompt that defines the vocabulary,
+    so the two cannot drift apart.
+    """
+
+    @pytest.mark.parametrize(
+        "typed,expected",
+        [
+            ("y", "allow"),
+            ("Y", "allow"),
+            ("allow", "allow"),
+            ("p", "allow_prefix"),
+            ("allow_prefix", "allow_prefix"),
+            (" n ", "deny"),
+            ("deny", "deny"),
+            ("x", "deny_prefix"),
+            ("DENY_PREFIX", "deny_prefix"),
+        ],
+    )
+    def test_a_typed_option_is_applied(self, typed, expected):
+        desktop = _FakeDesktop(decision_body={"answer": typed})
+        try:
+            install_sink(NotifyConfig(enabled=True, socket=desktop.socket_path))
+
+            async def scenario():
+                registry = ApprovalRegistry()
+                pending = _pending()
+                waiter = registry.wait(pending)
+                publish_approval(pending, registry, asyncio.get_running_loop(), timeout=5)
+                return await asyncio.wait_for(waiter, timeout=5)
+
+            assert _run_with_loop(scenario) == expected
+        finally:
+            desktop.close()
+
+    @pytest.mark.parametrize(
+        "typed",
+        ["不用了", "拒绝", "允许", "looks fine", "yes please", "1", "好", "", "   "],
+    )
+    def test_wording_that_is_not_one_of_the_four_is_not_a_decision(self, typed):
+        """Prose must never become an approval.
+
+        This is the failure that matters: a sentence read as ``allow`` would
+        approve a command the user never approved. Unknown wording is a no-op —
+        the approval stays parked and the terminal is still the answer path.
+        """
+        desktop = _FakeDesktop(decision_body={"answer": typed})
+        try:
+            install_sink(NotifyConfig(enabled=True, socket=desktop.socket_path))
+            decided = []
+
+            class _Watching(ApprovalRegistry):
+                def decide(self, call_id, decision):
+                    decided.append(decision)
+                    return super().decide(call_id, decision)
+
+            async def scenario():
+                registry = _Watching()
+                pending = _pending()
+                waiter = registry.wait(pending)
+                publish_approval(pending, registry, asyncio.get_running_loop(), timeout=2)
+                with pytest.raises(asyncio.TimeoutError):
+                    await asyncio.wait_for(waiter, timeout=1.0)
+                return decided
+
+            # Asserted at the source: the answer never reached decide() at all.
+            assert _run_with_loop(scenario) == []
+        finally:
+            desktop.close()
+
+
 class TestTheLadderOnTheApprovalPath:
     def test_a_missing_desktop_app_does_not_hold_up_the_approval(self):
         """The terminal must stay responsive; no answer means no answer."""

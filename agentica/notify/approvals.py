@@ -63,6 +63,38 @@ def _approval_payload(pending: Any) -> dict:
     return payload
 
 
+#: The answers this prompt already offers, keyed by every spelling the terminal
+#: accepts for them (its key and the decision's own name).
+_WORD_TO_DECISION = {
+    "y": "allow",
+    "allow": "allow",
+    "p": "allow_prefix",
+    "allow_prefix": "allow_prefix",
+    "n": "deny",
+    "deny": "deny",
+    "x": "deny_prefix",
+    "deny_prefix": "deny_prefix",
+}
+
+
+def _decision_from_words(answer: Any) -> Optional[str]:
+    """A decision the user typed as words, or None when it is not one of them.
+
+    This is vocabulary, not understanding: an approval is a choice among four
+    fixed values, so the only thing a caller may type here is one of those
+    values. Anything else — "先别动", "looks fine", a whole sentence — returns
+    None, which leaves the approval parked and the terminal prompt as the path.
+
+    Deliberately not natural-language interpretation. A model asked to read
+    prose into this gate could turn a sentence into an ``allow`` the user never
+    picked, and approving by accident is the one failure this channel must not
+    have. Unknown wording must stay a no-op, never a guess.
+    """
+    if not isinstance(answer, str):
+        return None
+    return _WORD_TO_DECISION.get(answer.strip().lower())
+
+
 def publish_approval(
     pending: Any,
     registry: Any,
@@ -118,8 +150,18 @@ def publish_approval(
             return  # no decision: the terminal prompt is still the answer path
         decision = result.get("decision")
         if not isinstance(decision, str):
-            # An "answer" makes no sense for an approval; ignore rather than guess.
-            return
+            # Free text is honoured only for the four words that *are* this
+            # choice (`y`/`p`/`n`/`x` and the decision names), so a desktop that
+            # just relays what the user typed needs no parser of its own. Prose
+            # resolves to None and the approval stays parked: the terminal is
+            # still waiting, which is the correct outcome for "not an answer".
+            decision = _decision_from_words(result.get("answer"))
+            if decision is None:
+                logger.debug(
+                    "notify sink: approval answer was not one of y/p/n/x; "
+                    "leaving the decision to the terminal"
+                )
+                return
         try:
             loop.call_soon_threadsafe(_apply, registry, tool_call_id, decision)
         except Exception as exc:
