@@ -310,8 +310,8 @@ class TestToolCallArgumentShrinking(unittest.TestCase):
         self.assertEqual(parsed["count"], 3)
         self.assertEqual(parsed["content"], omitted_tool_arg(100))
         self.assertEqual(parsed["nested"]["note"], omitted_tool_arg(100))
-        self.assertFalse(parsed["content"].startswith("x"))
-        self.assertNotIn("...[truncated]", parsed["content"])
+        self.assertIsInstance(parsed["content"], dict)
+        self.assertNotIn("...[truncated]", json.dumps(parsed["content"]))
 
     def test_invalid_json_is_returned_unchanged(self):
         from agentica.compression.tool_call_args import shrink_tool_call_arguments_json
@@ -473,6 +473,122 @@ class TestToolCallArgumentShrinking(unittest.TestCase):
         self.assertEqual(shrunk, 0)
         self.assertEqual(self._content_of(messages, 1), "z" * 300)
         self.assertEqual(self._content_of(messages, 4), "n" * 300)
+
+    def test_omitted_arg_is_an_object_not_a_string(self):
+        """A string marker is a send_message body. The stand-in must not be."""
+        from agentica.compression.tool_call_args import OMITTED_ARG_KEY, omitted_tool_arg
+
+        marker = omitted_tool_arg(1183)
+        self.assertIsInstance(marker, dict)
+        self.assertEqual(marker, {OMITTED_ARG_KEY: 1183})
+
+    def test_upgrade_rewrites_old_string_marker_even_when_roomy(self):
+        """Live JSONL still has the string form. Leave it and the model copies it."""
+        from agentica.compression.evict import evict_context, upgrade_legacy_omitted_args
+        from agentica.compression.tool_call_args import omitted_tool_arg
+
+        old = "<evicted-tool-arg chars=1183>"
+        messages = [
+            Message(role="user", content="ping"),
+            Message(role="assistant", tool_calls=[{
+                "id": "s1",
+                "type": "function",
+                "function": {
+                    "name": "send_message",
+                    "arguments": json.dumps({"target": "peer", "message": old}),
+                },
+            }]),
+            Message(role="tool", tool_call_id="s1", content="queued"),
+            Message(role="user", content="next"),
+            Message(role="assistant", content="ok"),
+        ]
+
+        n = upgrade_legacy_omitted_args(messages)
+        self.assertGreaterEqual(n, 1)
+        parsed = json.loads(messages[1].tool_calls[0]["function"]["arguments"])
+        self.assertEqual(parsed["message"], omitted_tool_arg(1183))
+        self.assertIsInstance(parsed["message"], dict)
+
+        evict_context(
+            messages, context_tokens=100, context_window=10_000, model_id="gpt-4o",
+        )
+        parsed = json.loads(messages[1].tool_calls[0]["function"]["arguments"])
+        self.assertEqual(parsed["message"], omitted_tool_arg(1183))
+
+    def test_upgrade_rewrites_anthropic_input_and_drops_thinking(self):
+        """Mutating tool_use.input without dropping thinking 400s Claude."""
+        from agentica.compression.evict import upgrade_legacy_omitted_args
+        from agentica.compression.tool_call_args import omitted_tool_arg
+
+        old = "<evicted-tool-arg chars=1183>"
+        msg = Message(
+            role="assistant",
+            content=[
+                {"type": "thinking", "thinking": "plan", "signature": "sig"},
+                {
+                    "type": "tool_use",
+                    "id": "s1",
+                    "name": "send_message",
+                    "input": {"target": "peer", "message": old},
+                },
+            ],
+            tool_calls=[{
+                "id": "s1",
+                "type": "function",
+                "function": {
+                    "name": "send_message",
+                    "arguments": json.dumps({"target": "peer", "message": old}),
+                },
+            }],
+        )
+
+        self.assertGreaterEqual(upgrade_legacy_omitted_args([msg]), 1)
+        self.assertFalse(any(b.get("type") == "thinking" for b in msg.content))
+        tool_use = next(b for b in msg.content if b.get("type") == "tool_use")
+        self.assertEqual(tool_use["input"]["message"], omitted_tool_arg(1183))
+        self.assertEqual(
+            json.loads(msg.tool_calls[0]["function"]["arguments"])["message"],
+            omitted_tool_arg(1183),
+        )
+
+    def test_result_placeholder_does_not_invite_reissue_of_omitted_args(self):
+        """Re-run send_message(message=<marker>) is how the marker reached a peer."""
+        from agentica.compression.evict import evict_tool_results
+        from agentica.compression.tool_call_args import omitted_tool_arg
+
+        payload = omitted_tool_arg(1183)
+        msgs = [
+            Message(role="user", content="hi"),
+            Message(role="assistant", tool_calls=[{
+                "id": "s1",
+                "type": "function",
+                "function": {
+                    "name": "send_message",
+                    "arguments": json.dumps({
+                        "target": "vpetmac-05",
+                        "message": payload,
+                    }),
+                },
+            }]),
+            Message(
+                role="tool",
+                tool_call_id="s1",
+                tool_name="send_message",
+                content=" ".join(f"queued-token{i}" for i in range(200)),
+            ),
+            Message(role="user", content="next"),
+            Message(role="assistant", content="ok"),
+        ]
+
+        evict_tool_results(
+            msgs, context_tokens=9_000, context_window=10_000, model_id="gpt-4o",
+        )
+
+        placeholder = msgs[2].content
+        self.assertIn("send_message(", placeholder)
+        self.assertNotIn("Re-run the call", placeholder)
+        self.assertNotIn("<evicted-tool-arg", placeholder)
+        self.assertIn("cannot be recovered", placeholder)
 
 
 class TestSanitizePath(unittest.TestCase):

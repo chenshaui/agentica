@@ -8,7 +8,7 @@ Agentica 提供两层上下文压缩策略，防止长对话或大量工具输�
 
 | 层 | 做什么 | 代价 | 可逆性 |
 |----|--------|------|--------|
-| Layer 1 淘汰 | 把更早回合的工具结果换成占位符；超长 tool_call 参数换成 `<evicted-tool-arg>`。**正在跑的那一轮（未返回的调用 + 末批 result）不动**，含 SDK / CLI / Web 自定义工具 | 免费，无 LLM | 模型可重发那次调用 |
+| Layer 1 淘汰 | 把更早回合的工具结果换成占位符；超长 tool_call 参数换成 JSON 对象 `{"$evicted": N}`（不是一段可当正文的字符串）。**正在跑的那一轮（未返回的调用 + 末批 result）不动**，含 SDK / CLI / Web 自定义工具 | 免费，无 LLM | 参数还在时可重发；payload 已丢掉则不可恢复 |
 | Layer 2 换窗 | 丢掉活动窗里的旧轮次，装上 `<context_window>` + session notes 摘录 | 免费，无 LLM | 原文在 JSONL，不在 prompt 里 |
 
 在这两层之前还有一个 **Layer 0**，它不是压缩而是工具输出策略：单条结果超过阈值时在产生的那一刻就落盘，从不以全量进入上下文。
@@ -47,7 +47,7 @@ Context Messages
 
 占位符写明是哪个调用（`read_file(file_path=..., offset=...)`），模型据此可以原样重发。它**不**先把内容复制到磁盘——取回同样是一次工具调用，而对文件读取来说原路径上的内容比快照更新鲜。
 
-模型有时会把上一轮见过的占位符**当成参数值本身**再发一次（实测该轮 `output_tokens=98`，而它声称的 9763 字符 payload 光内容就约 1221 token，不可能是真内容）。这种调用不执行：`get_function_call` 在参数解码时 fail-closed，凡是**整个参数值**就是占位符的（锚定匹配，含模型常漏 `>` 的截断形式）一律返回 tool error 让模型重发，否则 `execute` 会把它当 shell 跑、`write_file` 会写进磁盘、`send_message` 会把它当作整条消息发给对端。命令里只是**提到**该占位符的（`grep -rn '<evicted-tool-arg chars=' .`）不受影响。
+超长参数叶子必须是 JSON 对象 `{"$evicted": N}`，不能是字符串。字符串占位符和 `send_message` / `execute` / `write_file` 的正文同型，模型会把它抄进下一轮（长会话里对端只收到 `<evicted-tool-arg chars=1183`）。`get_function_call` 对对象占位符 fail-closed，错误里不回显占位符。结果占位符在参数已被丢掉时不写「Re-run the call」。命令里只是提到旧字符串的不受影响。
 
 #### 淘汰的单位是「一条结果」，不是「一条消息」
 

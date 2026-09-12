@@ -93,17 +93,16 @@ class TestMalformedArguments:
 
 
 class TestAnEvictedArgumentIsNeverExecuted:
-    """Layer 1 replaced an argument with its placeholder, so the value is gone.
+    """Layer 1 dropped a payload, so the value is gone.
 
-    A tool call whose payload is only ``<evicted-tool-arg chars=N>`` must not
-    run. Observed in a real session: three ``send_message`` calls delivered the
-    marker as the entire peer message, ``execute`` ran it as shell (``syntax
-    error near unexpected token 'newline'``), and ``write_file`` / ``apply_patch``
-    tried to put it on disk. The model reads the returned tool result and
-    re-issues the call with real content; running it just burns the turn.
+    The marker is a JSON object, not a string: a string in this slot is
+    a ``send_message`` body / shell command / file write. Observed live:
+    three ``send_message`` calls delivered the old string marker as the
+    entire peer message. The tool result must not echo that marker back
+    or the model copies it again.
     """
 
-    def test_the_whole_marker_is_refused(self):
+    def test_the_object_marker_is_refused(self):
         from agentica.compression.tool_call_args import omitted_tool_arg
 
         call = _call({"text": omitted_tool_arg(1885)})
@@ -111,30 +110,43 @@ class TestAnEvictedArgumentIsNeverExecuted:
         assert call.error is not None
         assert call.arguments is None
         assert "not executed" in call.error.lower()
+        assert "$evicted" not in call.error
+        assert "<evicted-tool-arg" not in call.error
 
-    def test_the_truncated_form_the_model_also_wrote_is_refused(self):
-        """The model re-emitted the marker from memory without the closing '>'."""
+    def test_a_json_encoded_object_marker_is_refused(self):
+        from agentica.compression.tool_call_args import omitted_tool_arg
+
+        call = _call({"text": json.dumps(omitted_tool_arg(1183))})
+
+        assert call.error is not None
+        assert call.arguments is None
+
+    def test_the_old_string_marker_still_in_jsonl_is_refused(self):
+        """Sessions already evicted with the string form. Do not send it."""
+        call = _call({"text": "<evicted-tool-arg chars=1553>"})
+
+        assert call.error is not None
+        assert call.arguments is None
+
+    def test_the_truncated_old_string_the_model_re_emitted_is_refused(self):
         call = _call({"text": "<evicted-tool-arg chars=1553"})
 
         assert call.error is not None
         assert call.arguments is None
 
     def test_a_nested_marker_is_refused_and_the_field_is_named(self):
+        from agentica.compression.tool_call_args import omitted_tool_arg
+
         call = get_function_call(
             "say",
-            json.dumps({"text": {"deep": ["<evicted-tool-arg chars=7>"]}}),
+            json.dumps({"text": {"deep": [omitted_tool_arg(7)]}}),
             functions=_functions(),
         )
 
         assert call.error is not None
         assert "text.deep[0]" in call.error
 
-    def test_a_real_payload_that_mentions_the_marker_still_runs(self):
-        """Anchoring: only a leaf that IS the marker counts, not a string about it.
-
-        The agent greps for this marker in its own source; that command must
-        keep working.
-        """
+    def test_a_real_payload_that_mentions_the_old_marker_still_runs(self):
         real = "grep -rn '<evicted-tool-arg chars=' agentica/"
 
         call = _call({"text": real})
@@ -143,7 +155,6 @@ class TestAnEvictedArgumentIsNeverExecuted:
         assert call.arguments["text"] == real
 
     def test_a_marker_with_trailing_text_still_runs(self):
-        """Only an argument that is entirely the placeholder is unrecoverable."""
         text = "<evicted-tool-arg chars=5> and then real words"
 
         call = _call({"text": text})
@@ -156,3 +167,22 @@ class TestAnEvictedArgumentIsNeverExecuted:
 
         assert call.error is None
         assert call.arguments == {"text": "hi", "times": 2}
+
+    def test_send_message_shaped_call_is_refused_before_the_mailbox(self):
+        from agentica.compression.tool_call_args import omitted_tool_arg
+
+        def send_message(target: str, message: str) -> str:
+            """Send a peer message."""
+            raise AssertionError("mailbox must not be reached")
+
+        fn = Function.from_callable(send_message)
+        fn.process_entrypoint(strict=False)
+        call = get_function_call(
+            "send_message",
+            json.dumps({"target": "vpetmac-05", "message": omitted_tool_arg(1183)}),
+            functions={"send_message": fn},
+        )
+
+        assert call.error is not None
+        assert call.arguments is None
+        assert "message" in call.error

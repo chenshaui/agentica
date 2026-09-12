@@ -2,55 +2,70 @@
 """Helpers for shrinking tool-call argument JSON without breaking validity."""
 
 import json
-import re
-from typing import Any
+from typing import Any, Optional
+
+# Structured stand-in for one dropped string leaf. A JSON object, not a
+# string: a string in this slot is a ``send_message`` / ``execute`` /
+# ``write_file`` payload, and the model copies it into the next call.
+OMITTED_ARG_KEY = "$evicted"
+
+# String we used to write. Still in live JSONL; rewrite it so the model
+# cannot copy it as content.
+_LEGACY_OMITTED_PREFIX = "<evicted-tool-arg chars="
 
 
-# The marker replaces one whole string leaf. Anchored so it matches the value
-# eviction wrote and nothing else: a command that merely *mentions* the marker
-# (``grep -rn '<evicted-tool-arg chars=' .``) carries other text and must still
-# be allowed to run.
-_OMITTED_ARG_RE = re.compile(r"^<evicted-tool-arg chars=\d+>?$")
+def omitted_tool_arg(n: int) -> dict:
+    """Placeholder for a string leaf dropped from context."""
+    return {OMITTED_ARG_KEY: int(n)}
 
 
-def omitted_tool_arg(n: int) -> str:
-    """Placeholder for a string leaf dropped from context.
+def _legacy_omitted_chars(value: str) -> Optional[int]:
+    """Char count if ``value`` is exactly the string marker we used to write.
 
-    Must not be a prefix of the original payload. ``head + "...[truncated]"``
-    looks like real ``write_file`` / ``apply_patch`` content, and the model
-    copies it into the next write.
+    The model sometimes re-emits it without the closing ``>``. A command
+    that only mentions the prefix has other text and returns None.
     """
-    return f"<evicted-tool-arg chars={n}>"
+    if not value.startswith(_LEGACY_OMITTED_PREFIX):
+        return None
+    rest = value[len(_LEGACY_OMITTED_PREFIX):]
+    if rest.endswith(">"):
+        rest = rest[:-1]
+    if rest.isdecimal():
+        return int(rest)
+    return None
+
+
+def _is_omitted_object(value: Any) -> bool:
+    if not isinstance(value, dict) or len(value) != 1 or OMITTED_ARG_KEY not in value:
+        return False
+    n = value[OMITTED_ARG_KEY]
+    return isinstance(n, int) and not isinstance(n, bool) and n >= 0
 
 
 def is_omitted_tool_arg(value: Any) -> bool:
-    """True when ``value`` is the whole eviction placeholder for one argument.
-
-    An omitted argument holds no payload: the string is not the call the model
-    meant, it is a note saying the payload is gone. Executing it runs a shell
-    command, writes a file, or messages a peer with the marker as content, so
-    callers must fail closed instead.
-
-    The optional trailing ``>`` accepts the truncated form a model sometimes
-    emits from memory; the anchors still reject a longer string that merely
-    contains the marker.
-    """
-    return isinstance(value, str) and bool(_OMITTED_ARG_RE.match(value))
+    """True when ``value`` is the eviction placeholder for one argument."""
+    if _is_omitted_object(value):
+        return True
+    if not isinstance(value, str):
+        return False
+    if _legacy_omitted_chars(value) is not None:
+        return True
+    if not value.startswith("{") or OMITTED_ARG_KEY not in value:
+        return False
+    try:
+        parsed = json.loads(value)
+    except ValueError:
+        return False
+    return _is_omitted_object(parsed)
 
 
 def omitted_tool_args(value: Any) -> list:
-    """Every ``(key_path, marker)`` under ``value`` that is an omitted argument.
-
-    Only string leaves count, at any nesting depth, because that is the unit
-    eviction replaces. Returned so a caller can name the affected fields in the
-    error it raises.
-    """
+    """Key paths under ``value`` whose leaf is an omitted argument."""
     found: list = []
 
     def walk(node: Any, path: str) -> None:
-        if isinstance(node, str):
-            if _OMITTED_ARG_RE.match(node):
-                found.append((path, node))
+        if is_omitted_tool_arg(node):
+            found.append(path)
             return
         if isinstance(node, dict):
             for key, item in node.items():
@@ -64,13 +79,32 @@ def omitted_tool_args(value: Any) -> list:
     return found
 
 
+def rewrite_omitted_arg_leaves(value: Any) -> Any:
+    """Upgrade the old string marker to the structured object. Idempotent."""
+    if isinstance(value, str):
+        n = _legacy_omitted_chars(value)
+        return omitted_tool_arg(n) if n is not None else value
+    if isinstance(value, dict):
+        if _is_omitted_object(value):
+            return value
+        return {key: rewrite_omitted_arg_leaves(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [rewrite_omitted_arg_leaves(item) for item in value]
+    return value
+
+
 def shrink_tool_arg_leaves(value: Any, max_string_chars: int) -> Any:
     """Replace oversize string leaves with ``omitted_tool_arg``, keeping JSON shape."""
     if isinstance(value, str):
+        n = _legacy_omitted_chars(value)
+        if n is not None:
+            return omitted_tool_arg(n)
         if len(value) > max_string_chars:
             return omitted_tool_arg(len(value))
         return value
     if isinstance(value, dict):
+        if _is_omitted_object(value):
+            return value
         return {key: shrink_tool_arg_leaves(item, max_string_chars) for key, item in value.items()}
     if isinstance(value, list):
         return [shrink_tool_arg_leaves(item, max_string_chars) for item in value]

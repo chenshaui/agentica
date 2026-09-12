@@ -131,7 +131,7 @@ def test_older_round_in_the_same_user_turn_may_shrink_args(name, args, key):
 
     assert _arg(msgs, live_assistant, key) == live_payload
     assert _arg(msgs, old_assistant, key) == omitted_tool_arg(len(old_payload))
-    assert "...[truncated]" not in _arg(msgs, old_assistant, key)
+    assert "...[truncated]" not in json.dumps(_arg(msgs, old_assistant, key))
 
 
 def test_parallel_live_batch_of_mixed_tools_survives():

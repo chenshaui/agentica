@@ -24,8 +24,9 @@ file read the original path holds fresher content than the snapshot would.
 Tool *results* are not the only bulk in a transcript: a ``write_file`` or
 ``apply_patch`` call carries its whole payload in the assistant message's
 arguments, which no amount of result eviction can reach. Those strings are
-replaced with an omission marker (not a truncated prefix — the model copies
-``head + "...[truncated]"`` into the next write). The live tool round is
+replaced with a JSON object ``{"$evicted": N}`` (not a string and not a
+truncated prefix — either form is copied into the next ``send_message`` /
+``write_file`` / ``execute``). The live tool round is
 left intact (in-flight calls and the trailing result batch), matching the
 trailing-result exclusion: that payload is what just executed. The cutoff is
 by message position, not tool name — SDK ``tools=``, CLI ``--tools``, Web
@@ -50,7 +51,10 @@ import os
 from typing import Any, Dict, Iterator, List, NamedTuple, Optional, Tuple, TYPE_CHECKING
 
 from agentica.compression.tool_call_args import (
-    shrink_tool_call_arguments_json,
+    OMITTED_ARG_KEY,
+    is_omitted_tool_arg,
+    omitted_tool_args,
+    rewrite_omitted_arg_leaves,
     shrink_tool_arg_leaves,
 )
 from agentica.utils.log import logger
@@ -262,16 +266,41 @@ def _call_index(messages: "List[Message]") -> Dict[str, Tuple[Optional[str], Any
 def _resolve_call(
     msg: "Message", block: Optional[dict], calls: Dict[str, Tuple[Optional[str], Any]]
 ) -> Tuple[Optional[str], Any]:
-    """The ``(name, arguments)`` behind one result, whichever shape holds it."""
+    """The ``(name, arguments)`` behind one result, whichever shape holds it.
+
+    Prefer the assistant ``tool_calls`` index: Layer 1 rewrites those
+    arguments in place. ``Message.tool_args`` is a snapshot from execute
+    time and still holds the original payload (or nothing), so a
+    placeholder built from it would invite the model to re-issue
+    ``send_message`` with a body that is already gone.
+    """
     if block is not None:
         return calls.get(block.get("tool_use_id") or "", (None, None))
+    indexed = calls.get(msg.tool_call_id or "", (None, None))
+    if indexed != (None, None):
+        return indexed
     if msg.tool_name:
         return msg.tool_name, msg.tool_args
-    return calls.get(msg.tool_call_id or "", (None, None))
+    return indexed
+
+
+def _render_arg_value(value: Any) -> str:
+    """Render one argument for the result placeholder, never the raw marker."""
+    if is_omitted_tool_arg(value):
+        if isinstance(value, dict):
+            return f"<omitted chars={value[OMITTED_ARG_KEY]}>"
+        return "<omitted>"
+    return repr(value)
 
 
 def _placeholder(name: Optional[str], args: Any) -> str:
-    """Name the call that produced the evicted result so it can be re-issued."""
+    """Name the call that produced the evicted result.
+
+    Re-issue is only invited when the original arguments are still in the
+    transcript. After Layer 1 drops a payload, telling the model to re-run
+    ``send_message`` / ``execute`` / ``write_file`` with the marker as the
+    body is how that marker reaches a peer, a shell, or the disk.
+    """
     if not name:
         return f"[{_EVICTED}.]"
     if isinstance(args, str):
@@ -279,14 +308,21 @@ def _placeholder(name: Optional[str], args: Any) -> str:
             args = json.loads(args)
         except (ValueError, TypeError):
             pass
+    omitted = omitted_tool_args(args) if args is not None else []
     if isinstance(args, dict):
-        rendered = ", ".join(f"{k}={v!r}" for k, v in args.items())
+        rendered = ", ".join(f"{k}={_render_arg_value(v)}" for k, v in args.items())
     elif args:
-        rendered = str(args)
+        rendered = _render_arg_value(args)
     else:
         rendered = ""
     if len(rendered) > _MAX_CALL_SIGNATURE_CHARS:
         rendered = rendered[:_MAX_CALL_SIGNATURE_CHARS - 3] + "..."
+    if omitted:
+        return (
+            f"[{_EVICTED}: {name}({rendered}). "
+            f"The argument payload was dropped from context and cannot be "
+            f"recovered; do not re-issue this call.]"
+        )
     return f"[{_EVICTED}: {name}({rendered}). Re-run the call if you still need it.]"
 
 
@@ -384,6 +420,81 @@ def _fully_evicted(msg: "Message", block: Optional[dict]) -> bool:
     )
 
 
+def _map_assistant_tool_args(msg: "Message", transform) -> int:
+    """Apply ``transform`` to each tool-call arguments object in ``msg``.
+
+    OpenAI stores JSON in ``tool_calls[].function.arguments`` (and sometimes
+    on the tool_call itself). Anthropic also keeps ``tool_use.input``. A
+    changed ``tool_use.input`` is written back onto the matching
+    ``tool_calls`` entry. Sibling thinking is dropped when anything in the
+    content list changes — mutating ``tool_use.input`` invalidates the
+    thinking signature.
+    """
+    changed = 0
+    if msg.tool_calls:
+        for tool_call in msg.tool_calls:
+            if not isinstance(tool_call, dict):
+                continue
+            function = tool_call.get("function")
+            containers = [function] if isinstance(function, dict) else []
+            containers.append(tool_call)
+            for container in containers:
+                raw = container.get("arguments")
+                if not isinstance(raw, str):
+                    continue
+                try:
+                    parsed = json.loads(raw)
+                except (TypeError, ValueError):
+                    continue
+                new = transform(parsed)
+                if new != parsed:
+                    container["arguments"] = json.dumps(new, ensure_ascii=False)
+                    changed += 1
+    if isinstance(msg.content, list):
+        for block in msg.content:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            inp = block.get("input")
+            if not isinstance(inp, dict):
+                continue
+            new = transform(inp)
+            if new == inp:
+                continue
+            block["input"] = new
+            changed += 1
+            call_id = block.get("id")
+            dumped = json.dumps(new, ensure_ascii=False)
+            if call_id and msg.tool_calls:
+                for tool_call in msg.tool_calls:
+                    if not isinstance(tool_call, dict) or tool_call.get("id") != call_id:
+                        continue
+                    function = tool_call.get("function")
+                    if isinstance(function, dict):
+                        function["arguments"] = dumped
+                    if "arguments" in tool_call:
+                        tool_call["arguments"] = dumped
+        if changed:
+            msg.content = [
+                block
+                for block in msg.content
+                if not (isinstance(block, dict) and block.get("type") in ("thinking", "redacted_thinking"))
+            ]
+    return changed
+
+
+def upgrade_legacy_omitted_args(messages: "List[Message]") -> int:
+    """Rewrite leftover string markers in every assistant call, including live.
+
+    Those strings are already in the transcript. Leaving them is how the
+    model copies a marker into ``send_message``.
+    """
+    changed = 0
+    for msg in messages:
+        if msg.role == "assistant":
+            changed += _map_assistant_tool_args(msg, rewrite_omitted_arg_leaves)
+    return changed
+
+
 def shrink_tool_call_arguments(
     messages: "List[Message]",
     *,
@@ -395,17 +506,9 @@ def shrink_tool_call_arguments(
 
     A ``write_file`` payload lives in the assistant message, not in a tool
     result, so eviction cannot reach it. The live tool round is skipped
-    (``live_tool_round_start``): that payload is what just landed on disk or
-    is still executing, and replacing it with a truncated prefix made the
-    model copy ``...[truncated]`` into the next write / execute / grep.
-
-    Older turns keep JSON valid via ``shrink_tool_call_arguments_json``. OpenAI
-    stores the payload in ``tool_calls[].function.arguments``; Anthropic also
-    keeps it in ``content`` ``tool_use.input`` dicts, which the wire format
-    actually sends — both must shrink together.
-
-    Returns:
-        Number of argument containers that actually changed.
+    (``live_tool_round_start``). Older turns keep JSON valid. OpenAI stores
+    the payload in ``tool_calls[].function.arguments``; Anthropic also keeps
+    it in ``content`` ``tool_use.input`` — both shrink together.
     """
     if not under_pressure(context_tokens, context_window):
         return 0
@@ -415,62 +518,10 @@ def shrink_tool_call_arguments(
     for msg in messages[:start]:
         if msg.role != "assistant":
             continue
-        shrunk += _shrink_assistant_tool_args(msg, max_string_chars)
+        shrunk += _map_assistant_tool_args(
+            msg, lambda value: shrink_tool_arg_leaves(value, max_string_chars),
+        )
     return shrunk
-
-
-def _shrink_assistant_tool_args(msg: "Message", max_string_chars: int) -> int:
-    """Shrink one assistant message's OpenAI tool_calls and Anthropic tool_use inputs."""
-    changed = 0
-    if msg.tool_calls:
-        for tool_call in msg.tool_calls:
-            if not isinstance(tool_call, dict):
-                continue
-            function = tool_call.get("function")
-            containers = [function] if isinstance(function, dict) else []
-            containers.append(tool_call)
-            for container in containers:
-                arguments = container.get("arguments")
-                if not isinstance(arguments, str):
-                    continue
-                shrunken = shrink_tool_call_arguments_json(
-                    arguments, max_string_chars=max_string_chars,
-                )
-                if shrunken != arguments:
-                    container["arguments"] = shrunken
-                    changed += 1
-    if isinstance(msg.content, list):
-        for block in msg.content:
-            if not isinstance(block, dict) or block.get("type") != "tool_use":
-                continue
-            inp = block.get("input")
-            if not isinstance(inp, dict):
-                continue
-            shrunken = shrink_tool_arg_leaves(inp, max_string_chars)
-            if shrunken != inp:
-                block["input"] = shrunken
-                changed += 1
-                call_id = block.get("id")
-                if call_id and msg.tool_calls:
-                    dumped = json.dumps(shrunken, ensure_ascii=False)
-                    for tool_call in msg.tool_calls:
-                        if not isinstance(tool_call, dict) or tool_call.get("id") != call_id:
-                            continue
-                        function = tool_call.get("function")
-                        if isinstance(function, dict):
-                            function["arguments"] = dumped
-                        if "arguments" in tool_call:
-                            tool_call["arguments"] = dumped
-    if changed and isinstance(msg.content, list):
-        # A mutated sibling tool_use.input invalidates the thinking signature
-        # on some Claude proxies (``Invalid signature in thinking block``).
-        # Anthropic allows omitting older thinking; keep the tool_use.
-        msg.content = [
-            block
-            for block in msg.content
-            if not (isinstance(block, dict) and block.get("type") in ("thinking", "redacted_thinking"))
-        ]
-    return changed
 
 
 def evict_context(
@@ -488,6 +539,7 @@ def evict_context(
     aims slightly high — cheap, and it errs toward buying headroom rather than
     re-triggering next turn.
     """
+    upgrade_legacy_omitted_args(messages)
     shrunk = shrink_tool_call_arguments(
         messages, context_tokens=context_tokens, context_window=context_window,
     )
